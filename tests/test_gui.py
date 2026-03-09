@@ -182,12 +182,16 @@ class TestMainWindow:
 
     def test_tab_name(self, qtbot):
         from insider_scanner.gui.main_window import MainWindow
+        from insider_scanner.gui.european_tab import EuropeanTab
 
         win = MainWindow()
         qtbot.addWidget(win)
-        assert win.tabs.tabText(0) == "Dashboard"
-        assert win.tabs.tabText(1) == "Insider Scan"
-        assert win.tabs.tabText(2) == "Congress Scan"
+        assert [win.tabs.tabText(i) for i in range(win.tabs.count())] == [
+            "Insider Scan",
+            "Congress Scan",
+            "European Insiders",
+        ]
+        assert isinstance(win.european_tab, EuropeanTab)
 
     def test_status_bar(self, qtbot):
         from insider_scanner.gui.main_window import MainWindow
@@ -196,6 +200,75 @@ class TestMainWindow:
         qtbot.addWidget(win)
         win.log_status("Testing")
         assert win.status_bar.currentMessage() == "Testing"
+
+
+class TestEuropeanTab:
+    def _sample_trade(self, **overrides):
+        from datetime import date
+        from insider_scanner.core.eu_models import EuropeanInsiderTrade
+
+        base = EuropeanInsiderTrade(
+            isin="GB0002875804",
+            issuer_name="Example PLC",
+            country="UK",
+            regulatory_body="FCA",
+            insider_name="Jane Doe",
+            position="Executive",
+            trade_date=date(2026, 2, 1),
+            filing_date=date(2026, 2, 2),
+            trade_type="Buy",
+            instrument_type="Share",
+            volume=100.0,
+            price=2.5,
+            currency="GBP",
+            total_value=250.0,
+            source="rns",
+            source_url="https://example.com/announcement",
+        )
+        for key, value in overrides.items():
+            setattr(base, key, value)
+        return base
+
+    def test_create(self, qtbot):
+        from insider_scanner.gui.european_tab import EuropeanTab
+
+        tab = EuropeanTab()
+        qtbot.addWidget(tab)
+        assert tab.btn_scan is not None
+        assert tab.btn_watchlist is not None
+        assert tab.trades_table.model() is tab.trades_model
+
+    def test_apply_filters_and_show_detail(self, qtbot):
+        from insider_scanner.gui.european_tab import EuropeanTab
+
+        tab = EuropeanTab()
+        qtbot.addWidget(tab)
+        trades = [
+            self._sample_trade(),
+            self._sample_trade(
+                isin="NL0000009165",
+                country="NL",
+                regulatory_body="AFM",
+                trade_type="Sell",
+                total_value=50.0,
+                source_url="",
+            ),
+        ]
+        tab._update_table(trades)
+        tab.country_combo.setCurrentText("UK")
+        tab.type_combo.setCurrentText("Buy")
+        tab.min_value_spin.setValue(100.0)
+
+        tab._apply_filters()
+
+        assert tab.trades_model.rowCount() == 1
+        assert "1 trade(s) shown" in tab.lbl_count.text()
+
+        index = tab.trades_model.index(0, 0)
+        tab._show_detail(index)
+
+        assert "Example PLC" in tab.detail_text.toPlainText()
+        assert tab.btn_open_source.isEnabled()
 
 
 class TestCongressTab:

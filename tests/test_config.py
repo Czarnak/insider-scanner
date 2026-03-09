@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from insider_scanner.utils.config import load_watchlist
+from insider_scanner.utils.config import load_eu_watchlist, load_watchlist
 
 
 class TestLoadWatchlist:
@@ -45,3 +45,18 @@ class TestLoadWatchlist:
         f.write_text("")
         result = load_watchlist(f)
         assert result == []
+
+
+class TestLoadEuWatchlist:
+    def test_load_valid_isins(self, tmp_path):
+        f = tmp_path / "isins.txt"
+        f.write_text("gb0002875804\nNL0000009165\n")
+        result = load_eu_watchlist(f)
+        assert result == ["GB0002875804", "NL0000009165"]
+
+    def test_skip_invalid_entries(self, tmp_path, caplog):
+        f = tmp_path / "isins.txt"
+        f.write_text("SHORT\nFR0000131104\n")
+        result = load_eu_watchlist(f)
+        assert result == ["FR0000131104"]
+        assert "Skipping invalid ISIN" in caplog.text

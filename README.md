@@ -1,6 +1,6 @@
 # Insider Scanner
 
-Scan insider trades from **secform4.com**, **openinsider.com**, and **SEC EDGAR**. Includes congressional financial disclosure scanning (House and Senate), a live market dashboard with price cards, VIX chart, and Fear & Greed indexes, multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links.
+Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, and European regulators (FCA, BaFin, AMF, AFM). Includes congressional financial disclosure scanning (House and Senate), multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links plus a European scan workspace.
 
 ---
 
@@ -14,7 +14,7 @@ pip install -e ".[dev]"
 
 ### Requirements
 
-Python 3.11+. Dependencies: `requests`, `beautifulsoup4`, `lxml`, `pandas`, `PySide6`, `pyyaml`, `pdfplumber`, `pyqtgraph`, `numpy`, `yfinance`, `fear_and_greed`.
+Python 3.11+. Dependencies: `requests`, `beautifulsoup4`, `lxml`, `pandas`, `PySide6`, `pyyaml`, `pdfplumber`, `numpy`.
 
 ---
 
@@ -28,20 +28,25 @@ insider-scanner
 python -m insider_scanner.main
 ```
 
-The GUI provides:
+The GUI tabs cover the core use cases:
 
-- **Dashboard**: Live market overview — price cards, VIX chart, Fear & Greed indexes, and configurable indicator tiles with auto-refresh
-- **Ticker search**: Enter a ticker and scan secform4.com + openinsider.com simultaneously
-- **Latest trades**: Fetch recent insider trades across all tickers, with configurable count (10–500)
-- **Watchlist scan**: One-click scan of all tickers in `data/tickers_watchlist.txt` — results merged and deduplicated
-- **Source selection**: Toggle secform4 and/or openinsider sources
-- **Date range**: Optional start/end filing date pickers with calendar popups — passed to scrapers and applied as filters
-- **Filters**: By trade type (Buy/Sell/Exercise), minimum dollar value, Congress-only
-- **Results table**: Sortable columns with both filing date and trade date, Congress trades highlighted in red, auto-generated EDGAR filing links
-- **EDGAR links**: Double-click a trade → view details, click "Open EDGAR Filing" to open the SEC filing (direct links from secform4, generated search URLs for other sources)
-- **Stop scan**: Cancel a running watchlist scan mid-progress
-- **CIK resolver**: Resolve any ticker to its SEC CIK number and open the filings page
-- **Export**: Save scan results as CSV + JSON
+#### Insider Scan tab
+- Search a ticker and run both secform4.com and openinsider.com scrapers in one click.
+- Fetch the latest trades (configurable count) and run watchlist scans backed by `data/tickers_watchlist.txt`.
+- Toggle sources, specify a date range, trade type, minimum value, or Congress-only filter.
+- View sortable tables that display filing/trade dates, highlight congressional filings, show EDGAR links, and let you export CSV/JSON.
+- Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
+
+#### Congress Scan tab
+- Pick a legislator (House/Senate dropdown) or the whole committee list, select sources (House/Senate), and preview results in a threaded worker with progress + cancel.
+- Use filters such as trade type, sector, and minimum value, then double-click any row to open the original PDF/PTR.
+- Save filtered results to CSV/JSON, with exports reflecting the current filters.
+
+#### European Insiders tab
+- Choose All/UK/DE/FR/NL, type an ISIN, or scan the European watchlist at `data/eu_watchlist.txt`.
+- Enable optional date bounds, filter by trade type and minimum value, and watch the progress bar while each ISIN is processed.
+- Results are sortable, show normalized positions/currency, provide detail text on double-click, and allow opening the regulator source URL.
+- Save filtered results to CSV/JSON (filename reflects the ISIN + country) or clear filters to adjust the view.
 
 ### CLI
 
@@ -67,6 +72,16 @@ insider-scanner-cli init-congress
 insider-scanner-cli scan AAPL --congress-only
 ```
 
+### European scan CLI
+
+```bash
+# Scan a single ISIN or run the built-in watchlist
+insider-scanner-cli eu-scan GB0002875804
+insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
+```
+
+Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every ISIN listed in `data/eu_watchlist.txt`, and `--save` to persist the filtered CSV/JSON bundle.
+
 ---
 
 ## Architecture
@@ -75,32 +90,34 @@ insider-scanner-cli scan AAPL --congress-only
 src/insider_scanner/
 ├── core/
 │   ├── models.py        # InsiderTrade + CongressTrade dataclasses
-│   ├── dashboard.py     # Market data providers, Fear & Greed clients, TTL cache
-│   ├── bgeometrics_client.py # BGeometrics free API for MVRV Z-Score, NUPL
-│   ├── coinmetrics_client.py # CoinMetrics API client (Pro key optional)
-│   ├── coinmetrics_cached_client.py # Disk-cached wrapper for CoinMetrics
-│   ├── coinmetrics_indicators_service.py # MVRV/NUPL computation from raw caps
 │   ├── secform4.py      # secform4.com scraper (compound-column parser, direct filing links)
 │   ├── openinsider.py   # openinsider.com HTML parser + scraper
 │   ├── edgar.py         # SEC EDGAR CIK resolver (JSON primary + HTML fallback) + filing URLs
 │   ├── senate.py        # Congress member list + trade flagging
 │   ├── congress_house.py # House financial disclosures (ZIP index + PTR PDF parsing)
 │   ├── congress_senate.py # Senate EFD scraper (session + search + PTR page parsing)
-│   └── merger.py        # Multi-source dedup, filtering, export
+│   ├── merger.py        # Multi-source dedup, filtering, export
+│   ├── afm.py           # Dutch AFM API client
+│   ├── amf.py           # French AMF BDIF API client
+│   ├── bafin.py         # German BaFin download+CSV parser
+│   ├── eu_models.py     # European trade dataclass + helpers
+│   ├── eu_merger.py     # European dedup/filter/export helpers
+│   ├── eu_scan.py       # Dispatcher that runs the selected European scrapers
+│   └── rns_investegate.py # UK RNS announcements via Investegate
 ├── gui/
-│   ├── main_window.py   # Main window (default OS style)
-│   ├── dashboard_tab.py # Dashboard: live prices, VIX chart, F&G, indicators
-│   ├── scan_tab.py      # Insider scan: search, date range, filters, results table, EDGAR links
-│   ├── congress_tab.py  # Congress scan: official selection, House/Senate scraping, sector filtering
-│   └── widgets.py       # Pandas table model, price/value cards, color helpers
+│   ├── main_window.py   # Main window (default OS style + tab management)
+│   ├── scan_tab.py      # Insider scan workflow: search, filters, table, EDGAR links
+│   ├── congress_tab.py  # Congress tab with sector filtering and save/export helpers
+│   ├── european_tab.py  # European tab with ISIN/watchlist scans and detail panel
+│   └── widgets.py       # Pandas table model, sortable proxy, table helpers
 ├── utils/
-│   ├── config.py        # Paths, SEC compliance constants
+│   ├── config.py        # Paths, SEC/User-Agent constants, watchlists
 │   ├── logging.py       # Logging setup
-│   ├── caching.py       # File-based cache with TTL expiry
-│   ├── http.py          # Rate-limited HTTP with SEC User-Agent
-│   └── threading.py     # Background worker for GUI
+│   ├── caching.py       # File cache with TTL expiry
+│   ├── http.py          # Rate-limited HTTP helper
+│   └── threading.py     # Worker/Signal helpers for GUI
 ├── main.py              # GUI entry point
-└── cli.py               # CLI entry point
+└── cli.py               # CLI entry point (US + European commands)
 
 scripts/
 └── update_congress.py   # Fetch current federal + state legislators
@@ -131,19 +148,12 @@ scripts/
 3. **Parse**: Each electronic PTR page contains an HTML table with columns for transaction date, owner, ticker, asset name, type, amount range, and comment. These are parsed via BeautifulSoup.
 4. **Convert**: Transactions are converted to `CongressTrade` records. Tickers are read directly from the "Ticker" column when available; when the ticker is "--", it's extracted from the asset description (e.g. "Vanguard ETF (BND)" → BND).
 
-### Dashboard Tab
+### Data Flow — European Insider Trades (UK / DE / FR / NL)
 
-The **Dashboard** tab provides live market overview data, refreshing every 60 seconds:
-
-- **Price cards**: Gold, Silver, Crude Oil, S&P 500, and Nasdaq futures with 1-day % change and color-coded backgrounds (green for up, red for down)
-- **VIX chart**: 30-day VIX history rendered as a line chart using pyqtgraph with date axis
-- **Fear & Greed indexes**: Stocks (CNN via `fear_and_greed` library), Gold (JM Bullion), and Crypto (Alternative.me) with score-based coloring
-- **Indicator tiles**: Configurable grid of crypto/macro indicators (MVRV Z-Score, NUPL, RSI, VDD, Price vs LTH RP, CBBI) with band-based color coding
-- **On-chain data**: MVRV Z-Score and NUPL sourced from BGeometrics free API (bitcoin-data.com); RSI calculated locally from BTC-USD price; CBBI from colintalkscrypto.com
-- **Threading guard**: Prevents worker accumulation when data sources are slow — queued refreshes wait for the current batch to finish
-- **In-memory caching**: TTL-based cache (10 min for prices, 30–60 min for F&G, 6 hours for on-chain indicators) avoids redundant API calls
-
-The dashboard uses dependency injection via a `MarketDataProvider` Protocol, making it straightforward to swap data sources or inject mocks for testing.
+1. **Search**: `rns_investegate` queries Investegate for UK Director/PDMR announcements; `bafin`, `amf`, and `afm` POST/GET the regulators' portals for Germany, France, and the Netherlands respectively, honoring optional date bounds and ISIN filters.
+2. **Parse**: Each scraper normalizes the (possibly localized) position text, currency formatting, and trade/filing dates before emitting `EuropeanInsiderTrade` records.
+3. **Merge**: `eu_scan.scrape_eu_trades_for_isin` runs the requested sources, `eu_merger.merge_eu_trades` deduplicates across regulators, and `eu_merger.filter_eu_trades` applies the GUI/CLI filters (country, trade type, min value, date range).
+4. **Save**: The European tab (and `eu-scan`) use `eu_merger.save_eu_results` to output labeled CSV/JSON bundles after the filters are applied.
 
 ### Congress Tab — GUI Integration
 
@@ -171,7 +181,10 @@ All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 r
 |------|-------------|
 | `data/congress_members.json` | Congress member list with committee assignments and sector mappings |
 | `data/tickers_watchlist.txt` | Default ticker symbols |
+| `data/eu_watchlist.txt` | Default ISINs for the European watchlist scan |
 | `data/house_disclosures/` | Cached House financial disclosure indexes (auto-populated) |
+
+`data/eu_watchlist.txt` stores one 12-character ISIN per line (comments start with `#`) and is used by the European tab's watchlist scan and the CLI `--watchlist` mode.
 
 The Congress member list is populated by `scripts/update_congress.py` and includes committee assignments and sector mappings derived from the [unitedstates/congress-legislators](https://github.com/unitedstates/congress-legislators) project.
 
@@ -270,7 +283,8 @@ GitHub Actions runs on push/PR:
 - **Test matrix**: Python 3.11 + 3.12 + 3.13 on Ubuntu + Windows
 - **Offline tests only**: Live tests excluded via `-m "not live"`
 - **GUI tests**: Run under `xvfb-run` on Linux for headless display; skipped on Windows
-- **Lint**: `ruff check` on `src/` and `tests/`
+- **Lint**: `ruff check .`
+- **Format**: `ruff format --check .`
 - **Coverage**: Uploaded as artifact for Python 3.12 Ubuntu
 
 ---

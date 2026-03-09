@@ -17,14 +17,24 @@ from PySide6.QtCore import (
 class PandasTableModel(QAbstractTableModel):
     """Qt table model backed by a pandas DataFrame."""
 
-    def __init__(self, df: pd.DataFrame | None = None, parent=None):
+    def __init__(
+        self,
+        df: pd.DataFrame | None = None,
+        parent=None,
+        headers: list[str] | None = None,
+    ):
         super().__init__(parent)
         self._df = df if df is not None else pd.DataFrame()
+        self._headers = headers or []
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
         self.beginResetModel()
         self._df = df.reset_index(drop=True)
         self.endResetModel()
+
+    def update_data(self, df: pd.DataFrame) -> None:
+        """Backward-compatible alias used by older tabs."""
+        self.set_dataframe(df)
 
     def rowCount(self, parent=QModelIndex()):
         return len(self._df)
@@ -55,6 +65,8 @@ class PandasTableModel(QAbstractTableModel):
         if role != Qt.ItemDataRole.DisplayRole:
             return None
         if orientation == Qt.Orientation.Horizontal:
+            if section < len(self._headers):
+                return self._headers[section]
             return str(self._df.columns[section])
         return str(section + 1)
 
@@ -66,14 +78,23 @@ class PandasTableModel(QAbstractTableModel):
 class SortableTableModel(QSortFilterProxyModel):
     """Proxy adding sort/filter on top of PandasTableModel."""
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        df: pd.DataFrame | None = None,
+        headers: list[str] | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
-        self._source = PandasTableModel(parent=self)
+        self._source = PandasTableModel(df=df, parent=self, headers=headers)
         self.setSourceModel(self._source)
         self.setDynamicSortFilter(True)
 
     def set_dataframe(self, df: pd.DataFrame):
         self._source.set_dataframe(df)
+
+    def update_data(self, df: pd.DataFrame):
+        """Backward-compatible alias used by older tabs."""
+        self.set_dataframe(df)
 
     @property
     def dataframe(self):
