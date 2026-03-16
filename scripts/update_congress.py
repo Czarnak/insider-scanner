@@ -118,8 +118,13 @@ def determine_sectors(committees: list[str]) -> list[str]:
     "Other" is only included if no higher-priority sector was found.
     """
     sector_priority = [
-        "Defense", "Energy", "Finance", "Technology",
-        "Healthcare", "Industrials", "Other",
+        "Defense",
+        "Energy",
+        "Finance",
+        "Technology",
+        "Healthcare",
+        "Industrials",
+        "Other",
     ]
 
     raw_sectors = {map_committee_to_sector(c) for c in committees}
@@ -136,6 +141,7 @@ def determine_sectors(committees: list[str]) -> list[str]:
 # Committee data fetching
 # -----------------------------------------------------------------------
 
+
 def fetch_committees() -> dict[str, str]:
     """Fetch current committee definitions and return {committee_id: name}.
 
@@ -148,6 +154,7 @@ def fetch_committees() -> dict[str, str]:
         resp.raise_for_status()
 
         import yaml
+
         raw = yaml.safe_load(resp.text)
 
         committees = {}
@@ -181,6 +188,7 @@ def fetch_committee_membership() -> dict[str, list[str]]:
         resp.raise_for_status()
 
         import yaml
+
         raw = yaml.safe_load(resp.text)
 
         # raw is {committee_id: [{bioguide: ..., name: ..., ...}, ...]}
@@ -254,6 +262,7 @@ def enrich_with_committees(
 # Federal legislators (GitHub -- no API key needed)
 # -----------------------------------------------------------------------
 
+
 def fetch_federal_legislators() -> list[dict]:
     """Fetch current federal legislators from the unitedstates project.
 
@@ -269,6 +278,7 @@ def fetch_federal_legislators() -> list[dict]:
         resp.raise_for_status()
 
         import yaml
+
         raw = yaml.safe_load(resp.text)
 
         for person in raw:
@@ -285,17 +295,19 @@ def fetch_federal_legislators() -> list[dict]:
             chamber_raw = latest_term.get("type", "")
             chamber = "Senate" if chamber_raw == "sen" else "House"
 
-            members.append({
-                "name": display_name,
-                "first_name": first,
-                "last_name": last,
-                "official_name": official_full,
-                "state": latest_term.get("state", ""),
-                "chamber": chamber,
-                "party": latest_term.get("party", ""),
-                "level": "federal",
-                "bioguide_id": person.get("id", {}).get("bioguide", ""),
-            })
+            members.append(
+                {
+                    "name": display_name,
+                    "first_name": first,
+                    "last_name": last,
+                    "official_name": official_full,
+                    "state": latest_term.get("state", ""),
+                    "chamber": chamber,
+                    "party": latest_term.get("party", ""),
+                    "level": "federal",
+                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
+                }
+            )
 
         print(f"  Found {len(members)} federal legislators")
         return members
@@ -319,17 +331,19 @@ def fetch_federal_legislators() -> list[dict]:
             chamber_raw = latest_term.get("type", "")
             chamber = "Senate" if chamber_raw == "sen" else "House"
 
-            members.append({
-                "name": display_name,
-                "first_name": first,
-                "last_name": last,
-                "official_name": name.get("official_full", f"{first} {last}"),
-                "state": latest_term.get("state", ""),
-                "chamber": chamber,
-                "party": latest_term.get("party", ""),
-                "level": "federal",
-                "bioguide_id": person.get("id", {}).get("bioguide", ""),
-            })
+            members.append(
+                {
+                    "name": display_name,
+                    "first_name": first,
+                    "last_name": last,
+                    "official_name": name.get("official_full", f"{first} {last}"),
+                    "state": latest_term.get("state", ""),
+                    "chamber": chamber,
+                    "party": latest_term.get("party", ""),
+                    "level": "federal",
+                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
+                }
+            )
 
         print(f"  Found {len(members)} federal legislators (JSON fallback)")
         return members
@@ -342,6 +356,7 @@ def fetch_federal_legislators() -> list[dict]:
 # -----------------------------------------------------------------------
 # State legislators (Open States API -- requires free API key)
 # -----------------------------------------------------------------------
+
 
 def fetch_state_legislators(api_key: str) -> list[dict]:
     """Fetch state legislators from the Open States API.
@@ -398,19 +413,21 @@ def fetch_state_legislators(api_key: str) -> list[dict]:
 
                 party = person.get("party", "")
 
-                members.append({
-                    "name": f"{last} {first}".strip(),
-                    "first_name": first,
-                    "last_name": last,
-                    "official_name": name,
-                    "state": state_name,
-                    "chamber": chamber,
-                    "party": party,
-                    "level": "state",
-                    "openstates_id": person.get("id", ""),
-                    "committees": [],
-                    "sector": ["Other"],
-                })
+                members.append(
+                    {
+                        "name": f"{last} {first}".strip(),
+                        "first_name": first,
+                        "last_name": last,
+                        "official_name": name,
+                        "state": state_name,
+                        "chamber": chamber,
+                        "party": party,
+                        "level": "state",
+                        "openstates_id": person.get("id", ""),
+                        "committees": [],
+                        "sector": ["Other"],
+                    }
+                )
 
             pagination = data.get("pagination", {})
             total_pages = pagination.get("max_page", page)
@@ -422,7 +439,9 @@ def fetch_state_legislators(api_key: str) -> list[dict]:
 
         except requests.HTTPError as exc:
             if exc.response is not None and exc.response.status_code == 401:
-                print("  ERROR: Invalid API key. Get a free key at https://v3.openstates.org")
+                print(
+                    "  ERROR: Invalid API key. Get a free key at https://v3.openstates.org"
+                )
                 return []
             print(f"  HTTP error on page {page}: {exc}")
             break
@@ -438,6 +457,7 @@ def fetch_state_legislators(api_key: str) -> list[dict]:
 # Merge and save
 # -----------------------------------------------------------------------
 
+
 def merge_and_save(
     federal: list[dict],
     state: list[dict],
@@ -448,11 +468,13 @@ def merge_and_save(
     combined = federal + state
 
     # Sort by level (federal first), then state, then name
-    combined.sort(key=lambda m: (
-        0 if m.get("level") == "federal" else 1,
-        m.get("state", ""),
-        m.get("name", ""),
-    ))
+    combined.sort(
+        key=lambda m: (
+            0 if m.get("level") == "federal" else 1,
+            m.get("state", ""),
+            m.get("name", ""),
+        )
+    )
 
     # Deduplicate by (name, state) -- shouldn't happen but just in case
     seen = set()
@@ -474,7 +496,9 @@ def merge_and_save(
             for s in m.get("sector", ["Other"]):
                 sector_counts[s] = sector_counts.get(s, 0) + 1
 
-    print(f"\nTotal: {len(deduped)} legislators ({federal_count} federal, {state_count} state)")
+    print(
+        f"\nTotal: {len(deduped)} legislators ({federal_count} federal, {state_count} state)"
+    )
     if sector_counts:
         print("Sector distribution (federal):")
         for sector, count in sorted(sector_counts.items(), key=lambda x: -x[1]):
@@ -506,6 +530,7 @@ def merge_and_save(
 # CLI
 # -----------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Update congress_members.json with current legislators.",
@@ -520,7 +545,8 @@ Examples:
         """,
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=Path,
         default=DEFAULT_OUTPUT,
         help="Output JSON file path (default: data/congress_members.json)",
@@ -551,7 +577,9 @@ Examples:
     # Fetch federal
     federal = fetch_federal_legislators()
     if not federal:
-        print("WARNING: Could not fetch federal legislators. Check internet connection.")
+        print(
+            "WARNING: Could not fetch federal legislators. Check internet connection."
+        )
 
     # Enrich with committee data (unless skipped)
     if not args.no_committees and federal:

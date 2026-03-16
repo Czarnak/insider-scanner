@@ -22,33 +22,13 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self._init_dashboard_tab()
         self._init_scan_tab()
         self._init_congress_tab()
+        self._init_european_tab()
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
-
-    def _init_dashboard_tab(self):
-        try:
-            from insider_scanner.core.dashboard import (
-                DEFAULT_INDICATOR_SPECS,
-                MarketProvider,
-            )
-            from insider_scanner.gui.dashboard_tab import DashboardTab
-
-            self.dashboard_tab = DashboardTab(
-                MarketProvider(),
-                DEFAULT_INDICATOR_SPECS,
-            )
-            self.tabs.addTab(self.dashboard_tab, "Dashboard")
-            self.dashboard_tab.refresh_async()
-        except Exception as exc:
-            self.tabs.addTab(
-                QLabel(f"Dashboard failed to load: {exc}"),
-                "Dashboard",
-            )
 
     def _init_scan_tab(self):
         try:
@@ -59,7 +39,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.tabs.addTab(
                 QLabel(f"Scan tab failed to load: {exc}"),
-                "Scan",
+                "Insider Scan",
             )
 
     def _init_congress_tab(self):
@@ -71,7 +51,19 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.tabs.addTab(
                 QLabel(f"Congress tab failed to load: {exc}"),
-                "Congress",
+                "Congress Scan",
+            )
+
+    def _init_european_tab(self):
+        try:
+            from insider_scanner.gui.european_tab import EuropeanTab
+
+            self.european_tab = EuropeanTab()
+            self.tabs.addTab(self.european_tab, "European Insiders")
+        except Exception as exc:
+            self.tabs.addTab(
+                QLabel(f"European tab failed to load: {exc}"),
+                "European Insiders",
             )
 
     def log_status(self, message: str):

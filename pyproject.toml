@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "insider-scanner"
-version = "0.1.0"
-description = "Scan insider trades from secform4.com, openinsider.com, and SEC EDGAR."
+version = "0.4.0"
+description = "Scan insider trades from secform4.com, openinsider.com, SEC EDGAR, and European regulators (UK/DE/FR/NL)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -19,10 +19,7 @@ dependencies = [
     "PySide6>=6.6",
     "pyyaml>=6.0",
     "pdfplumber>=0.11",
-    "pyqtgraph>=0.13",
-    "numpy >= 2.4.1",
-    "yfinance >= 1.2",
-    "fear_and_greed >= 0.4"
+    "numpy>=2.4.1",
 ]
 
 [project.optional-dependencies]
@@ -31,9 +28,7 @@ dev = [
     "pytest-cov>=4.1",
     "pytest-qt>=4.2",
     "responses>=0.24",
-    "nox>=2026.2.9",
     "ruff>=0.15.0",
-    "mypy>=1.15.0",
 ]
 
 [project.scripts]

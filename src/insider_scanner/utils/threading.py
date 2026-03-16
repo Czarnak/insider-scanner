@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 class WorkerSignals(QObject):
     result = Signal(object)
     error = Signal(tuple)
+    progress = Signal(object)
     finished = Signal()
 
 
