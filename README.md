@@ -255,23 +255,26 @@ Tests are split into two categories:
 | Module | Tests | Description |
 |--------|------:|-------------|
 | `test_models.py` | 16 | InsiderTrade + CongressTrade dataclasses, amount range parsing |
-| `test_dashboard.py` | 54 | TTLCache, classify_fng, _extract_close, FNG clients, RSI, CBBI, MarketProvider, fetch_all |
-| `test_dashboard_widgets.py` | 19 | fg_color, indicator_color band mapping |
-| `test_bgeometrics.py` | 21 | BGeometrics text parser, client caching, error handling, endpoint config |
-| `test_coinmetrics.py` | 16 | NUPL/MVRV math, indicators service, cached client, 403 fail-fast |
 | `test_secform4.py` | 19 | secform4.com compound-column HTML parser |
 | `test_openinsider.py` | 13 | openinsider.com scraper |
 | `test_edgar.py` | 14 | CIK resolution (JSON + HTML fallback), EDGAR URL builder |
 | `test_senate.py` | 14 | Congress member flagging |
 | `test_merger.py` | 19 | Deduplication, filtering, export |
 | `test_caching.py` | 10 | File cache with TTL |
-| `test_config.py` | 7 | Config paths, watchlist loading |
+| `test_config.py` | 9 | Config paths, watchlist loading |
 | `test_update_congress.py` | 34 | Committee enrichment, sector mapping |
 | `test_congress_house.py` | 52 | House ZIP index, XML parsing, PDF extraction pipeline |
 | `test_congress_senate.py` | 36 | Senate EFD session, search, PTR page parsing |
 | `test_congress_tab.py` | 23 | Congress tab functions: filter, sector, save, dataframe |
 | `test_integration.py` | 22 | End-to-end pipeline: scrapers → filter → save → reload |
-| `test_gui.py` | 28+ | Widget creation, controls, interactions (requires display) |
+| `test_eu_models.py` | 5 | EuropeanInsiderTrade dataclass, normalize_position |
+| `test_eu_merger.py` | 4 | EU deduplication, filtering, dataframe export |
+| `test_eu_sources.py` | 24 | AFM/AMF/BaFin/RNS parsing helpers and dispatcher |
+| `test_european.py` | 8 | European tab GUI, scan dispatch, filter/save workflow |
+| `test_gui.py` | 30 | Widget creation, controls, interactions (requires display) |
+| `test_cli.py` | 6 | CLI entry point commands |
+| `test_threading.py` | 2 | Worker/Signal threading helpers |
+| `test_main_entrypoint.py` | 1 | GUI entry point smoke test |
 | `test_live.py` | 6 | Live website tests (deselected in CI) |
 
 ---
@@ -280,7 +283,7 @@ Tests are split into two categories:
 
 GitHub Actions runs on push/PR:
 
-- **Test matrix**: Python 3.11 + 3.12 + 3.13 on Ubuntu + Windows
+- **Test matrix**: Python 3.11 + 3.12 + 3.13 + 3.14 on Ubuntu + Windows
 - **Offline tests only**: Live tests excluded via `-m "not live"`
 - **GUI tests**: Run under `xvfb-run` on Linux for headless display; skipped on Windows
 - **Lint**: `ruff check .`

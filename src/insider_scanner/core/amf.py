@@ -77,6 +77,7 @@ _HEADERS = {
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+
 def _search_dd_documents(
     isin: str,
     since: Optional[date],
@@ -106,7 +107,9 @@ def _search_dd_documents(
             r = session.get(_SEARCH_URL, params=params, timeout=15)
             r.raise_for_status()
         except requests.RequestException as exc:
-            logger.error("BDIF search failed for ISIN %s (offset %d): %s", isin, from_offset, exc)
+            logger.error(
+                "BDIF search failed for ISIN %s (offset %d): %s", isin, from_offset, exc
+            )
             break
 
         data = r.json()
@@ -149,6 +152,7 @@ def _parse_iso_date(raw: str) -> Optional[date]:
 
 # ── PDF download ──────────────────────────────────────────────────────────────
 
+
 def _download_pdf(path: str, session: requests.Session) -> Optional[bytes]:
     """
     Download a PDF given its path from the API (e.g. "2026/2026DD1099088/{hash}.pdf").
@@ -169,30 +173,45 @@ def _download_pdf(path: str, session: requests.Session) -> Optional[bytes]:
 # ── PDF parsing ───────────────────────────────────────────────────────────────
 
 _FIELD_PATTERNS: list[tuple[str, str]] = [
-    (r"NOM\s*/\s*FONCTION[^:]*:\s*(.+)",                        "insider_and_position"),
-    (r"NOTIFICATION INITIALE\s*/\s*MODIFICATION\s*:\s*(.+)",    "notification_type"),
-    (r"NOM\s*:\s*(.+)",                                          "issuer_name"),
-    (r"LEI\s*:\s*([A-Z0-9]{18,20})",                            "lei"),
-    (r"DATE DE LA TRANSACTION\s*:\s*(.+)",                       "trade_date_raw"),
-    (r"LIEU DE LA TRANSACTION\s*:\s*(.+)",                       "place"),
-    (r"NATURE DE LA TRANSACTION\s*:\s*(.+)",                     "trade_type_raw"),
-    (r"DESCRIPTION DE L.INSTRUMENT[^:]*:\s*(.+)",                "instrument_type"),
-    (r"CODE D.IDENTIFICATION[^:]*:\s*([A-Z]{2}[A-Z0-9]{10})",   "isin_in_doc"),
+    (r"NOM\s*/\s*FONCTION[^:]*:\s*(.+)", "insider_and_position"),
+    (r"NOTIFICATION INITIALE\s*/\s*MODIFICATION\s*:\s*(.+)", "notification_type"),
+    (r"NOM\s*:\s*(.+)", "issuer_name"),
+    (r"LEI\s*:\s*([A-Z0-9]{18,20})", "lei"),
+    (r"DATE DE LA TRANSACTION\s*:\s*(.+)", "trade_date_raw"),
+    (r"LIEU DE LA TRANSACTION\s*:\s*(.+)", "place"),
+    (r"NATURE DE LA TRANSACTION\s*:\s*(.+)", "trade_type_raw"),
+    (r"DESCRIPTION DE L.INSTRUMENT[^:]*:\s*(.+)", "instrument_type"),
+    (r"CODE D.IDENTIFICATION[^:]*:\s*([A-Z]{2}[A-Z0-9]{10})", "isin_in_doc"),
     (r"PRIX UNITAIRE\s*:\s*([0-9\s.,]+(?:Euro|EUR|€|GBP|USD)?)", "price_raw"),
-    (r"VOLUME\s*:\s*([0-9\s.,]+)",                               "volume_raw"),
-    (r"DATE DE RECEPTION[^:]*:\s*(.+)",                          "filing_date_raw"),
+    (r"VOLUME\s*:\s*([0-9\s.,]+)", "volume_raw"),
+    (r"DATE DE RECEPTION[^:]*:\s*(.+)", "filing_date_raw"),
 ]
 
 _FR_MONTHS = {
-    "janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
-    "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
-    "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12,
+    "janvier": 1,
+    "février": 2,
+    "fevrier": 2,
+    "mars": 3,
+    "avril": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7,
+    "août": 8,
+    "aout": 8,
+    "septembre": 9,
+    "octobre": 10,
+    "novembre": 11,
+    "décembre": 12,
+    "decembre": 12,
 }
 
 _TRADE_TYPE_MAP = {
-    "acquisition": "Buy", "achat": "Buy",
-    "cession": "Sell", "vente": "Sell",
-    "exercice": "Buy", "attribution": "Buy",
+    "acquisition": "Buy",
+    "achat": "Buy",
+    "cession": "Sell",
+    "vente": "Sell",
+    "exercice": "Buy",
+    "attribution": "Buy",
 }
 
 
@@ -218,7 +237,9 @@ def _parse_pdf_text(text: str) -> dict:
 
     # Aggregated section fallback for price/volume
     if "price_raw" not in fields:
-        m = re.search(r"PRIX\s*:\s*([0-9\s.,]+(?:Euro|EUR|€|GBP|USD)?)", full_text, re.I)
+        m = re.search(
+            r"PRIX\s*:\s*([0-9\s.,]+(?:Euro|EUR|€|GBP|USD)?)", full_text, re.I
+        )
         if m:
             fields["price_raw"] = m.group(1).strip()
     if "volume_raw" not in fields:
@@ -249,8 +270,15 @@ def _parse_french_date(raw: str) -> Optional[date]:
 
 def _parse_price(raw: str) -> tuple[Optional[float], str]:
     currency = "EUR"
-    for sym, code in [("euro", "EUR"), ("eur", "EUR"), ("€", "EUR"),
-                      ("gbp", "GBP"), ("£", "GBP"), ("usd", "USD"), ("$", "USD")]:
+    for sym, code in [
+        ("euro", "EUR"),
+        ("eur", "EUR"),
+        ("€", "EUR"),
+        ("gbp", "GBP"),
+        ("£", "GBP"),
+        ("usd", "USD"),
+        ("$", "USD"),
+    ]:
         if sym in raw.lower():
             currency = code
             break
@@ -306,10 +334,9 @@ def _item_to_trade(
     trade_date = _parse_french_date(fields.get("trade_date_raw", ""))
 
     # datePublication = filing date per AMF schema
-    filing_date = (
-        _parse_iso_date(item.get("datePublication", ""))
-        or _parse_french_date(fields.get("filing_date_raw", ""))
-    )
+    filing_date = _parse_iso_date(
+        item.get("datePublication", "")
+    ) or _parse_french_date(fields.get("filing_date_raw", ""))
 
     total_value: Optional[float] = None
     if price is not None and volume is not None:
@@ -340,6 +367,7 @@ def _item_to_trade(
 
 
 # ── Public interface ──────────────────────────────────────────────────────────
+
 
 def fetch_fr_trades(
     isin: str,
@@ -406,8 +434,89 @@ def fetch_fr_trades(
         trades.append(trade)
         logger.debug(
             "Parsed: %s | %s | %s @ %s",
-            trade.insider_name, trade.trade_type, trade.volume, trade.trade_date,
+            trade.insider_name,
+            trade.trade_type,
+            trade.volume,
+            trade.trade_date,
         )
 
     logger.info("Returning %d AMF trades for ISIN %s", len(trades), isin)
+    return trades
+
+
+# ── Latest (global, no ISIN filter) ─────────────────────────────────────────
+
+
+def fetch_fr_latest(
+    n: int = 50,
+    since: Optional[date] = None,
+    until: Optional[date] = None,
+    session: Optional[requests.Session] = None,
+) -> list[EuropeanInsiderTrade]:
+    """Fetch the N most recent AMF Director Disclosure filings without ISIN filter.
+
+    Uses GET /back/api/v1/informations?typesInformation=DD&From=0&Size=N.
+    Confirmed from HAR analysis: the unfiltered call returns results ordered
+    newest-first (most recently published first).
+
+    Args:
+        n:       Maximum number of trades to return.
+        since:   Drop trades whose filing/publication date is before this date.
+        until:   Drop trades whose filing/publication date is after this date.
+        session: Optional requests.Session.
+    """
+    sess = session or requests.Session()
+    sess.headers.update(_HEADERS)
+
+    logger.info("Fetching %d latest AMF DD filings", n)
+
+    params = {
+        "typesInformation": "DD",
+        "From": 0,
+        "Size": n,
+    }
+
+    try:
+        r = sess.get(_SEARCH_URL, params=params, timeout=15)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        logger.error("AMF latest search failed: %s", exc)
+        return []
+
+    items = r.json().get("result", [])
+    logger.info("AMF latest: %d items returned", len(items))
+
+    trades: list[EuropeanInsiderTrade] = []
+    for item in items:
+        if not item.get("documents"):
+            continue
+
+        path = item["documents"][0]["path"]
+        # ISIN is not in the API item metadata — it's extracted from the PDF
+        # by _item_to_trade via the "CODE D'IDENTIFICATION" field.
+        # Passing "" here is correct: _item_to_trade falls back to it only
+        # if the PDF parser finds no ISIN, in which case "" is the honest value.
+        isin = ""
+
+        time.sleep(_REQUEST_DELAY)
+        pdf_bytes = _download_pdf(path, sess)
+        if pdf_bytes is None:
+            logger.warning("Skipping %s — PDF download failed", item.get("numero"))
+            continue
+
+        trade = _item_to_trade(item, pdf_bytes, isin)
+        if trade is None:
+            continue
+
+        if trade.filing_date:
+            if since and trade.filing_date < since:
+                continue
+            if until and trade.filing_date > until:
+                continue
+
+        trades.append(trade)
+        if len(trades) >= n:
+            break
+
+    logger.info("Returning %d latest FR trades", len(trades))
     return trades

@@ -6,7 +6,6 @@ from datetime import date
 from pathlib import Path
 import shutil
 
-from PySide6.QtCore import Qt
 
 from insider_scanner.core.eu_merger import (
     DISPLAY_COLUMNS,
@@ -123,11 +122,12 @@ class TestEuropeanScan:
     def test_country_selection_calls_only_requested_scrapers(self, monkeypatch):
         calls = []
 
-        def fake_amf(isin, date_from=None, date_to=None):
-            calls.append((isin, date_from, date_to))
+        # eu_scan.py calls fetch_fr_trades(isin, since=date_from, until=date_to)
+        def fake_amf(isin, since=None, until=None):
+            calls.append((isin, since, until))
             return [_trade(country="FR", body="AMF", isin=isin)]
 
-        monkeypatch.setattr("insider_scanner.core.amf.scrape_amf_trades", fake_amf)
+        monkeypatch.setattr("insider_scanner.core.amf.fetch_fr_trades", fake_amf)
 
         trades = scrape_eu_trades_for_isin(
             "FR0000131104",
@@ -152,7 +152,8 @@ class TestEuropeanTab:
         assert not tab.start_date.isEnabled()
         assert not tab.end_date.isEnabled()
 
-        tab._toggle_dates(Qt.Checked)
+        # _toggle_dates reads isChecked(), so the checkbox must be set first
+        tab.chk_use_dates.setChecked(True)
 
         assert tab.start_date.isEnabled()
         assert tab.end_date.isEnabled()

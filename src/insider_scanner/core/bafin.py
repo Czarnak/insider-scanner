@@ -45,8 +45,8 @@ from insider_scanner.core.eu_models import EuropeanInsiderTrade, normalize_posit
 logger = logging.getLogger(__name__)
 
 _PORTAL_BASE = "https://portal.mvp.bafin.de"
-_START_URL   = f"{_PORTAL_BASE}/database/DealingsInfo/start.do"
-_SEARCH_URL  = f"{_PORTAL_BASE}/database/DealingsInfo/sucheForm.do"
+_START_URL = f"{_PORTAL_BASE}/database/DealingsInfo/start.do"
+_SEARCH_URL = f"{_PORTAL_BASE}/database/DealingsInfo/sucheForm.do"
 _DETAIL_BASE = f"{_PORTAL_BASE}/database/DealingsInfo/"
 _REQUEST_DELAY = 2.0  # seconds between requests
 
@@ -106,6 +106,7 @@ def _map_instrument(raw_de: str) -> str:
 
 # ── List page parser ─────────────────────────────────────────────────────────
 
+
 def _parse_result_table(html: str) -> list[dict]:
     """
     Parse the BaFin result HTML table into a list of raw row dicts.
@@ -117,46 +118,55 @@ def _parse_result_table(html: str) -> list[dict]:
     if not tables:
         return []
 
-    # The result table is the first <table> with tbody data rows
+    # The result table has 9-10 columns per data row.
+    # We scan ALL tables and stop only after actually collecting result rows.
+    # This avoids breaking early on navigation/header tables that appear first.
     rows = []
+    import re as _re
+
     for table in tables:
         tbody = table.find("tbody")
-        if tbody:
-            trs = tbody.find_all("tr")
-            if trs:
-                for tr in trs:
-                    cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-                    # Extract the meldungId from the link in col 0
-                    link = tr.find("a", href=True)
-                    meldung_id = ""
-                    bafin_id = ""
-                    detail_url = ""
-                    if link:
-                        href = link.get("href", "")
-                        import re
-                        m_id = re.search(r"meldungId=(\d+)", href)
-                        b_id = re.search(r"emittentBafinId=(\d+)", href)
-                        meldung_id = m_id.group(1) if m_id else ""
-                        bafin_id = b_id.group(1) if b_id else ""
-                        detail_url = _DETAIL_BASE + href.lstrip("/database/DealingsInfo/")
+        if not tbody:
+            continue
+        for tr in tbody.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if len(cells) < 9:
+                continue  # skip header rows and short rows
 
-                    if len(cells) >= 9:
-                        rows.append({
-                            "issuer_name":    cells[0],
-                            "bafin_id":       cells[1] if len(cells) > 1 else bafin_id,
-                            "isin":           cells[2] if len(cells) > 2 else "",
-                            "insider_name":   cells[3] if len(cells) > 3 else "",
-                            "position_de":    cells[4] if len(cells) > 4 else "",
-                            "instrument_de":  cells[5] if len(cells) > 5 else "",
-                            "trade_type_de":  cells[6] if len(cells) > 6 else "",
-                            "trade_date_raw": cells[7] if len(cells) > 7 else "",
-                            "place":          cells[8] if len(cells) > 8 else "",
-                            "filing_raw":     cells[9] if len(cells) > 9 else "",
-                            "meldung_id":     meldung_id,
-                            "bafin_id":       bafin_id,
-                            "detail_url":     detail_url,
-                        })
-                break  # found the result table
+            # Extract detail URL from the link in col 0
+            link = tr.find("a", href=True)
+            meldung_id = ""
+            bafin_id = ""
+            detail_url = ""
+            if link:
+                href = link.get("href", "")
+                m_id = _re.search(r"meldungId=(\d+)", href)
+                b_id = _re.search(r"emittentBafinId=(\d+)", href)
+                meldung_id = m_id.group(1) if m_id else ""
+                bafin_id = b_id.group(1) if b_id else ""
+                # Build absolute URL — use str.replace to avoid lstrip char-set bug
+                detail_url = href.replace("/database/DealingsInfo/", "", 1)
+                if not detail_url.startswith("http"):
+                    detail_url = _DETAIL_BASE + detail_url.lstrip("/")
+
+            rows.append(
+                {
+                    "issuer_name": cells[0],
+                    "bafin_id": cells[1] if len(cells) > 1 else bafin_id,
+                    "isin": cells[2] if len(cells) > 2 else "",
+                    "insider_name": cells[3] if len(cells) > 3 else "",
+                    "position_de": cells[4] if len(cells) > 4 else "",
+                    "instrument_de": cells[5] if len(cells) > 5 else "",
+                    "trade_type_de": cells[6] if len(cells) > 6 else "",
+                    "trade_date_raw": cells[7] if len(cells) > 7 else "",
+                    "place": cells[8] if len(cells) > 8 else "",
+                    "filing_raw": cells[9] if len(cells) > 9 else "",
+                    "meldung_id": meldung_id,
+                    "detail_url": detail_url,
+                }
+            )
+        if rows:
+            break  # found the results table; no need to scan further
 
     return rows
 
@@ -177,8 +187,8 @@ def _row_to_trade(row: dict) -> Optional[EuropeanInsiderTrade]:
         filing_date=filing_date,
         trade_type=_map_trade_type(row["trade_type_de"]),
         instrument_type=_map_instrument(row["instrument_de"]),
-        volume=None,    # not in list view; fetch detail page if needed
-        price=None,     # not in list view; fetch detail page if needed
+        volume=None,  # not in list view; fetch detail page if needed
+        price=None,  # not in list view; fetch detail page if needed
         currency="EUR",
         total_value=None,
         source="bafin",
@@ -187,6 +197,7 @@ def _row_to_trade(row: dict) -> Optional[EuropeanInsiderTrade]:
 
 
 # ── CSV export parser (richer data if available) ─────────────────────────────
+
 
 def _fetch_csv_export(
     isin: str,
@@ -228,7 +239,9 @@ def _fetch_csv_export(
 
     content_type = resp.headers.get("Content-Type", "")
     if "csv" not in content_type.lower() and "text/plain" not in content_type.lower():
-        logger.debug("BaFin CSV export returned non-CSV content (%s), falling back", content_type)
+        logger.debug(
+            "BaFin CSV export returned non-CSV content (%s), falling back", content_type
+        )
         return []
 
     # Parse CSV — BaFin CSVs use semicolons and latin-1 or utf-8-sig
@@ -242,6 +255,7 @@ def _fetch_csv_export(
 
 
 # ── Public interface ─────────────────────────────────────────────────────────
+
 
 def fetch_de_trades(
     isin: str,
@@ -284,14 +298,14 @@ def fetch_de_trades(
     # because the date range fields (zeitraumVon/zeitraumBis) need DD.MM.YYYY format
     # and validation errors occur easily with wrong values.
     form_data = {
-        "emittentIsin":       isin,
-        "emittentName":       "",
-        "emittentButton":     "Suche Emittent",
+        "emittentIsin": isin,
+        "emittentName": "",
+        "emittentButton": "Suche Emittent",
         "meldepflichtigerName": "",
-        "zeitraum":           "0",   # 0 = total period
-        "zeitraumVon":        "",
-        "zeitraumBis":        "",
-        "locale":             "en_GB",
+        "zeitraum": "0",  # 0 = total period
+        "zeitraumVon": "",
+        "zeitraumBis": "",
+        "locale": "en_GB",
     }
 
     logger.info("Fetching BaFin data for ISIN %s", isin)
@@ -337,6 +351,7 @@ def _map_csv_rows(csv_rows: list[dict], isin: str) -> list[dict]:
     BaFin CSV columns (English locale) vary slightly between exports,
     so we try multiple name variants.
     """
+
     def get(row: dict, *keys: str, default: str = "") -> str:
         for k in keys:
             if k in row:
@@ -349,19 +364,99 @@ def _map_csv_rows(csv_rows: list[dict], isin: str) -> list[dict]:
 
     mapped = []
     for row in csv_rows:
-        mapped.append({
-            "issuer_name":    get(row, "Issuer", "Emittent", "issuer"),
-            "bafin_id":       get(row, "BaFin-ID", "ID"),
-            "isin":           get(row, "ISIN", "isin") or isin,
-            "insider_name":   get(row, "Person subject to notification", "Meldepflichtiger", "name"),
-            "position_de":    get(row, "Position/function", "Funktion", "position"),
-            "instrument_de":  get(row, "Instrument", "Art des Instruments"),
-            "trade_type_de":  get(row, "Nature of transaction", "Art des Geschäfts", "type"),
-            "trade_date_raw": get(row, "Date of transaction", "Transaktionsdatum", "date"),
-            "place":          get(row, "Trading venue", "Handelsplatz", "venue"),
-            "filing_raw":     get(row, "Publication date", "Meldedatum"),
-            "meldung_id":     get(row, "Notification ID", "Meldungs-ID"),
-            "bafin_id":       get(row, "BaFin-ID"),
-            "detail_url":     "",
-        })
+        mapped.append(
+            {
+                "issuer_name": get(row, "Issuer", "Emittent", "issuer"),
+                "bafin_id": get(row, "BaFin-ID", "ID"),
+                "isin": get(row, "ISIN", "isin") or isin,
+                "insider_name": get(
+                    row, "Person subject to notification", "Meldepflichtiger", "name"
+                ),
+                "position_de": get(row, "Position/function", "Funktion", "position"),
+                "instrument_de": get(row, "Instrument", "Art des Instruments"),
+                "trade_type_de": get(
+                    row, "Nature of transaction", "Art des Geschäfts", "type"
+                ),
+                "trade_date_raw": get(
+                    row, "Date of transaction", "Transaktionsdatum", "date"
+                ),
+                "place": get(row, "Trading venue", "Handelsplatz", "venue"),
+                "filing_raw": get(row, "Publication date", "Meldedatum"),
+                "meldung_id": get(row, "Notification ID", "Meldungs-ID"),
+                "detail_url": "",
+            }
+        )
     return mapped
+
+
+# ── Latest (global, no ISIN filter) ─────────────────────────────────────────
+
+
+def fetch_de_latest(
+    n: int = 50,
+    since: Optional[date] = None,
+    until: Optional[date] = None,
+    session: Optional[requests.Session] = None,
+) -> list[EuropeanInsiderTrade]:
+    """Fetch the N most recent BaFin Directors' Dealings without ISIN filter.
+
+    Uses the same POST endpoint with an empty emittentIsin field.
+    BaFin returns results sorted by filing date descending.
+
+    Args:
+        n:       Maximum number of trades to return.
+        since:   Drop trades whose trade_date is before this date.
+        until:   Drop trades whose trade_date is after this date.
+        session: Optional requests.Session.
+    """
+    sess = session or requests.Session()
+    sess.headers.update(_HEADERS)
+
+    # Initialise session cookie
+    try:
+        sess.get(_START_URL, timeout=15)
+    except requests.RequestException as exc:
+        logger.warning("BaFin session init failed: %s", exc)
+
+    time.sleep(_REQUEST_DELAY)
+
+    # Empty emittentIsin → all issuers; zeitraum=0 → total period
+    form_data = {
+        "emittentIsin": "",
+        "emittentName": "",
+        "emittentButton": "Suche Emittent",
+        "meldepflichtigerName": "",
+        "zeitraum": "0",
+        "zeitraumVon": "",
+        "zeitraumBis": "",
+        "locale": "en_GB",
+    }
+
+    logger.info("Fetching %d latest BaFin Directors' Dealings", n)
+
+    try:
+        resp = sess.post(_SEARCH_URL, data=form_data, timeout=20)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.error("BaFin latest POST failed: %s", exc)
+        return []
+
+    rows = _parse_result_table(resp.text)
+    logger.info("BaFin latest: %d rows in HTML table", len(rows))
+
+    trades: list[EuropeanInsiderTrade] = []
+    for row in rows:
+        trade = _row_to_trade(row)
+        if trade is None:
+            continue
+        if trade.trade_date:
+            if since and trade.trade_date < since:
+                continue
+            if until and trade.trade_date > until:
+                continue
+        trades.append(trade)
+        if len(trades) >= n:
+            break
+
+    logger.info("Returning %d latest DE trades", len(trades))
+    return trades

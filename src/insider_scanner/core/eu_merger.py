@@ -8,6 +8,7 @@ applies filters, and persists results.
 from __future__ import annotations
 
 import json
+from dataclasses import replace as _dc_replace
 from datetime import date
 from pathlib import Path
 
@@ -39,21 +40,70 @@ DISPLAY_COLUMNS = [
     "source_url",
 ]
 
+# String fields where empty string means "missing" — filled from secondary source
+_STR_FILL_FIELDS = (
+    "issuer_name",
+    "position",
+    "instrument_type",
+    "currency",
+    "source_url",
+)
+
+# Optional fields where None means "missing" — filled from secondary source
+_OPT_FILL_FIELDS = ("trade_date", "filing_date", "volume", "price", "total_value")
+
 
 def _dedup_key(t: EuropeanInsiderTrade) -> tuple:
     """Composite key used to detect duplicate records across sources.
 
     Two records are considered duplicates when they refer to the same
-    insider, security, trade date, direction, and quantity regardless
-    of which national regulator reported them.
+    insider, security, trade date, and direction — regardless of which
+    national regulator reported them.
+
+    Note: ``volume`` is intentionally excluded from the key. Some sources
+    (e.g. RNS HTML scraper) cannot always extract a volume figure for the
+    same trade that BaFin or AMF report completely. Including volume would
+    prevent deduplication whenever one source omits it.
     """
     return (
         (t.isin or "").upper(),
         (t.insider_name or "").lower().strip(),
         t.trade_date,
         t.trade_type,
-        t.volume,
     )
+
+
+def _coalesce(
+    primary: EuropeanInsiderTrade,
+    secondary: EuropeanInsiderTrade,
+) -> EuropeanInsiderTrade:
+    """Return *primary* with any blank/None fields filled from *secondary*.
+
+    This is the core of the coalescing merge strategy: rather than simply
+    discarding a duplicate, we use it to fill in fields the primary record
+    is missing.  The primary's non-empty fields are always kept as-is so
+    that the highest-priority source always wins for fields it has data on.
+
+    Example: RNS returns a trade with no ``filing_date`` or ``volume``.
+    AMF returns the same trade (same ISIN / insider / date / direction)
+    with both populated.  After coalescing, the merged record has the
+    RNS data for its own fields plus AMF's ``filing_date`` and ``volume``.
+    """
+    updates = {}
+
+    for f in _STR_FILL_FIELDS:
+        primary_val = getattr(primary, f)
+        secondary_val = getattr(secondary, f)
+        if not primary_val and secondary_val:
+            updates[f] = secondary_val
+
+    for f in _OPT_FILL_FIELDS:
+        primary_val = getattr(primary, f)
+        secondary_val = getattr(secondary, f)
+        if primary_val is None and secondary_val is not None:
+            updates[f] = secondary_val
+
+    return _dc_replace(primary, **updates) if updates else primary
 
 
 def merge_eu_trades(
@@ -61,20 +111,26 @@ def merge_eu_trades(
 ) -> list[EuropeanInsiderTrade]:
     """Merge trades from multiple country scrapers, deduplicating by key.
 
-    The first occurrence of a duplicate is kept (earlier lists take
-    priority, so prefer higher-quality sources first).
-    Results are sorted by trade date descending.
+    Strategy: coalescing merge.
+    - The first occurrence of a key establishes the primary record.
+    - Subsequent duplicates are not discarded; instead their non-empty
+      fields are used to fill any gaps in the primary record.
+    - Pass higher-quality / more complete sources first so their data
+      takes precedence for fields that both sources provide.
+
+    Results are sorted by trade date descending (most recent first).
     """
-    seen: set[tuple] = set()
-    result: list[EuropeanInsiderTrade] = []
+    seen: dict[tuple, EuropeanInsiderTrade] = {}
 
     for trades in trade_lists:
         for t in trades:
             key = _dedup_key(t)
             if key not in seen:
-                seen.add(key)
-                result.append(t)
+                seen[key] = t
+            else:
+                seen[key] = _coalesce(seen[key], t)
 
+    result = list(seen.values())
     result.sort(
         key=lambda t: t.trade_date or date.min,
         reverse=True,

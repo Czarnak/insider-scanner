@@ -55,6 +55,7 @@ _HEADERS = {
 
 # ── Internal data container before mapping to EuropeanInsiderTrade ──────────
 
+
 @dataclass
 class _RawRns:
     insider_name: str = ""
@@ -80,7 +81,7 @@ class _RawRns:
 # section_id is the value in the first cell (e.g. '1', 'a)', '2', 'b)')
 # The table iterates top-to-bottom so we track the current section.
 _LABEL_MAP: dict[str, str] = {
-    "name": "_name_field",          # context-dependent: could be insider OR issuer
+    "name": "_name_field",  # context-dependent: could be insider OR issuer
     "position": "position_raw",
     "status": "position_raw",
     "initial notification": "notification_type",
@@ -90,7 +91,7 @@ _LABEL_MAP: dict[str, str] = {
     "identification code": "instrument_description",
     "nature of the transaction": "trade_type_raw",
     "price": "price_raw",
-    "volume": "price_raw",          # same cell as price
+    "volume": "price_raw",  # same cell as price
     "aggregated information": "aggregated_raw",
     "aggregated volume": "aggregated_raw",
     "date of the transaction": "trade_date_raw",
@@ -114,7 +115,7 @@ def _parse_announcement(html: str, url: str) -> Optional[_RawRns]:
         return None
 
     raw = _RawRns(source_url=url)
-    current_section = 0   # 1=person, 2=reason, 3=issuer, 4=transaction
+    current_section = 0  # 1=person, 2=reason, 3=issuer, 4=transaction
 
     # Use the first table (the MAR form)
     table = tables[0]
@@ -165,10 +166,17 @@ def _parse_announcement(html: str, url: str) -> Optional[_RawRns]:
                     raw.price_raw = value
                 elif field == "instrument_description":
                     raw.instrument_description = value
-                    # Try to extract ISIN from text like "ICG UnitISIN : IE00BLP58571"
+                    # Strategy 1: explicit "ISIN : GB00XXXXXXXX" label
                     m = re.search(r"ISIN\s*[:\s]+([A-Z]{2}[A-Z0-9]{10})", value)
                     if m:
                         raw.instrument_isin = m.group(1)
+                    else:
+                        # Strategy 2: bare ISIN anywhere in the field.
+                        # Handles "...voting rights attached GB0005603997" or
+                        # a field that IS just the ISIN code e.g. "IE00028FXN24".
+                        m2 = re.search(r"\b([A-Z]{2}[A-Z0-9]{10})\b", value)
+                        if m2:
+                            raw.instrument_isin = m2.group(1)
                 else:
                     setattr(raw, field, value)
                 break
@@ -228,7 +236,10 @@ def _parse_trade_date(date_raw: str) -> Optional[date]:
 def _determine_trade_type(nature_raw: str) -> str:
     """Map free-text nature of transaction to Buy/Sell/Other."""
     lower = nature_raw.lower()
-    if any(kw in lower for kw in ["acqui", "purchas", "buy", "bought", "award", "vest", "exercise"]):
+    if any(
+        kw in lower
+        for kw in ["acqui", "purchas", "buy", "bought", "award", "vest", "exercise"]
+    ):
         return "Buy"
     if any(kw in lower for kw in ["dispos", "sale", "sold", "sell"]):
         return "Sell"
@@ -254,8 +265,15 @@ def _to_eu_trade(raw: _RawRns, original_isin: str) -> Optional[EuropeanInsiderTr
     # We keep the body ISIN but fall back to the search ISIN.
     isin = raw.instrument_isin or original_isin
 
-    # Instrument type: extract from description before the ISIN
-    instr_type = re.sub(r"\s*ISIN\s*[:\s]+[A-Z]{2}[A-Z0-9]{10}.*", "", raw.instrument_description).strip()
+    # Instrument type: strip the ISIN code (and anything after it) from the
+    # description.  Handles both "ISIN : GB000..." and bare "...attached GB000..."
+    instr_type = raw.instrument_description
+    if raw.instrument_isin:
+        instr_type = instr_type.split(raw.instrument_isin)[0].strip().rstrip(",;:")
+    # Also strip any trailing filler words left by the split
+    instr_type = re.sub(
+        r"\s+(attached|isin|code)\s*$", "", instr_type, flags=re.I
+    ).strip()
     if not instr_type:
         instr_type = "Equity"
 
@@ -284,6 +302,7 @@ def _to_eu_trade(raw: _RawRns, original_isin: str) -> Optional[EuropeanInsiderTr
 
 
 # ── Public interface ─────────────────────────────────────────────────────────
+
 
 def fetch_uk_trades(
     isin: str,
@@ -329,10 +348,14 @@ def fetch_uk_trades(
     ]
 
     if not ann_links:
-        logger.info("No Director/PDMR Shareholding announcements found for ISIN %s", isin)
+        logger.info(
+            "No Director/PDMR Shareholding announcements found for ISIN %s", isin
+        )
         return []
 
-    logger.info("Found %d Director/PDMR Shareholding links for %s", len(ann_links), isin)
+    logger.info(
+        "Found %d Director/PDMR Shareholding links for %s", len(ann_links), isin
+    )
 
     # ── Step 2: fetch and parse each announcement detail page ──
     trades: list[EuropeanInsiderTrade] = []
@@ -367,4 +390,98 @@ def fetch_uk_trades(
         trades.append(trade)
 
     logger.info("Parsed %d trades for ISIN %s", len(trades), isin)
+    return trades
+
+
+# ── Latest (global, no ISIN filter) ─────────────────────────────────────────
+
+_LATEST_URL = (
+    "https://www.investegate.co.uk/Index.aspx?searchtype=announcements&category=POS"
+)
+
+
+def fetch_uk_latest(
+    n: int = 50,
+    since: Optional[date] = None,
+    until: Optional[date] = None,
+    session: Optional[requests.Session] = None,
+) -> list[EuropeanInsiderTrade]:
+    """Fetch the N most recent UK Director/PDMR Shareholding announcements
+    from Investegate without filtering by ISIN.
+
+    Each returned trade has its ISIN extracted from the announcement body —
+    any record where no ISIN can be found is discarded.
+
+    Args:
+        n:       Maximum number of trades to return.
+        since:   Drop trades whose trade_date is before this date.
+        until:   Drop trades whose trade_date is after this date.
+        session: Optional requests.Session.
+    """
+    sess = session or requests.Session()
+    sess.headers.update(_HEADERS)
+
+    logger.info("Fetching %d latest UK RNS Director/PDMR announcements", n)
+
+    try:
+        resp = sess.get(_LATEST_URL, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.error("Investegate latest search failed: %s", exc)
+        return []
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    ann_links = [
+        a.get("href", "")
+        for a in soup.select("a[href*='/announcement/']")
+        if "director-pdmr-shareholding" in a.get("href", "")
+    ]
+
+    if not ann_links:
+        logger.info(
+            "No Director/PDMR Shareholding announcements found on RNS latest page"
+        )
+        return []
+
+    logger.info("Found %d Director/PDMR links on RNS latest page", len(ann_links))
+
+    trades: list[EuropeanInsiderTrade] = []
+    for href in ann_links[:n]:
+        detail_url = href if href.startswith("http") else _BASE_URL + href
+        try:
+            time.sleep(_REQUEST_DELAY)
+            detail_resp = sess.get(detail_url, timeout=15)
+            detail_resp.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch %s: %s", detail_url, exc)
+            continue
+
+        raw = _parse_announcement(detail_resp.text, detail_url)
+        if raw is None:
+            continue
+
+        # For latest scan the document's own ISIN is authoritative;
+        # we have no query ISIN to fall back to so we must discard if missing.
+        if not raw.instrument_isin:
+            logger.debug(
+                "Dropping announcement with no extractable ISIN: %s", detail_url
+            )
+            continue
+
+        # _to_eu_trade uses raw.instrument_isin when available
+        trade = _to_eu_trade(raw, raw.instrument_isin)
+        if trade is None:
+            continue
+
+        if trade.trade_date:
+            if since and trade.trade_date < since:
+                continue
+            if until and trade.trade_date > until:
+                continue
+
+        trades.append(trade)
+        if len(trades) >= n:
+            break
+
+    logger.info("Returning %d latest UK trades", len(trades))
     return trades

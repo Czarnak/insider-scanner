@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QTableView,
     QTextEdit,
@@ -38,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin
+from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin, scrape_eu_latest
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.eu_merger import (
     DISPLAY_COLUMNS,
@@ -130,6 +131,24 @@ class EuropeanTab(QWidget):
         self.btn_watchlist.clicked.connect(self._run_watchlist)
         search_l.addWidget(self.btn_watchlist)
 
+        self.btn_latest = QPushButton("Latest Trades")
+        self.btn_latest.setToolTip(
+            "Fetch the N most recent trades from each EU source globally (no ISIN filter)"
+        )
+        self.btn_latest.clicked.connect(self._run_latest)
+        search_l.addWidget(self.btn_latest)
+
+        search_l.addWidget(QLabel("Count:"))
+        self.latest_count_spin = QSpinBox()
+        self.latest_count_spin.setRange(10, 500)
+        self.latest_count_spin.setValue(50)
+        self.latest_count_spin.setSingleStep(10)
+        self.latest_count_spin.setMaximumWidth(70)
+        self.latest_count_spin.setToolTip(
+            "Maximum number of most-recent trades to show"
+        )
+        search_l.addWidget(self.latest_count_spin)
+
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setToolTip("Cancel running scan")
         self.btn_stop.clicked.connect(self._stop_scan)
@@ -145,6 +164,9 @@ class EuropeanTab(QWidget):
         date_grp = QGroupBox("Date Range")
         date_l = QHBoxLayout(date_grp)
         self.chk_use_dates = QCheckBox("Enable")
+        # stateChanged passes Qt.CheckState (an enum) in PySide6 6.4+, not a
+        # plain int. Using isChecked() inside the slot is version-agnostic and
+        # always correct regardless of what the signal argument type happens to be.
         self.chk_use_dates.stateChanged.connect(self._toggle_dates)
         date_l.addWidget(self.chk_use_dates)
         date_l.addWidget(QLabel("From:"))
@@ -231,8 +253,12 @@ class EuropeanTab(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _toggle_dates(self, state: int):
-        enabled = state == Qt.Checked
+    def _toggle_dates(self, state) -> None:
+        # Use isChecked() rather than comparing against Qt.Checked.
+        # In PySide6 6.4+ the stateChanged signal emits Qt.CheckState (an
+        # enum), not a plain int. Direct int comparison is unreliable across
+        # PySide6 versions; isChecked() always returns the correct bool.
+        enabled = self.chk_use_dates.isChecked()
         self.start_date.setEnabled(enabled)
         self.end_date.setEnabled(enabled)
 
@@ -251,6 +277,7 @@ class EuropeanTab(QWidget):
     def _set_scan_buttons_enabled(self, enabled: bool):
         self.btn_scan.setEnabled(enabled)
         self.btn_watchlist.setEnabled(enabled)
+        self.btn_latest.setEnabled(enabled)
         if enabled:
             self.btn_stop.hide()
         else:
@@ -328,6 +355,33 @@ class EuropeanTab(QWidget):
         worker.signals.result.connect(self._on_scan_result)
         worker.signals.error.connect(self._on_scan_error)
         worker.signals.progress.connect(self._on_watchlist_progress)
+        worker.signals.finished.connect(self._on_scan_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def _run_latest(self):
+        """Fetch the N most recent trades from each EU source globally (no ISIN filter).
+
+        Each scraper fetches its own N most recent disclosures. Results are
+        merged and deduplicated. N per source is controlled by the Count spinbox.
+        """
+        count = self.latest_count_spin.value()
+        country = self.country_combo.currentText()
+        date_from = self._get_start_date()
+        date_to = self._get_end_date()
+
+        self._cancel_event.clear()
+        self._set_scan_buttons_enabled(False)
+        self.progress.setVisible(True)
+        self.progress.setRange(
+            0, 0
+        )  # indeterminate — scraper runs in one blocking call
+
+        def task():
+            return scrape_eu_latest(count, country, date_from, date_to)
+
+        worker = Worker(task)
+        worker.signals.result.connect(self._on_scan_result)
+        worker.signals.error.connect(self._on_scan_error)
         worker.signals.finished.connect(self._on_scan_finished)
         QThreadPool.globalInstance().start(worker)
 

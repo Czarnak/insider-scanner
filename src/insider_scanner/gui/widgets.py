@@ -47,6 +47,11 @@ class PandasTableModel(QAbstractTableModel):
             return None
         if role == Qt.ItemDataRole.DisplayRole:
             val = self._df.iloc[index.row(), index.column()]
+            # pandas stores None and np.nan as NaN in numeric columns.
+            # pd.isna() catches both; return empty string so cells appear
+            # blank rather than showing "nan" or "None".
+            if pd.isna(val):
+                return ""
             if isinstance(val, float):
                 return f"{val:,.2f}"
             return str(val)
