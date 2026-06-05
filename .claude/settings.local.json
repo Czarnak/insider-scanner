@@ -17,7 +17,14 @@
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "mcp__plugin_context-mode_context-mode__ctx_insight",
+      "PowerShell(netstat *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Get-NetTCPConnection *)",
+      "mcp__plugin_context-mode_context-mode__ctx_execute",
+      "PowerShell(Start-Process \"http://localhost:4747\")",
+      "mcp__plugin_context-mode_context-mode__ctx_stats"
     ]
   }
 }
