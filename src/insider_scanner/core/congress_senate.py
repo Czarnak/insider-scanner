@@ -20,6 +20,7 @@ from datetime import date, datetime
 
 import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as curl_requests
 
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.logging import get_logger
@@ -31,6 +32,14 @@ BASE_URL = "https://efdsearch.senate.gov"
 SEARCH_LANDING = BASE_URL + "/search/"
 SEARCH_HOME = BASE_URL + "/search/home/"
 REPORT_DATA = BASE_URL + "/search/report/data/"
+
+
+def _create_browser_session():
+    """Create an HTTP session with a browser-compatible transport fingerprint."""
+    return curl_requests.Session(
+        impersonate="chrome",
+        headers={"Origin": BASE_URL},
+    )
 
 # Report type codes for the EFD search API
 REPORT_TYPE_PTR = 11  # Periodic Transaction Report
@@ -111,6 +120,14 @@ class EFDSession:
         # Step 1: GET the search landing page
         log.info("Fetching EFD landing page for CSRF token...")
         resp = self.session.get(SEARCH_LANDING, timeout=15)
+        if resp.status_code == 403:
+            log.warning(
+                "EFD rejected the standard HTTP transport; retrying with "
+                "browser impersonation"
+            )
+            self.session.close()
+            self.session = _create_browser_session()
+            resp = self.session.get(SEARCH_LANDING, timeout=15)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")

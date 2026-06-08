@@ -12,6 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "Insider-Scanner Contributors"}]
 
 dependencies = [
+    "curl-cffi>=0.14",
     "requests>=2.31",
     "beautifulsoup4>=4.12",
     "lxml>=4.9",

@@ -355,6 +355,35 @@ class TestEFDSession:
         assert session.is_authenticated
 
     @responses.activate
+    @patch("insider_scanner.core.congress_senate._create_browser_session")
+    def test_authenticate_retries_403_with_browser_session(
+        self, create_browser_session
+    ):
+        responses.add(
+            responses.GET,
+            SEARCH_LANDING,
+            body="Access Denied",
+            status=403,
+        )
+
+        landing_response = MagicMock(status_code=200, text=LANDING_HTML)
+        agreement_response = MagicMock(status_code=200, text=SEARCH_FORM_HTML)
+        browser_session = MagicMock()
+        browser_session.get.return_value = landing_response
+        browser_session.post.return_value = agreement_response
+        browser_session.cookies.get_dict.return_value = {
+            "csrftoken": "browser-csrf-token"
+        }
+        create_browser_session.return_value = browser_session
+
+        session = EFDSession()
+        session.authenticate()
+
+        create_browser_session.assert_called_once()
+        browser_session.get.assert_called_once_with(SEARCH_LANDING, timeout=15)
+        assert session.is_authenticated
+
+    @responses.activate
     def test_authenticate_no_csrf(self):
         responses.add(
             responses.GET,
