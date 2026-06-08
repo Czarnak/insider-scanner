@@ -41,6 +41,7 @@ def _create_browser_session():
         headers={"Origin": BASE_URL},
     )
 
+
 # Report type codes for the EFD search API
 REPORT_TYPE_PTR = 11  # Periodic Transaction Report
 
