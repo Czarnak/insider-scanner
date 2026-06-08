@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import TICKERS_FILE
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import Worker, dispatch
 
 log = get_logger("scan_tab")
 
@@ -55,8 +55,12 @@ class ScanTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.addWidget(self._build_search_group())
+        root.addLayout(self._build_filter_row())
+        root.addLayout(self._build_progress_row())
+        root.addWidget(self._build_results_splitter(), stretch=1)
 
-        # --- Search controls ---
+    def _build_search_group(self) -> QGroupBox:
         search_grp = QGroupBox("Search")
         search_l = QHBoxLayout(search_grp)
 
@@ -90,12 +94,16 @@ class ScanTab(QWidget):
         search_l.addWidget(self.btn_watchlist)
 
         search_l.addStretch()
-        root.addWidget(search_grp)
+        return search_grp
 
-        # --- Source + date range + filter controls ---
+    def _build_filter_row(self) -> QHBoxLayout:
         filter_row = QHBoxLayout()
+        filter_row.addWidget(self._build_sources_group())
+        filter_row.addWidget(self._build_date_range_group())
+        filter_row.addWidget(self._build_filters_group())
+        return filter_row
 
-        # Sources
+    def _build_sources_group(self) -> QGroupBox:
         src_grp = QGroupBox("Sources")
         src_l = QHBoxLayout(src_grp)
         self.chk_secform4 = QCheckBox("secform4.com")
@@ -104,9 +112,9 @@ class ScanTab(QWidget):
         self.chk_openinsider.setChecked(True)
         src_l.addWidget(self.chk_secform4)
         src_l.addWidget(self.chk_openinsider)
-        filter_row.addWidget(src_grp)
+        return src_grp
 
-        # Date range
+    def _build_date_range_group(self) -> QGroupBox:
         date_grp = QGroupBox("Filing Date Range")
         date_l = QHBoxLayout(date_grp)
 
@@ -131,9 +139,9 @@ class ScanTab(QWidget):
         self.end_date.setEnabled(False)
         date_l.addWidget(self.end_date)
 
-        filter_row.addWidget(date_grp)
+        return date_grp
 
-        # Filters
+    def _build_filters_group(self) -> QGroupBox:
         filt_grp = QGroupBox("Filters")
         filt_l = QHBoxLayout(filt_grp)
 
@@ -157,10 +165,9 @@ class ScanTab(QWidget):
         self.btn_filter.clicked.connect(self._apply_filters)
         filt_l.addWidget(self.btn_filter)
 
-        filter_row.addWidget(filt_grp)
-        root.addLayout(filter_row)
+        return filt_grp
 
-        # Progress + Stop
+    def _build_progress_row(self) -> QHBoxLayout:
         progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -173,9 +180,9 @@ class ScanTab(QWidget):
         self.btn_stop.setMaximumWidth(100)
         progress_row.addWidget(self.btn_stop)
 
-        root.addLayout(progress_row)
+        return progress_row
 
-        # --- Results ---
+    def _build_results_splitter(self) -> QSplitter:
         splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Table
@@ -227,7 +234,7 @@ class ScanTab(QWidget):
         splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 1)
 
-        root.addWidget(splitter, stretch=1)
+        return splitter
 
     # ------------------------------------------------------------------
     # Date range helpers
@@ -311,10 +318,12 @@ class ScanTab(QWidget):
                 cancelled=self._cancel_event.is_set,
             )
 
-        worker = Worker(work)
-        worker.signals.result.connect(self._on_scan_done)
-        worker.signals.error.connect(self._on_scan_error)
-        self._thread_pool.start(worker)
+        dispatch(
+            self._thread_pool,
+            work,
+            on_result=self._on_scan_done,
+            on_error=self._on_scan_error,
+        )
 
     def _run_latest(self):
         self._cancel_event.clear()
@@ -337,10 +346,12 @@ class ScanTab(QWidget):
                 cancelled=self._cancel_event.is_set,
             )
 
-        worker = Worker(work)
-        worker.signals.result.connect(self._on_scan_done)
-        worker.signals.error.connect(self._on_scan_error)
-        self._thread_pool.start(worker)
+        dispatch(
+            self._thread_pool,
+            work,
+            on_result=self._on_scan_done,
+            on_error=self._on_scan_error,
+        )
 
     def _run_watchlist(self):
         from insider_scanner.utils.config import load_watchlist

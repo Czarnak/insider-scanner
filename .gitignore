@@ -313,7 +313,7 @@ __marimo__/
 /scripts/api_key.txt
 /playground.ipynb
 data/
-.claude/
+.claude/settings.local.json
 .vscode/
 .tmp_pytest/
 .pytest-temp/

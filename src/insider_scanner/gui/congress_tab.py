@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import dispatch
 
 log = get_logger("congress_tab")
 
@@ -214,8 +214,12 @@ class CongressTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.addWidget(self._build_official_group())
+        root.addLayout(self._build_filter_row())
+        root.addWidget(self._build_progress())
+        root.addWidget(self._build_results_splitter(), stretch=1)
 
-        # --- Official selection ---
+    def _build_official_group(self) -> QGroupBox:
         official_grp = QGroupBox("Congress Member")
         official_l = QHBoxLayout(official_grp)
 
@@ -247,11 +251,16 @@ class CongressTab(QWidget):
         official_l.addWidget(self.btn_refresh_list)
 
         official_l.addStretch()
-        root.addWidget(official_grp)
+        return official_grp
 
-        # --- Source + date range + filter controls ---
+    def _build_filter_row(self) -> QHBoxLayout:
         filter_row = QHBoxLayout()
+        filter_row.addWidget(self._build_sources_group())
+        filter_row.addWidget(self._build_date_range_group())
+        filter_row.addWidget(self._build_filters_group())
+        return filter_row
 
+    def _build_sources_group(self) -> QGroupBox:
         # Sources — House and Senate disclosure systems
         src_grp = QGroupBox("Sources")
         src_l = QHBoxLayout(src_grp)
@@ -263,9 +272,9 @@ class CongressTab(QWidget):
         self.chk_senate.setToolTip("Scan efdsearch.senate.gov")
         src_l.addWidget(self.chk_house)
         src_l.addWidget(self.chk_senate)
-        filter_row.addWidget(src_grp)
+        return src_grp
 
-        # Filing date range
+    def _build_date_range_group(self) -> QGroupBox:
         date_grp = QGroupBox("Filing Date Range")
         date_l = QHBoxLayout(date_grp)
 
@@ -290,9 +299,9 @@ class CongressTab(QWidget):
         self.end_date.setEnabled(False)
         date_l.addWidget(self.end_date)
 
-        filter_row.addWidget(date_grp)
+        return date_grp
 
-        # Filters
+    def _build_filters_group(self) -> QGroupBox:
         filt_grp = QGroupBox("Filters")
         filt_l = QHBoxLayout(filt_grp)
 
@@ -321,16 +330,15 @@ class CongressTab(QWidget):
         self.btn_filter.clicked.connect(self._apply_filters)
         filt_l.addWidget(self.btn_filter)
 
-        filter_row.addWidget(filt_grp)
-        root.addLayout(filter_row)
+        return filt_grp
 
-        # Progress bar
+    def _build_progress(self) -> QProgressBar:
         self.progress = QProgressBar()
         self.progress.setVisible(False)
         self.progress.setTextVisible(True)
-        root.addWidget(self.progress)
+        return self.progress
 
-        # --- Results ---
+    def _build_results_splitter(self) -> QSplitter:
         splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Table
@@ -379,7 +387,7 @@ class CongressTab(QWidget):
         splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 1)
 
-        root.addWidget(splitter, stretch=1)
+        return splitter
 
     # ------------------------------------------------------------------
     # Helpers
@@ -482,10 +490,12 @@ class CongressTab(QWidget):
                 cancelled=cancel.is_set,
             )
 
-        worker = Worker(work)
-        worker.signals.result.connect(self._on_scan_done)
-        worker.signals.error.connect(self._on_scan_error)
-        self._thread_pool.start(worker)
+        dispatch(
+            self._thread_pool,
+            work,
+            on_result=self._on_scan_done,
+            on_error=self._on_scan_error,
+        )
 
     @Slot(object)
     def _on_scan_done(self, trades):

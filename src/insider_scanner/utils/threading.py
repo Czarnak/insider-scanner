@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 
 class WorkerSignals(QObject):
@@ -49,3 +50,33 @@ class Worker(QRunnable):
             self._safe_emit(self.signals.result, result)
         finally:
             self._safe_emit(self.signals.finished)
+
+
+def dispatch(
+    thread_pool: QThreadPool,
+    fn: Callable,
+    *,
+    on_result: Callable | None = None,
+    on_error: Callable | None = None,
+    on_progress: Callable | None = None,
+    on_finished: Callable | None = None,
+    args: tuple = (),
+    kwargs: dict | None = None,
+) -> Worker:
+    """Create a :class:`Worker`, connect its signals, and start it.
+
+    Collapses the repeated create-Worker / connect-signals / start
+    boilerplate used by the GUI tabs into a single call. Returns the
+    worker so callers can keep a reference if needed.
+    """
+    worker = Worker(fn, *args, **(kwargs or {}))
+    if on_result is not None:
+        worker.signals.result.connect(on_result)
+    if on_error is not None:
+        worker.signals.error.connect(on_error)
+    if on_progress is not None:
+        worker.signals.progress.connect(on_progress)
+    if on_finished is not None:
+        worker.signals.finished.connect(on_finished)
+    thread_pool.start(worker)
+    return worker

@@ -50,7 +50,7 @@ from insider_scanner.core.eu_merger import (
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, load_eu_watchlist
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import Worker, dispatch
 
 log = get_logger("european_tab")
 
@@ -101,8 +101,13 @@ class EuropeanTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.addWidget(self._build_search_group())
+        root.addLayout(self._build_filter_row())
+        root.addWidget(self._build_progress())
+        root.addWidget(self._build_results_splitter())
+        root.addLayout(self._build_action_row())
 
-        # --- Search controls ---
+    def _build_search_group(self) -> QGroupBox:
         search_grp = QGroupBox("Search")
         search_l = QHBoxLayout(search_grp)
 
@@ -153,11 +158,15 @@ class EuropeanTab(QWidget):
         search_l.addWidget(self.btn_stop)
 
         search_l.addStretch()
-        root.addWidget(search_grp)
+        return search_grp
 
-        # --- Date range + filters ---
+    def _build_filter_row(self) -> QHBoxLayout:
         filter_row = QHBoxLayout()
+        filter_row.addWidget(self._build_date_range_group())
+        filter_row.addWidget(self._build_filters_group())
+        return filter_row
 
+    def _build_date_range_group(self) -> QGroupBox:
         date_grp = QGroupBox("Date Range")
         date_l = QHBoxLayout(date_grp)
         self.chk_use_dates = QCheckBox("Enable")
@@ -176,8 +185,9 @@ class EuropeanTab(QWidget):
         self.end_date.setCalendarPopup(True)
         self.end_date.setEnabled(False)
         date_l.addWidget(self.end_date)
-        filter_row.addWidget(date_grp)
+        return date_grp
 
+    def _build_filters_group(self) -> QGroupBox:
         flt_grp = QGroupBox("Filters")
         flt_l = QHBoxLayout(flt_grp)
         flt_l.addWidget(QLabel("Type:"))
@@ -195,16 +205,14 @@ class EuropeanTab(QWidget):
         self.btn_filter = QPushButton("Apply Filters")
         self.btn_filter.clicked.connect(self._apply_filters)
         flt_l.addWidget(self.btn_filter)
-        filter_row.addWidget(flt_grp)
+        return flt_grp
 
-        root.addLayout(filter_row)
-
-        # --- Progress bar ---
+    def _build_progress(self) -> QProgressBar:
         self.progress = QProgressBar()
         self.progress.setVisible(False)
-        root.addWidget(self.progress)
+        return self.progress
 
-        # --- Splitter: table + detail ---
+    def _build_results_splitter(self) -> QSplitter:
         splitter = QSplitter(Qt.Vertical)
 
         # Results table
@@ -230,9 +238,9 @@ class EuropeanTab(QWidget):
         splitter.addWidget(self.detail_text)
 
         splitter.setSizes([450, 140])
-        root.addWidget(splitter)
+        return splitter
 
-        # --- Bottom action bar ---
+    def _build_action_row(self) -> QHBoxLayout:
         action_row = QHBoxLayout()
         self.lbl_count = QLabel("No results.")
         action_row.addWidget(self.lbl_count)
@@ -244,7 +252,7 @@ class EuropeanTab(QWidget):
         self.btn_save = QPushButton("Save Results")
         self.btn_save.clicked.connect(self._save_results)
         action_row.addWidget(self.btn_save)
-        root.addLayout(action_row)
+        return action_row
 
     # ------------------------------------------------------------------
     # Helpers
@@ -318,11 +326,13 @@ class EuropeanTab(QWidget):
                 cancelled=self._cancel_event.is_set,
             )
 
-        worker = Worker(task)
-        worker.signals.result.connect(self._on_scan_result)
-        worker.signals.error.connect(self._on_scan_error)
-        worker.signals.finished.connect(self._on_scan_finished)
-        self._thread_pool.start(worker)
+        dispatch(
+            self._thread_pool,
+            task,
+            on_result=self._on_scan_result,
+            on_error=self._on_scan_error,
+            on_finished=self._on_scan_finished,
+        )
 
     def _run_watchlist(self):
         isins = load_eu_watchlist()
@@ -397,11 +407,13 @@ class EuropeanTab(QWidget):
                 cancelled=self._cancel_event.is_set,
             )
 
-        worker = Worker(task)
-        worker.signals.result.connect(self._on_scan_result)
-        worker.signals.error.connect(self._on_scan_error)
-        worker.signals.finished.connect(self._on_scan_finished)
-        self._thread_pool.start(worker)
+        dispatch(
+            self._thread_pool,
+            task,
+            on_result=self._on_scan_result,
+            on_error=self._on_scan_error,
+            on_finished=self._on_scan_finished,
+        )
 
     def _stop_scan(self):
         self.request_cancellation()

@@ -27,6 +27,7 @@ import requests
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.config import HOUSE_DISCLOSURES_DIR
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.parsing import parse_ptr_date as _parse_date_flexible
 
 log = get_logger("congress_house")
 
@@ -372,20 +373,6 @@ def _normalize_owner(raw: str) -> str:
     """Normalize owner code to Self/Spouse/Dependent Child/Joint."""
     raw_stripped = raw.strip().upper()
     return _OWNER_MAP.get(raw_stripped, raw_stripped or "Self")
-
-
-def _parse_date_flexible(text: str) -> date | None:
-    """Parse a date from various formats found in PDFs."""
-    text = text.strip()
-    if not text or text == "--":
-        return None
-
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
 
 
 def _is_scanned_pdf(pdf) -> bool:

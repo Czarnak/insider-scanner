@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.parsing import parse_ptr_date as _parse_date
 
 log = get_logger("congress_senate")
 
@@ -490,20 +491,6 @@ def _extract_ticker(asset_description: str) -> str:
     """Extract ticker from asset description."""
     match = _TICKER_RE.search(asset_description)
     return match.group(1) if match else ""
-
-
-def _parse_date(text: str) -> date | None:
-    """Parse a date string from Senate PTR data."""
-    text = text.strip()
-    if not text or text == "--":
-        return None
-
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
 
 
 # -----------------------------------------------------------------------

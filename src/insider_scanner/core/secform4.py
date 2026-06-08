@@ -10,61 +10,15 @@ from insider_scanner.core.models import InsiderTrade
 from insider_scanner.utils.config import SCRAPER_CACHE_DIR
 from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.parsing import (
+    classify_trade as _classify_trade,
+    parse_date as _parse_date,
+    parse_number as _parse_number,
+)
 
 log = get_logger("secform4")
 
 BASE_URL = "https://www.secform4.com/insider-trading"
-
-
-def _parse_date(text: str) -> date | None:
-    """Parse date from various formats."""
-    text = text.strip()
-    if not text or text == "-":
-        return None
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y"):
-        try:
-            return date.fromisoformat(text) if fmt == "%Y-%m-%d" else None
-        except ValueError:
-            pass
-    # Fallback: try splitting common formats
-    try:
-        parts = text.replace("/", "-").split("-")
-        if len(parts) == 3:
-            if len(parts[0]) == 4:
-                return date(int(parts[0]), int(parts[1]), int(parts[2]))
-            else:
-                return date(int(parts[2]), int(parts[0]), int(parts[1]))
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-def _parse_number(text: str) -> float:
-    """Parse a number string, stripping $, commas, parens (negative)."""
-    text = text.strip().replace(",", "").replace("$", "")
-    if not text or text == "-":
-        return 0.0
-    negative = False
-    if text.startswith("(") and text.endswith(")"):
-        text = text[1:-1]
-        negative = True
-    try:
-        val = float(text)
-        return -val if negative else val
-    except ValueError:
-        return 0.0
-
-
-def _classify_trade(text: str) -> str:
-    """Map raw trade type text to our enum."""
-    t = text.strip().lower()
-    if "purchase" in t or "buy" in t:
-        return "Buy"
-    if "sale" in t or "sell" in t:
-        return "Sell"
-    if "exercise" in t or "option" in t:
-        return "Exercise"
-    return "Other"
 
 
 def scrape_ticker(

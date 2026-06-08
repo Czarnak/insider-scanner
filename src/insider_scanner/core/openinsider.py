@@ -10,54 +10,15 @@ from insider_scanner.core.models import InsiderTrade
 from insider_scanner.utils.config import SCRAPER_CACHE_DIR
 from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.parsing import (
+    classify_trade as _classify_trade,
+    parse_date as _parse_date,
+    parse_number as _parse_number,
+)
 
 log = get_logger("openinsider")
 
 BASE_URL = "http://openinsider.com"
-
-
-def _parse_date(text: str) -> date | None:
-    text = text.strip()
-    if not text or text == "-":
-        return None
-    try:
-        return date.fromisoformat(text)
-    except ValueError:
-        pass
-    # Try MM/DD/YYYY
-    try:
-        parts = text.split("/")
-        if len(parts) == 3:
-            return date(int(parts[2]), int(parts[0]), int(parts[1]))
-    except (ValueError, IndexError):
-        pass
-    return None
-
-
-def _parse_number(text: str) -> float:
-    text = text.strip().replace(",", "").replace("$", "").replace("+", "")
-    if not text or text == "-":
-        return 0.0
-    negative = False
-    if text.startswith("(") and text.endswith(")"):
-        text = text[1:-1]
-        negative = True
-    try:
-        val = float(text)
-        return -val if negative else val
-    except ValueError:
-        return 0.0
-
-
-def _classify_trade(text: str) -> str:
-    t = text.strip().lower()
-    if "purchase" in t or "buy" in t or t == "p":
-        return "Buy"
-    if "sale" in t or "sell" in t or t == "s":
-        return "Sell"
-    if "exercise" in t or t == "m":
-        return "Exercise"
-    return "Other"
 
 
 def scrape_ticker(

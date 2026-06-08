@@ -316,3 +316,4 @@ data/
 .claude/
 .vscode/
 .tmp_pytest/
+*.md
