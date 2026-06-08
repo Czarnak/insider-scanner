@@ -14,7 +14,9 @@ pip install -e ".[dev]"
 
 ### Requirements
 
-Python 3.11+. Dependencies: `requests`, `beautifulsoup4`, `lxml`, `pandas`, `PySide6`, `pyyaml`, `pdfplumber`, `numpy`.
+Python 3.11+. Dependencies include `requests`, `beautifulsoup4`, `lxml`,
+`pandas`, `PySide6`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and
+SQLAlchemy.
 
 ---
 
@@ -32,7 +34,7 @@ The GUI tabs cover the core use cases:
 
 #### Insider Scan tab
 - Search a ticker and run both secform4.com and openinsider.com scrapers in one click.
-- Fetch the latest trades (configurable count) and run watchlist scans backed by `data/tickers_watchlist.txt`.
+- Fetch the latest trades (configurable count) and run watchlist scans backed by the user data directory's `tickers_watchlist.txt`.
 - Toggle sources, specify a date range, trade type, minimum value, or Congress-only filter.
 - View sortable tables that display filing/trade dates, highlight congressional filings, show EDGAR links, and let you export CSV/JSON.
 - Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
@@ -43,7 +45,7 @@ The GUI tabs cover the core use cases:
 - Save filtered results to CSV/JSON, with exports reflecting the current filters.
 
 #### European Insiders tab
-- Choose All/UK/DE/FR/NL, type an ISIN, or scan the European watchlist at `data/eu_watchlist.txt`.
+- Choose All/UK/DE/FR/NL, type an ISIN, or scan the user data directory's `eu_watchlist.txt`.
 - Enable optional date bounds, filter by trade type and minimum value, and watch the progress bar while each ISIN is processed.
 - Results are sortable, show normalized positions/currency, provide detail text on double-click, and allow opening the regulator source URL.
 - Save filtered results to CSV/JSON (filename reflects the ISIN + country) or clear filters to adjust the view.
@@ -70,6 +72,10 @@ insider-scanner-cli init-congress
 
 # Congress-only filter
 insider-scanner-cli scan AAPL --congress-only
+
+# Import legacy JSON exports into SQLite
+insider-scanner-cli import-legacy ./old-exports
+insider-scanner-cli import-legacy ./large.json --max-file-size-mib 100
 ```
 
 ### European scan CLI
@@ -80,7 +86,62 @@ insider-scanner-cli eu-scan GB0002875804
 insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
 ```
 
-Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every ISIN listed in `data/eu_watchlist.txt`, and `--save` to persist the filtered CSV/JSON bundle.
+Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every configured ISIN, and `--save` to persist the filtered CSV/JSON bundle.
+
+### Local persistence and paths
+
+Parsed US, Congress, and European trades are stored in a local SQLite database.
+Writable data, cache, watchlist, House disclosure, and export paths are resolved
+with `platformdirs`; the application does not write runtime data into the source
+checkout. Print the paths selected for the current OS and user with:
+
+```bash
+python -c "from insider_scanner.utils.config import DEFAULT_PATHS; print(DEFAULT_PATHS)"
+```
+
+The SQLite database stores normalized trade records, successful source/date
+coverage, and latest-refresh state. HTTP caches remain transient files under the
+platform cache directory and can be removed without deleting parsed trades.
+
+For bounded scans, the service queries SQLite first, calculates uncovered
+intervals independently for each source, fetches only those gaps, and then
+returns the merged local result. Failed or cancelled intervals are not marked as
+covered. AMF search bounds are publication dates rather than transaction dates,
+so bounded French scans conservatively persist and filter returned trades but do
+not mark the requested trade-date interval as covered. Repeating an AMF bounded
+scan therefore rechecks the regulator. RNS, BaFin, and AFM bounded scans retain
+normal coverage caching. Latest scans reuse a successful refresh for one hour by default;
+different requested counts have independent refresh state. European latest mode
+uses only sources with a latest endpoint. AFM remains available for bounded
+Netherlands scans but is excluded from latest refreshes.
+
+`import-legacy PATH` accepts a JSON file or recursively scans a directory for
+JSON exports. Imports are validated, idempotent, do not modify source files, and
+do not alter scan coverage or refresh state. Each file is limited to 50 MiB by
+default; use `--max-file-size-mib` to set a different positive limit. Any
+malformed, oversized, or invalid record produces a nonzero exit code.
+
+Database initialization and migration failures stop GUI or CLI startup rather
+than continuing with partial state. User-facing errors remain concise; detailed
+diagnostics are sent through application logging.
+
+#### Database migration recovery
+
+The database is `insider_scanner.sqlite3` under the platform user data directory
+reported by `DEFAULT_PATHS.database_file`. Typical locations are
+`%LOCALAPPDATA%\Insider Scanner\Insider Scanner\` on Windows,
+`~/Library/Application Support/Insider Scanner/` on macOS, and
+`~/.local/share/Insider Scanner/` on Linux.
+
+If startup reports a database or migration failure:
+
+1. Close every Insider Scanner GUI and CLI process.
+2. Back up `insider_scanner.sqlite3` before making any recovery change.
+3. Do not edit `schema_version`, tables, indexes, or other schema objects manually.
+4. Restore a known-good database backup, or rename the corrupt database and
+   restart the application to build a fresh database.
+5. Optionally repopulate the fresh database with
+   `insider-scanner-cli import-legacy PATH` using validated legacy JSON exports.
 
 ---
 
@@ -110,6 +171,20 @@ src/insider_scanner/
 │   ├── congress_tab.py  # Congress tab with sector filtering and save/export helpers
 │   ├── european_tab.py  # European tab with ISIN/watchlist scans and detail panel
 │   └── widgets.py       # Pandas table model, sortable proxy, table helpers
+├── persistence/
+│   ├── schema.py        # SQLAlchemy Core table definitions
+│   ├── bootstrap.py     # Versioned SQLite initialization and migrations
+│   ├── repositories.py  # Immutable trade upserts and queries
+│   ├── coverage.py      # Source-aware covered intervals and gap calculation
+│   └── refresh.py       # Latest-scan freshness state
+├── resources/
+│   └── seeds/           # Packaged default watchlists and Congress members
+├── services/
+│   ├── application.py   # Shared GUI/CLI service composition
+│   ├── us.py            # DB-first US scan orchestration
+│   ├── congress.py      # DB-first Congress scan orchestration
+│   ├── european.py      # DB-first European scan orchestration
+│   └── importer.py      # Validated legacy JSON import
 ├── utils/
 │   ├── config.py        # Paths, SEC/User-Agent constants, watchlists
 │   ├── logging.py       # Logging setup
@@ -117,7 +192,7 @@ src/insider_scanner/
 │   ├── http.py          # Rate-limited HTTP helper
 │   └── threading.py     # Worker/Signal helpers for GUI
 ├── main.py              # GUI entry point
-└── cli.py               # CLI entry point (US + European commands)
+└── cli.py               # CLI entry point (scan, latest, EU, import)
 
 scripts/
 └── update_congress.py   # Fetch current federal + state legislators
@@ -127,17 +202,18 @@ scripts/
 
 1. **Resolve**: `edgar.py` resolves ticker → CIK via SEC `company_tickers.json` (cached 24h, HTML fallback)
 2. **Scrape**: `secform4.py` fetches CIK-based pages with compound-column parsing (date+type, name+title split by `<br>`); `openinsider.py` fetches ticker-based pages; both produce `InsiderTrade` records
-3. **Cache**: HTTP responses are cached locally with configurable TTL (default 1h)
-4. **Merge**: `merger.py` deduplicates trades across sources (matching by ticker + name + date + share count)
-5. **Flag**: `senate.py` checks insider names against the Congress member list (fuzzy matching)
-6. **Verify**: secform4 trades include direct SEC filing links; others get generated EDGAR search URLs
-7. **Export**: Results saved as CSV + JSON to `outputs/scans/`
+3. **Persist**: parsed records are upserted into SQLite; successful source/date intervals are recorded separately
+4. **Cache**: raw HTTP responses are cached independently with configurable TTL (default 1h)
+5. **Merge**: `merger.py` deduplicates trades across sources (matching by ticker + name + date + share count)
+6. **Flag**: `senate.py` checks insider names against the Congress member list (fuzzy matching)
+7. **Verify**: secform4 trades include direct SEC filing links; others get generated EDGAR search URLs
+8. **Export**: results are saved as CSV + JSON under the platform user data directory
 
 ### Data Flow — Congress (House)
 
 1. **Index**: `congress_house.py` downloads yearly ZIP archives from `disclosures-clerk.house.gov` containing XML indexes of all financial disclosure filings. Past years are cached permanently; current year can be refreshed on demand.
 2. **Search**: XML index is parsed to find PTR (Periodic Transaction Report) filings matching the selected official and date range. Multi-year ranges download multiple indexes as needed.
-3. **Fetch**: Individual PTR PDFs are downloaded and cached locally under `data/house_disclosures/{year}/pdfs/`.
+3. **Fetch**: Individual PTR PDFs are downloaded and cached under `house_disclosures/{year}/pdfs/` in the platform user data directory.
 4. **Parse**: `pdfplumber` extracts transaction tables from electronically-filed PDFs. Scanned/handwritten PDFs are detected and skipped.
 5. **Convert**: Raw table rows are converted to `CongressTrade` records with parsed tickers (from asset descriptions), normalized amount ranges, owner codes, and transaction types.
 
@@ -175,16 +251,21 @@ All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 r
 
 ---
 
-## Data Files
+## Runtime Files
 
-| File | Description |
+| Location within runtime paths | Description |
 |------|-------------|
-| `data/congress_members.json` | Congress member list with committee assignments and sector mappings |
-| `data/tickers_watchlist.txt` | Default ticker symbols |
-| `data/eu_watchlist.txt` | Default ISINs for the European watchlist scan |
-| `data/house_disclosures/` | Cached House financial disclosure indexes (auto-populated) |
+| `insider_scanner.sqlite3` | Parsed trades, coverage intervals, refresh state, and schema version |
+| `congress_members.json` | Editable Congress member list with committee assignments and sector mappings |
+| `tickers_watchlist.txt` | Editable ticker watchlist |
+| `eu_watchlist.txt` | Editable European ISIN watchlist |
+| `house_disclosures/` | Cached House disclosure indexes and PDFs |
+| `exports/scans/` | Generated CSV/JSON scan exports |
+| platform cache directory | Transient EDGAR and scraper HTTP caches |
 
-`data/eu_watchlist.txt` stores one 12-character ISIN per line (comments start with `#`) and is used by the European tab's watchlist scan and the CLI `--watchlist` mode.
+Packaged defaults are copied into the user data directory only when a file is
+missing; existing user edits are never overwritten. `eu_watchlist.txt` stores
+one 12-character ISIN per line (comments start with `#`).
 
 The Congress member list is populated by `scripts/update_congress.py` and includes committee assignments and sector mappings derived from the [unitedstates/congress-legislators](https://github.com/unitedstates/congress-legislators) project.
 
@@ -206,7 +287,7 @@ Standalone utility scripts live in `scripts/`.
 
 ### `update_congress.py`
 
-Fetches the current list of federal and (optionally) state legislators, enriches them with committee assignments and sector mappings, and writes them to `data/congress_members.json`.
+Fetches the current list of federal and (optionally) state legislators, enriches them with committee assignments and sector mappings, and writes them to the configured `congress_members.json` in the platform user data directory.
 
 ```bash
 # Federal only with committee enrichment (no API key needed)
@@ -233,16 +314,23 @@ Federal data and committee assignments come from the [unitedstates/congress-legi
 
 ```bash
 # Run all offline tests (default)
-pytest -m "not live" -v
+python -m pytest -m "not live" -v
 
 # Run only live integration tests (requires internet)
-pytest -m live -v
+python -m pytest -m live -v
 
 # Run everything
-pytest -v
+python -m pytest -v
 
 # With coverage
-pytest -m "not live" --cov=insider_scanner -v
+python -m pytest -m "not live" --cov=insider_scanner --cov-report=term-missing -v
+
+# Static checks
+python -m ruff check src tests
+python -m ruff format --check src tests
+
+# Verify the lock file
+uv lock --check
 ```
 
 Tests are split into two categories:

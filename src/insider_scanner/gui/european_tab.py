@@ -39,7 +39,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin, scrape_eu_latest
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.eu_merger import (
     DISPLAY_COLUMNS,
@@ -78,21 +77,19 @@ _HEADERS = [
 ]
 
 
-def _scrape_isin(
-    isin: str,
-    country: str,
-    date_from: date | None,
-    date_to: date | None,
-) -> list[EuropeanInsiderTrade]:
-    """Backward-compatible wrapper around the core EU dispatcher."""
-    return scrape_eu_trades_for_isin(isin, country, date_from, date_to)
-
-
 class EuropeanTab(QWidget):
     """European insider scan tab."""
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        service=None,
+        parent=None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ):
         super().__init__(parent)
+        self._service = service
+        self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._trades: list[EuropeanInsiderTrade] = []
         self._filtered_trades: list[EuropeanInsiderTrade] | None = None
         self._cancel_event = Event()
@@ -312,13 +309,20 @@ class EuropeanTab(QWidget):
         self.progress.setRange(0, 0)  # indeterminate
 
         def task():
-            return _scrape_isin(isin, country, date_from, date_to)
+            return self._service.scan(
+                isin,
+                country=country,
+                start_date=date_from,
+                end_date=date_to,
+                use_cache=True,
+                cancelled=self._cancel_event.is_set,
+            )
 
         worker = Worker(task)
         worker.signals.result.connect(self._on_scan_result)
         worker.signals.error.connect(self._on_scan_error)
         worker.signals.finished.connect(self._on_scan_finished)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     def _run_watchlist(self):
         isins = load_eu_watchlist()
@@ -346,7 +350,14 @@ class EuropeanTab(QWidget):
             for i, isin in enumerate(isins):
                 if self._cancel_event.is_set():
                     break
-                batch = _scrape_isin(isin, country, date_from, date_to)
+                batch = self._service.scan(
+                    isin,
+                    country=country,
+                    start_date=date_from,
+                    end_date=date_to,
+                    use_cache=True,
+                    cancelled=self._cancel_event.is_set,
+                )
                 all_trades.extend(batch)
                 worker.signals.progress.emit(i + 1)
             return merge_eu_trades(all_trades)
@@ -356,7 +367,7 @@ class EuropeanTab(QWidget):
         worker.signals.error.connect(self._on_scan_error)
         worker.signals.progress.connect(self._on_watchlist_progress)
         worker.signals.finished.connect(self._on_scan_finished)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     def _run_latest(self):
         """Fetch the N most recent trades from each EU source globally (no ISIN filter).
@@ -377,17 +388,28 @@ class EuropeanTab(QWidget):
         )  # indeterminate — scraper runs in one blocking call
 
         def task():
-            return scrape_eu_latest(count, country, date_from, date_to)
+            return self._service.latest(
+                count=count,
+                country=country,
+                start_date=date_from,
+                end_date=date_to,
+                use_cache=True,
+                cancelled=self._cancel_event.is_set,
+            )
 
         worker = Worker(task)
         worker.signals.result.connect(self._on_scan_result)
         worker.signals.error.connect(self._on_scan_error)
         worker.signals.finished.connect(self._on_scan_finished)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     def _stop_scan(self):
-        self._cancel_event.set()
+        self.request_cancellation()
         log.info("European scan cancellation requested")
+
+    def request_cancellation(self) -> None:
+        """Request cooperative cancellation without blocking the GUI thread."""
+        self._cancel_event.set()
 
     # ------------------------------------------------------------------
     # Worker slots
@@ -399,9 +421,14 @@ class EuropeanTab(QWidget):
 
     @Slot(tuple)
     def _on_scan_error(self, error: tuple):
+        exc_type = error[0]
         exc = error[1]
-        log.error("Scan error: %s", exc)
-        QMessageBox.critical(self, "Scan Error", str(exc))
+        log.error("Scan failed", exc_info=(exc_type, exc, error[2]))
+        QMessageBox.critical(
+            self,
+            "Scan Error",
+            "Scan failed. See logs for details.",
+        )
 
     @Slot()
     def _on_scan_finished(self):

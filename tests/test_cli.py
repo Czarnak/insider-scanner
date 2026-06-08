@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,9 +115,10 @@ class TestCmdEuScan:
 
         seen: dict[str, object] = {}
 
-        def fake_scrape(isin, country, since, until):
-            seen["scrape"] = (isin, country, since, until)
-            return [sample_trade]
+        class FakeEuropeanService:
+            def scan(self, isin, **kwargs):
+                seen["scrape"] = (isin, kwargs)
+                return [sample_trade]
 
         def fake_filter(trades, **kwargs):
             seen["filter"] = kwargs
@@ -133,10 +135,6 @@ class TestCmdEuScan:
         monkeypatch.setattr(
             "insider_scanner.utils.config.load_eu_watchlist",
             lambda: ["GB0002875804"],
-        )
-        monkeypatch.setattr(
-            "insider_scanner.core.eu_scan.scrape_eu_trades_for_isin",
-            fake_scrape,
         )
         monkeypatch.setattr(
             "insider_scanner.core.eu_merger.filter_eu_trades",
@@ -161,15 +159,19 @@ class TestCmdEuScan:
                 since=date(2025, 1, 1),
                 until=date(2025, 1, 31),
                 save=True,
-            )
+            ),
+            SimpleNamespace(european=FakeEuropeanService()),
         )
 
         out = capsys.readouterr().out
         assert seen["scrape"] == (
             "GB0002875804",
-            "UK",
-            date(2025, 1, 1),
-            date(2025, 1, 31),
+            {
+                "country": "UK",
+                "start_date": date(2025, 1, 1),
+                "end_date": date(2025, 1, 31),
+                "use_cache": True,
+            },
         )
         assert seen["filter"] == {
             "country": "UK",

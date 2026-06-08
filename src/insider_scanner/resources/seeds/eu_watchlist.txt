@@ -1,0 +1,5 @@
+# Default European insider-trading watchlist
+GB0002875804
+DE0007100000
+FR0000131104
+NL0000009165

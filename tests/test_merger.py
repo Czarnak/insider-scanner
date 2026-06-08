@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import date
 
 from insider_scanner.core.models import InsiderTrade
@@ -82,6 +83,19 @@ class TestMergeTrades:
         a = [_trade(), _trade(ticker="MSFT", name="Nadella")]
         merged = merge_trades(a)
         assert len(merged) == 2
+
+    def test_merge_does_not_mutate_inputs(self):
+        poorer = _trade(source="secform4")
+        richer = _trade(
+            source="edgar",
+            edgar_url="https://sec.gov/filing/123",
+            is_congress=True,
+        )
+        originals = deepcopy((poorer, richer))
+
+        merge_trades([poorer], [richer])
+
+        assert (poorer, richer) == originals
 
 
 class TestFilterTrades:

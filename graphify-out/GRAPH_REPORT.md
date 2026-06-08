@@ -1,127 +1,150 @@
-# Graph Report - .  (2026-05-19)
+# Graph Report - insider-scan-phase1  (2026-06-08)
 
 ## Corpus Check
-
-- Large corpus: 2990 files · ~6,133,589 words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder.
+- 91 files · ~56,785 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-
-- 1094 nodes · 1777 edges · 96 communities (65 shown, 31 thin omitted)
-- Extraction: 71% EXTRACTED · 29% INFERRED · 0% AMBIGUOUS · INFERRED: 524 edges (avg confidence: 0.72)
+- 1590 nodes · 2911 edges · 116 communities (81 shown, 35 thin omitted)
+- Extraction: 67% EXTRACTED · 33% INFERRED · 0% AMBIGUOUS · INFERRED: 951 edges (avg confidence: 0.73)
 - Token cost: 0 input · 0 output
 
-## Community Hubs (Navigation)
+## Graph Freshness
+- Built from commit: `5cc042ae`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Insider Components|Insider Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Scripts Components|Scripts Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Utils Components|Utils Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Utils Components|Utils Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Gui Components|Gui Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Insider Components|Insider Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Src Components|Src Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Tests Components|Tests Components]]
-- [[_COMMUNITY_Core Components|Core Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Test Components|Test Components]]
-- [[_COMMUNITY_Rationale Components|Rationale Components]]
+## Community Hubs (Navigation)
+- [[_COMMUNITY_Community 0|Community 0]]
+- [[_COMMUNITY_Community 1|Community 1]]
+- [[_COMMUNITY_Community 2|Community 2]]
+- [[_COMMUNITY_Community 3|Community 3]]
+- [[_COMMUNITY_Community 4|Community 4]]
+- [[_COMMUNITY_Community 5|Community 5]]
+- [[_COMMUNITY_Community 6|Community 6]]
+- [[_COMMUNITY_Community 7|Community 7]]
+- [[_COMMUNITY_Community 8|Community 8]]
+- [[_COMMUNITY_Community 9|Community 9]]
+- [[_COMMUNITY_Community 10|Community 10]]
+- [[_COMMUNITY_Community 11|Community 11]]
+- [[_COMMUNITY_Community 12|Community 12]]
+- [[_COMMUNITY_Community 13|Community 13]]
+- [[_COMMUNITY_Community 14|Community 14]]
+- [[_COMMUNITY_Community 15|Community 15]]
+- [[_COMMUNITY_Community 16|Community 16]]
+- [[_COMMUNITY_Community 17|Community 17]]
+- [[_COMMUNITY_Community 18|Community 18]]
+- [[_COMMUNITY_Community 19|Community 19]]
+- [[_COMMUNITY_Community 20|Community 20]]
+- [[_COMMUNITY_Community 21|Community 21]]
+- [[_COMMUNITY_Community 22|Community 22]]
+- [[_COMMUNITY_Community 23|Community 23]]
+- [[_COMMUNITY_Community 24|Community 24]]
+- [[_COMMUNITY_Community 25|Community 25]]
+- [[_COMMUNITY_Community 26|Community 26]]
+- [[_COMMUNITY_Community 27|Community 27]]
+- [[_COMMUNITY_Community 28|Community 28]]
+- [[_COMMUNITY_Community 29|Community 29]]
+- [[_COMMUNITY_Community 30|Community 30]]
+- [[_COMMUNITY_Community 31|Community 31]]
+- [[_COMMUNITY_Community 32|Community 32]]
+- [[_COMMUNITY_Community 33|Community 33]]
+- [[_COMMUNITY_Community 34|Community 34]]
+- [[_COMMUNITY_Community 35|Community 35]]
+- [[_COMMUNITY_Community 36|Community 36]]
+- [[_COMMUNITY_Community 37|Community 37]]
+- [[_COMMUNITY_Community 38|Community 38]]
+- [[_COMMUNITY_Community 39|Community 39]]
+- [[_COMMUNITY_Community 40|Community 40]]
+- [[_COMMUNITY_Community 41|Community 41]]
+- [[_COMMUNITY_Community 42|Community 42]]
+- [[_COMMUNITY_Community 43|Community 43]]
+- [[_COMMUNITY_Community 44|Community 44]]
+- [[_COMMUNITY_Community 45|Community 45]]
+- [[_COMMUNITY_Community 46|Community 46]]
+- [[_COMMUNITY_Community 47|Community 47]]
+- [[_COMMUNITY_Community 48|Community 48]]
+- [[_COMMUNITY_Community 49|Community 49]]
+- [[_COMMUNITY_Community 50|Community 50]]
+- [[_COMMUNITY_Community 51|Community 51]]
+- [[_COMMUNITY_Community 52|Community 52]]
+- [[_COMMUNITY_Community 53|Community 53]]
+- [[_COMMUNITY_Community 54|Community 54]]
+- [[_COMMUNITY_Community 55|Community 55]]
+- [[_COMMUNITY_Community 56|Community 56]]
+- [[_COMMUNITY_Community 57|Community 57]]
+- [[_COMMUNITY_Community 58|Community 58]]
+- [[_COMMUNITY_Community 59|Community 59]]
+- [[_COMMUNITY_Community 60|Community 60]]
+- [[_COMMUNITY_Community 61|Community 61]]
+- [[_COMMUNITY_Community 62|Community 62]]
+- [[_COMMUNITY_Community 63|Community 63]]
+- [[_COMMUNITY_Community 64|Community 64]]
+- [[_COMMUNITY_Community 65|Community 65]]
+- [[_COMMUNITY_Community 66|Community 66]]
+- [[_COMMUNITY_Community 67|Community 67]]
+- [[_COMMUNITY_Community 68|Community 68]]
+- [[_COMMUNITY_Community 69|Community 69]]
+- [[_COMMUNITY_Community 70|Community 70]]
+- [[_COMMUNITY_Community 71|Community 71]]
+- [[_COMMUNITY_Community 72|Community 72]]
+- [[_COMMUNITY_Community 73|Community 73]]
+- [[_COMMUNITY_Community 74|Community 74]]
+- [[_COMMUNITY_Community 75|Community 75]]
+- [[_COMMUNITY_Community 76|Community 76]]
+- [[_COMMUNITY_Community 77|Community 77]]
+- [[_COMMUNITY_Community 78|Community 78]]
+- [[_COMMUNITY_Community 79|Community 79]]
+- [[_COMMUNITY_Community 80|Community 80]]
+- [[_COMMUNITY_Community 81|Community 81]]
+- [[_COMMUNITY_Community 82|Community 82]]
+- [[_COMMUNITY_Community 83|Community 83]]
+- [[_COMMUNITY_Community 84|Community 84]]
+- [[_COMMUNITY_Community 85|Community 85]]
+- [[_COMMUNITY_Community 86|Community 86]]
+- [[_COMMUNITY_Community 87|Community 87]]
+- [[_COMMUNITY_Community 88|Community 88]]
+- [[_COMMUNITY_Community 89|Community 89]]
+- [[_COMMUNITY_Community 90|Community 90]]
+- [[_COMMUNITY_Community 91|Community 91]]
+- [[_COMMUNITY_Community 92|Community 92]]
+- [[_COMMUNITY_Community 93|Community 93]]
+- [[_COMMUNITY_Community 95|Community 95]]
+- [[_COMMUNITY_Community 96|Community 96]]
+- [[_COMMUNITY_Community 97|Community 97]]
+- [[_COMMUNITY_Community 98|Community 98]]
+- [[_COMMUNITY_Community 99|Community 99]]
+- [[_COMMUNITY_Community 100|Community 100]]
+- [[_COMMUNITY_Community 101|Community 101]]
+- [[_COMMUNITY_Community 102|Community 102]]
+- [[_COMMUNITY_Community 103|Community 103]]
+- [[_COMMUNITY_Community 105|Community 105]]
+- [[_COMMUNITY_Community 106|Community 106]]
+- [[_COMMUNITY_Community 107|Community 107]]
+- [[_COMMUNITY_Community 108|Community 108]]
+- [[_COMMUNITY_Community 109|Community 109]]
+- [[_COMMUNITY_Community 110|Community 110]]
+- [[_COMMUNITY_Community 111|Community 111]]
+- [[_COMMUNITY_Community 112|Community 112]]
+- [[_COMMUNITY_Community 113|Community 113]]
+- [[_COMMUNITY_Community 114|Community 114]]
+- [[_COMMUNITY_Community 115|Community 115]]
 
 ## God Nodes (most connected - your core abstractions)
-
-1. `CongressTrade` - 52 edges
-2. `ScanTab` - 41 edges
-3. `EuropeanInsiderTrade` - 39 edges
-4. `EuropeanTab` - 38 edges
-5. `CongressTab` - 36 edges
-6. `filter_congress_trades()` - 26 edges
-7. `EFDSession` - 25 edges
-8. `InsiderTrade` - 21 edges
-9. `MainWindow` - 21 edges
-10. `PandasTableModel` - 20 edges
+1. `CongressTrade` - 69 edges
+2. `EuropeanInsiderTrade` - 61 edges
+3. `InsiderTrade` - 45 edges
+4. `ScanTab` - 44 edges
+5. `EuropeanScanService` - 42 edges
+6. `EuropeanTab` - 41 edges
+7. `CongressTab` - 39 edges
+8. `UsScanService` - 38 edges
+9. `MainWindow` - 33 edges
+10. `BoundedAdapter` - 33 edges
 
 ## Surprising Connections (you probably didn't know these)
-
+- `test_full_pipeline()` --calls--> `scrape_house_trades()`  [INFERRED]
+  tests/test_congress_house.py → src/insider_scanner/core/congress_house.py
 - `TestResolveCikFromJson` --uses--> `InsiderTrade`  [INFERRED]
   tests/test_edgar.py → src/insider_scanner/core/models.py
 - `TestRefreshFunctions` --uses--> `CongressTrade`  [INFERRED]
@@ -130,11 +153,8 @@
   scripts/update_congress.py → src/insider_scanner/core/senate.py
 - `test_404_raises()` --calls--> `ensure_house_index()`  [INFERRED]
   tests/test_congress_house.py → src/insider_scanner/core/congress_house.py
-- `test_download_and_cache()` --calls--> `fetch_ptr_pdf()`  [INFERRED]
-  tests/test_congress_house.py → src/insider_scanner/core/congress_house.py
 
 ## Hyperedges (group relationships)
-
 - **European Scan Workflow** — core_eu_scan_orchestrator, core_afm_scraper, core_amf_scraper, core_bafin_scraper, core_rns_scraper, core_eu_merger [EXTRACTED 1.00]
 - **Congress Data Pipeline** — script_update_congress, core_congress_manager, core_house_scraper, core_senate_scraper [INFERRED 0.85]
 - **GUI Tabs Group** — gui_scan_tab, gui_congress_tab, gui_european_tab [INFERRED 0.80]
@@ -143,344 +163,343 @@
 - **US Congress Trading Data Flow** — test_integration_congress_integration_tests, test_senate_congress_flagging_tests, test_update_congress_script_update_tests [EXTRACTED 0.85]
 - **US Corporate Insider Flow** — test_edgar_sec_edgar_tests, test_secform4_secform4_scraper_tests, test_openinsider_openinsider_scraper_tests, test_merger_trade_merger_tests [EXTRACTED 0.90]
 
-## Communities (96 total, 31 thin omitted)
+## Communities (116 total, 35 thin omitted)
 
-### Community 0 - "Gui Components"
+### Community 0 - "Community 0"
+Cohesion: 0.05
+Nodes (69): DateInterval, PersistenceError, Persistence-specific errors., Raised when database initialization or migration fails., ApplicationServices, open_application_services(), Application-level ownership of persistence-backed scan services., Shared services for one CLI invocation or GUI process. (+61 more)
 
+### Community 1 - "Community 1"
+Cohesion: 0.05
+Nodes (65): immediate_transaction(), Serialize a SQLite read-modify-write transaction before its first read., coalesce_congress_trades(), coalesce_european_trades(), congress_canonical_key(), congress_from_row(), congress_to_values(), _deterministic_value() (+57 more)
+
+### Community 2 - "Community 2"
+Cohesion: 0.05
+Nodes (41): flag_congress_trades(), init_default_congress_file(), load_congress_members(), _normalize_name(), Congress member list management and trade flagging.  Maintains a local JSON fi, Create the default congress members file if it doesn't exist., Load the Congress member list from disk.      Returns a list of dicts, each wi, Save the Congress member list to disk. (+33 more)
+
+### Community 3 - "Community 3"
 Cohesion: 0.06
-Nodes (24): EuropeanTab, _on_scan_finished(),_on_scan_result(), European Insider Scan tab — GUI for UK, DE, FR, NL disclosures.  Provides a fu, Fetch the N most recent trades from each EU source globally (no ISIN filter)., Backward-compatible wrapper around the core EU dispatcher., European insider scan tab., _scrape_isin() (+16 more)
+Nodes (33): _dedup_key(), filter_trades(), merge_trade_pair(), merge_trades(), _primary_rank(), _primary_richness_score(), Deduplicate and merge insider trades from multiple sources.  Merging strategy:, Filter trades by various criteria.      Parameters     ----------     trades (+25 more)
 
-### Community 1 - "Tests Components"
+### Community 4 - "Community 4"
+Cohesion: 0.08
+Nodes (44): open_persistence(), Application persistence context for scan services., Open and bootstrap persistence, never returning a partial context., _import_file(), import_legacy_path(), _json_files(), LegacyFileReport, LegacyImportReport (+36 more)
 
-Cohesion: 0.07
-Nodes (25): _dedup_key(), filter_trades(), merge_trades(), Deduplicate and merge insider trades from multiple sources.  Merging strategy: t, Filter trades by various criteria.      Parameters     ----------     trades : l, Convert a list of InsiderTrade to a pandas DataFrame., Save scan results as CSV and JSON.      Returns the output directory., Generate a deduplication key for a trade. (+17 more)
-
-### Community 2 - "Tests Components"
-
+### Community 5 - "Community 5"
 Cohesion: 0.04
 Nodes (12): Tests for the Congress member update script., Judiciary (Other) + Armed Services (Defense) → only Defense., Sectors returned in priority order regardless of input order., Subcommittee IDs should resolve to parent committee name., TestCommitteeSectorMapping, TestDetermineSectors, TestEnrichWithCommittees, TestFetchCommitteeMembership (+4 more)
 
-### Community 3 - "Tests Components"
-
+### Community 6 - "Community 6"
 Cohesion: 0.07
-Nodes (21): _br_split(), _classify_trade(), _parse_date(), _parse_number(), parse_secform4_html(), Scrape insider trades from secform4.com., Parse insider trades from secform4.com HTML.      secform4.com uses compound tab, Parse date from various formats. (+13 more)
+Nodes (31): _determine_trade_type(), fetch_uk_latest(), fetch_uk_trades(), _parse_announcement(), _parse_price_volume(), _parse_trade_date(), UK insider trade scraper — Investegate (RNS/GNW announcements).  Data source:, Parse a single MAR Article 19 announcement page into a _RawRns object.      Th (+23 more)
 
-### Community 4 - "Tests Components"
-
+### Community 7 - "Community 7"
 Cohesion: 0.07
-Nodes (20): _classify_trade(), _parse_date(), _parse_number(), parse_openinsider_html(), Scrape insider trades from openinsider.com., Scrape the latest insider trades across all tickers.      Parameters     -------, Parse insider trades from openinsider.com HTML.      Parameters     ----------, Scrape insider trades for a specific ticker from openinsider.com.      Parameter (+12 more)
+Nodes (26): Tests for config utilities., TestLoadEuWatchlist, TestLoadWatchlist, TestPackagedSeeds, TestRuntimePaths, _copy_seed_if_missing(), ensure_dirs(), load_eu_watchlist() (+18 more)
 
-### Community 5 - "Gui Components"
+### Community 8 - "Community 8"
+Cohesion: 0.06
+Nodes (24): _classify_trade(), _parse_date(), _parse_number(), parse_openinsider_html(), Scrape insider trades from openinsider.com., Scrape the latest insider trades across all tickers.      Parameters     ----, Parse insider trades from openinsider.com HTML.      Parameters     ---------, Scrape insider trades for a specific ticker from openinsider.com.      Paramet (+16 more)
 
-Cohesion: 0.10
-Nodes (10): build_edgar_url_for_trade(), Generate an EDGAR search URL for a given trade (for verification)., _on_scan_done(),_on_scan_error(), Scan tab: ticker search, source selection, filters, results table, EDGAR links., Enable or disable all scan-triggering buttons., Signal the running watchlist scan to stop., Full scan workflow: enter ticker → select sources → scan → view → EDGAR. (+2 more)
-
-### Community 6 - "Insider Components"
-
+### Community 9 - "Community 9"
 Cohesion: 0.07
-Nodes (21): build_parser(), cmd_init_congress(), cmd_latest(), main(), _parse_date_arg(), CLI entry point for headless insider trade scanning., Initialize the default Congress member list., Parse a YYYY-MM-DD date string from CLI arguments. (+13 more)
+Nodes (21): _br_split(), _classify_trade(), _parse_date(), _parse_number(), parse_secform4_html(), Scrape insider trades from secform4.com., Parse insider trades from secform4.com HTML.      secform4.com uses compound t, Parse date from various formats. (+13 more)
 
-### Community 7 - "Tests Components"
+### Community 10 - "Community 10"
+Cohesion: 0.1
+Nodes (10): CongressTab, _on_scan_done(), _on_scan_error(), Congress Scan tab: scan trades by Congress member with sector filtering., Congress trade scanner: select official → scan sources → filter → view., Congress trade scanner: select official → scan sources → filter → view., Toggle scan-related buttons., Toggle scan-related buttons. (+2 more)
 
+### Community 11 - "Community 11"
 Cohesion: 0.11
-Nodes (15): flag_congress_trades(), init_default_congress_file(), load_congress_members(),_normalize_name(), Congress member list management and trade flagging.  Maintains a local JSON file, Create the default congress members file if it doesn't exist., Load the Congress member list from disk.      Returns a list of dicts, each with, Save the Congress member list to disk. (+7 more)
+Nodes (9): filter_congress_trades(), Filter CongressTrade records.      Parameters     ----------     trades : li, Filter CongressTrade records.      Parameters     ----------     trades : li, Pelosi has both Finance and Technology sectors., Sector filter with no member_sectors dict has no effect., TestFilterCongressTrades, Test filtering across mixed House + Senate trades., Purchase + Technology sector + min $500K. (+1 more)
 
-### Community 8 - "Tests Components"
-
+### Community 12 - "Community 12"
 Cohesion: 0.11
-Nodes (8): filter_congress_trades(), Filter CongressTrade records.      Parameters     ----------     trades : list o, Pelosi has both Finance and Technology sectors., Sector filter with no member_sectors dict has no effect., TestFilterCongressTrades, Test filtering across mixed House + Senate trades., Purchase + Technology sector + min $500K., TestFilterPipeline
+Nodes (20): _fetch_csv_export(), fetch_de_latest(), fetch_de_trades(), _map_csv_rows(), _map_instrument(), _map_trade_type(), _parse_filing_date(), _parse_result_table() (+12 more)
 
-### Community 9 - "Core Components"
+### Community 13 - "Community 13"
+Cohesion: 0.13
+Nodes (16): congress_trades_to_dataframe(), Convert a list of CongressTrade to a pandas DataFrame., Convert a list of CongressTrade to a pandas DataFrame., _house_trades(), Integration tests for the Congress scan pipeline.  These tests verify that all, Test House + Senate trades merged into one list., Test DataFrame conversion with mixed data., Filter → DataFrame pipeline. (+8 more)
 
-Cohesion: 0.11
-Nodes (20): _fetch_csv_export(), fetch_de_latest(), fetch_de_trades(),_map_csv_rows(), _map_instrument(), _map_trade_type(),_parse_filing_date(), _parse_result_table() (+12 more)
-
-### Community 10 - "Core Components"
-
+### Community 14 - "Community 14"
 Cohesion: 0.12
-Nodes (19): _download_pdf(), fetch_fr_latest(), fetch_fr_trades(), _item_to_trade(),_map_trade_type(), _parse_french_date(),_parse_iso_date(), _parse_pdf_text() (+11 more)
+Nodes (9): Signal the running watchlist scan to stop., Signal the running watchlist scan to stop., Signal the running watchlist scan to stop., Request cooperative cancellation without blocking the GUI thread., Full scan workflow: enter ticker → select sources → scan → view → EDGAR., Full scan workflow: enter ticker → select sources → scan → view → EDGAR., ScanTab, QWidget (+1 more)
 
-### Community 11 - "Core Components"
+### Community 15 - "Community 15"
+Cohesion: 0.1
+Nodes (14): MainWindow, MainWindowInitializationError, Main window with default OS style and tabbed interface., Insider Scanner main window., Raised when the main window cannot be initialized safely., Raised when the main window cannot be initialized safely., Insider Scanner main window., Insider Scanner main window. (+6 more)
 
-Cohesion: 0.13
-Nodes (17): _determine_trade_type(), fetch_uk_latest(), fetch_uk_trades(),_parse_announcement(),_parse_price_volume(), _parse_trade_date(), UK insider trade scraper — Investegate (RNS/GNW announcements).  Data source:, Parse a single MAR Article 19 announcement page into a_RawRns object.      Th (+9 more)
+### Community 16 - "Community 16"
+Cohesion: 0.12
+Nodes (19): _download_pdf(), fetch_fr_latest(), fetch_fr_trades(), _item_to_trade(), _map_trade_type(), _parse_french_date(), _parse_iso_date(), _parse_pdf_text() (+11 more)
 
-### Community 12 - "Tests Components"
+### Community 17 - "Community 17"
+Cohesion: 0.11
+Nodes (18): _extract_ticker(), _find_header_row(), _index_txt_path(), _is_scanned_pdf(), _map_columns(), _normalize_tx_type(), parse_ptr_pdf(), _parse_table_row() (+10 more)
 
-Cohesion: 0.15
-Nodes (15): EFDSession, Search for Senate PTR filings and return parsed results.      Handles pagination, Manages an authenticated session with efdsearch.senate.gov.      Handles CSRF to, search_senate_filings(), Tests for Senate EFD financial disclosure scraper (congress_senate.py)., test_authenticate(), test_authenticate_no_csrf(), test_empty_results() (+7 more)
+### Community 18 - "Community 18"
+Cohesion: 0.12
+Nodes (15): EFDSession, Search for Senate PTR filings and return parsed results.      Handles paginati, Manages an authenticated session with efdsearch.senate.gov.      Handles CSRF, search_senate_filings(), Tests for Senate EFD financial disclosure scraper (congress_senate.py)., test_authenticate(), test_authenticate_no_csrf(), test_empty_results() (+7 more)
 
-### Community 13 - "Core Components"
+### Community 19 - "Community 19"
+Cohesion: 0.11
+Nodes (11): PandasTableModel, Backward-compatible alias used by older tabs., Qt table model backed by a pandas DataFrame., Backward-compatible alias used by older tabs., Proxy adding sort/filter on top of PandasTableModel., SortableTableModel, QAbstractTableModel, QSortFilterProxyModel (+3 more)
 
+### Community 20 - "Community 20"
+Cohesion: 0.12
+Nodes (15): _find_transaction_table(), _map_senate_columns(), _normalize_tx_type(), _parse_date(), parse_ptr_page(), _parse_senate_row(), Senate financial disclosure scraper via efdsearch.senate.gov.  The Senate's El, Extract transactions from a Senate PTR HTML page.      The page contains a tab (+7 more)
+
+### Community 21 - "Community 21"
 Cohesion: 0.14
-Nodes (14): _find_header_row(),_index_txt_path(), _is_scanned_pdf(),_map_columns(), parse_ptr_pdf(),_parse_table_row(), House of Representatives financial disclosure index and PDF parsing.  Data comes, Detect if a PDF is scanned (image-based) rather than electronic.      Scanned PD (+6 more)
+Nodes (9): FakeEuService, FakeUsService, _services(), test_cli_default_eu_scan_works_without_dates(), test_cli_default_us_scan_works_without_dates(), test_eu_scan_uses_service_for_each_watchlist_identifier(), test_latest_uses_us_service_with_count_dates_and_cache(), test_run_close_failure_changes_success_to_nonzero_and_is_concise() (+1 more)
 
-### Community 14 - "Tests Components"
-
-Cohesion: 0.17
-Nodes (17): ensure_house_index(), Ensure the House financial disclosure index for *year* is available.      Downlo, Re-download indexes for all specified years (force=True).      Parameters     --, Re-download only the current year's index., refresh_all_indexes(), refresh_current_year(), _make_sample_zip(), Tests for House financial disclosure scraper (congress_house.py). (+9 more)
-
-### Community 15 - "Core Components"
-
-Cohesion: 0.13
-Nodes (14): _find_transaction_table(),_map_senate_columns(), _normalize_tx_type(),_parse_date(), parse_ptr_page(),_parse_senate_row(), Senate financial disclosure scraper via efdsearch.senate.gov.  The Senate's Elec, Extract transactions from a Senate PTR HTML page.      The page contains a table (+6 more)
-
-### Community 16 - "Core Components"
-
+### Community 22 - "Community 22"
 Cohesion: 0.16
-Nodes (15): _coalesce(),_dedup_key(), eu_trades_to_dataframe(), filter_eu_trades(), merge_eu_trades(), European insider trade deduplication, filtering, and export.  Mirrors the role, Merge trades from multiple country scrapers, deduplicating by key.      Strate, Filter a list of European insider trades by multiple criteria.      Parameters (+7 more)
+Nodes (18): ensure_house_index(), Ensure the House financial disclosure index for *year* is available.      Down, Re-download indexes for all specified years (force=True).      Parameters, Re-download only the current year's index., refresh_all_indexes(), refresh_current_year(), _make_sample_zip(), Tests for House financial disclosure scraper (congress_house.py). (+10 more)
 
-### Community 17 - "Scripts Components"
+### Community 23 - "Community 23"
+Cohesion: 0.13
+Nodes (17): _coalesce(), _dedup_key(), eu_trades_to_dataframe(), filter_eu_trades(), merge_eu_trades(), European insider trade deduplication, filtering, and export.  Mirrors the role, Merge trades from multiple country scrapers, deduplicating by key.      Strate, Filter a list of European insider trades by multiple criteria.      Parameters (+9 more)
 
+### Community 24 - "Community 24"
+Cohesion: 0.22
+Nodes (15): FakeService, InlinePool, test_congress_tab_service_error_is_concise(), test_congress_tab_worker_uses_injected_service(), test_european_watchlist_and_latest_use_injected_service(), test_gui_default_scans_work_without_enabled_dates(), test_main_window_close_cancels_and_drains_real_worker_before_service_close(), test_main_window_close_timeout_is_logged_and_ignored() (+7 more)
+
+### Community 25 - "Community 25"
+Cohesion: 0.15
+Nodes (13): bootstrap_database(), Create the version table and apply pending migrations atomically., Create the version table and apply pending migrations atomically., Tests for the SQLAlchemy Core persistence foundation., test_bootstrap_creates_all_tables_constraints_and_indexes(), test_bootstrap_is_idempotent(), test_bootstrap_sets_schema_version_to_one(), test_coverage_and_refresh_schema_include_complete_storage_keys() (+5 more)
+
+### Community 26 - "Community 26"
 Cohesion: 0.16
 Nodes (17): determine_sectors(), enrich_with_committees(), fetch_committee_membership(), fetch_committees(), fetch_federal_legislators(), fetch_state_legislators(), main(), map_committee_to_sector() (+9 more)
 
-### Community 18 - "Tests Components"
+### Community 27 - "Community 27"
+Cohesion: 0.16
+Nodes (6): EuropeanTab, Request cooperative cancellation without blocking the GUI thread., European insider scan tab., European insider scan tab., TestEuropeanTab, TestEuropeanTab
 
-Cohesion: 0.20
-Nodes (10): _house_trades(), Integration tests for the Congress scan pipeline.  These tests verify that all c, Test House + Senate trades merged into one list., Test DataFrame conversion with mixed data., Filter → DataFrame pipeline., Simulated House scraper output., Simulated Senate scraper output., _senate_trades() (+2 more)
+### Community 28 - "Community 28"
+Cohesion: 0.16
+Nodes (8): build_edgar_url_for_trade(), Generate an EDGAR search URL for a given trade (for verification)., _on_scan_done(), _on_scan_error(), Scan tab: ticker search, source selection, filters, results table, EDGAR links., Enable or disable all scan-triggering buttons., Enable or disable all scan-triggering buttons., Enable or disable all scan-triggering buttons.
 
-### Community 19 - "Tests Components"
+### Community 29 - "Community 29"
+Cohesion: 0.2
+Nodes (13): _conditions(), CoverageRepository, normalize_intervals(), Inclusive date interval math and successful scan coverage storage., uncovered_gaps(), _interval(), Coverage interval math and persistence tests., test_coverage_concurrent_adds_preserve_complete_union() (+5 more)
 
+### Community 30 - "Community 30"
 Cohesion: 0.15
 Nodes (7): EuropeanInsiderTrade, Unified insider trade record from a European regulatory disclosure., Tests for CLI parsing and EU scan command wiring., TestBuildParser, TestCmdEuScan, TestParseDateArg, TestEuropeanInsiderTrade
 
-### Community 20 - "Tests Components"
+### Community 31 - "Community 31"
+Cohesion: 0.15
+Nodes (11): QObject, QRunnable, Background Worker Threading Tests, Tests for background worker helpers., TestWorker, Threading helper for background tasks in the GUI., Run a callable in a background thread.      Signal emissions are guarded: if t, Emit a signal, silently ignoring if QObject already deleted. (+3 more)
 
-Cohesion: 0.18
-Nodes (4): CongressTab, Congress trade scanner: select official → scan sources → filter → view., Signal the background scan to stop., TestCongressTab
-
-### Community 21 - "Gui Components"
-
+### Community 32 - "Community 32"
 Cohesion: 0.13
 Nodes (10): dataframe(), fg_color(), indicator_color(), PriceChangeCard, Reusable GUI widgets: pandas table model, dashboard cards., Card showing a price and 1-day % change with colored background., Generic card showing a title, large value, and optional meta text., Map a 0–100 Fear & Greed score to an RGBA background color. (+2 more)
 
-### Community 22 - "Core Components"
-
+### Community 33 - "Community 33"
 Cohesion: 0.15
 Nodes (17): CLI Scan Command, AFM (Netherlands) Scraper, AMF (France) Scraper, BaFin (Germany) Scraper, Congress Member List Manager, EU Trade Merger, EuropeanInsiderTrade Data Model, EU Scan Orchestrator (+9 more)
 
-### Community 23 - "Gui Components"
-
-Cohesion: 0.17
-Nodes (7): _load_member_sectors(),_on_scan_done(), _on_scan_error(), Congress Scan tab: scan trades by Congress member with sector filtering., Toggle scan-related buttons., Load official_name → sector list mapping from congress_members.json.      Return, TestLoadMemberSectors
-
-### Community 24 - "Tests Components"
-
-Cohesion: 0.15
-Nodes (9): congress_trades_to_dataframe(), Convert a list of CongressTrade to a pandas DataFrame.,_make_trade(), Tests for congress_tab helper functions (non-GUI)., Create a CongressTrade with sensible defaults, accepting overrides., All display columns should exist in CongressTrade.to_dict()., TestCongressTradesToDataframe, TestDisplayColumns (+1 more)
-
-### Community 25 - "Tests Components"
-
-Cohesion: 0.21
-Nodes (5): CongressTrade, Financial disclosure trade record for a Congress member.      Unlike InsiderTrad, Tests for CongressTrade dataclass., TestCongressTradeBasic, TestCongressTradeSerialisation
-
-### Community 26 - "Gui Components"
-
-Cohesion: 0.21
-Nodes (5): MainWindow, Main window with default OS style and tabbed interface., Insider Scanner main window., QMainWindow, TestMainWindow
-
-### Community 27 - "Core Components"
-
-Cohesion: 0.17
-Nodes (9): create_efd_session(), _extract_ticker(), _rate_limit(), Search the EFD report data API.          Parameters         ----------         f, Fetch a page within the EFD session.          Returns the HTML text of the page., Create and authenticate an EFD session.      Returns     -------     EFDSession, Extract ticker from asset description., Enforce rate limiting between requests. (+1 more)
-
-### Community 28 - "Tests Components"
-
-Cohesion: 0.20
-Nodes (5): normalize_position(), European insider trade data model.  Covers disclosures from UK (FCA/RNS), Germ, Normalise a raw position/role string to a standard English category.      Retu, Tests for European insider trade models and helpers., TestNormalizePosition
-
-### Community 29 - "Gui Components"
-
-Cohesion: 0.20
-Nodes (7): Backward-compatible alias used by older tabs., Backward-compatible alias used by older tabs., Proxy adding sort/filter on top of PandasTableModel., SortableTableModel, QSortFilterProxyModel, GUI tests using pytest-qt for widget creation and basic interactions., TestSortableTableModel
-
-### Community 30 - "Gui Components"
-
-Cohesion: 0.21
-Nodes (4): PandasTableModel, Qt table model backed by a pandas DataFrame., QAbstractTableModel, TestPandasTableModel
-
-### Community 31 - "Gui Components"
-
+### Community 34 - "Community 34"
 Cohesion: 0.18
-Nodes (5): _load_congress_names(), Reload congress_members.json and repopulate the dropdown., Load Congress member names from the JSON data file.      Returns a sorted list o, QWidget, TestLoadCongressNames
+Nodes (12): _aware_utc(), _conditions(), is_fresh(), UTC refresh-state storage and deterministic freshness checks., RefreshStateRepository, Refresh-state persistence and freshness tests., test_freshness_is_deterministic_at_ttl_boundary(), test_freshness_rejects_naive_datetimes() (+4 more)
 
-### Community 32 - "Tests Components"
+### Community 35 - "Community 35"
+Cohesion: 0.17
+Nodes (6): DummyApp, DummyWindow, Tests for the GUI application entrypoint., test_main_does_not_close_services_when_workers_fail_to_drain(), test_main_initialises_app(), test_main_window_startup_failure_closes_services_and_exits_cleanly()
 
+### Community 36 - "Community 36"
 Cohesion: 0.21
-Nodes (6): Save Congress scan results as CSV and JSON.      Returns the output directory., save_congress_results(), TestSaveCongressResults, Test save → reload round-trip preserves data., Filter → save only filtered results., TestSaveReloadPipeline
+Nodes (5): CongressTrade, Financial disclosure trade record for a Congress member.      Unlike InsiderTr, Tests for CongressTrade dataclass., TestCongressTradeBasic, TestCongressTradeSerialisation
 
-### Community 33 - "Tests Components"
+### Community 37 - "Community 37"
+Cohesion: 0.18
+Nodes (8): Scrape House PTR filings and return parsed CongressTrade records.      Paramet, scrape_house_trades(), TestScrapeHouseTrades, Test that the congress_tab scan flow calls scrapers correctly., Simulate a House-only scan through the pipeline., Simulate a Senate-only scan through the pipeline., Simulate 'All' officials scan (official_name=None)., TestScraperIntegration
 
-Cohesion: 0.23
-Nodes (11): Resolve a ticker to CIK using SEC's company_tickers.json.      This is the prefe, resolve_cik_from_json(), Tests for SEC EDGAR CIK resolver (mocked HTTP)., resolve_cik() should use JSON primary, HTML fallback, and zero-pad., test_resolve_aapl(), test_resolve_case_insensitive(), test_resolve_network_error(), test_resolve_not_found() (+3 more)
+### Community 38 - "Community 38"
+Cohesion: 0.17
+Nodes (7): _make_trade(), Tests for congress_tab helper functions (non-GUI)., Create a CongressTrade with sensible defaults, accepting overrides., All display columns should exist in CongressTrade.to_dict()., TestCongressTradesToDataframe, TestDisplayColumns, TestSectors
 
-### Community 34 - "Tests Components"
+### Community 39 - "Community 39"
+Cohesion: 0.21
+Nodes (5): Tests for European models, orchestration, and GUI behavior., TestEuropeanMerger, TestEuropeanModels, TestEuropeanScan, _trade()
 
+### Community 40 - "Community 40"
 Cohesion: 0.29
 Nodes (6): TestGetSetCached, get_cached(), Simple file-based cache with TTL expiry., Return cached content if it exists and hasn't expired, else None., Write content to cache with current timestamp., set_cached()
 
-### Community 35 - "Tests Components"
+### Community 41 - "Community 41"
+Cohesion: 0.23
+Nodes (11): Resolve a ticker to CIK using SEC's company_tickers.json.      This is the pre, resolve_cik_from_json(), Tests for SEC EDGAR CIK resolver (mocked HTTP)., resolve_cik() should use JSON primary, HTML fallback, and zero-pad., test_resolve_aapl(), test_resolve_case_insensitive(), test_resolve_network_error(), test_resolve_not_found() (+3 more)
 
-Cohesion: 0.25
-Nodes (6): Scrape Senate PTR filings and return CongressTrade records.      Parameters, scrape_senate_trades(), Test scrape_senate_trades with fully mocked session., Verify official_name gets split correctly for the search., PTR page fetch failures should be skipped gracefully., TestScrapeSentateTrades
+### Community 42 - "Community 42"
+Cohesion: 0.2
+Nodes (10): fetch_company_info(), fetch_filings_page(), SEC EDGAR CIK resolver and Form 4 filing lookup.  Compliance: Uses proper User, Fetch the EDGAR Form 4 filings listing page for a CIK.      Parameters     --, Fetch company submission info from EDGAR.      Returns a dict with keys like ', fetch_url(), _rate_limit(), Rate-limited HTTP client with SEC EDGAR compliance and optional caching. (+2 more)
 
-### Community 36 - "Tests Components"
+### Community 43 - "Community 43"
+Cohesion: 0.17
+Nodes (9): create_efd_session(), _extract_ticker(), _rate_limit(), Search the EFD report data API.          Parameters         ----------, Fetch a page within the EFD session.          Returns the HTML text of the pag, Create and authenticate an EFD session.      Returns     -------     EFDSess, Extract ticker from asset description., Enforce rate limiting between requests. (+1 more)
 
+### Community 44 - "Community 44"
+Cohesion: 0.2
+Nodes (5): normalize_position(), European insider trade data model.  Covers disclosures from UK (FCA/RNS), Germ, Normalise a raw position/role string to a standard English category.      Retu, Tests for European insider trade models and helpers., TestNormalizePosition
+
+### Community 45 - "Community 45"
 Cohesion: 0.25
 Nodes (6): Tests for European trade merge/filter/export helpers., TestEuTradesToDataFrame, TestFilterEuTrades, TestMergeEuTrades, TestSaveEuResults, _trade()
 
-### Community 37 - "Tests Components"
+### Community 46 - "Community 46"
+Cohesion: 0.25
+Nodes (6): Scrape Senate PTR filings and return CongressTrade records.      Parameters, scrape_senate_trades(), Test scrape_senate_trades with fully mocked session., Verify official_name gets split correctly for the search., PTR page fetch failures should be skipped gracefully., TestScrapeSentateTrades
 
-Cohesion: 0.20
-Nodes (4): DummyApp, DummyWindow, Tests for the GUI application entrypoint., test_main_initialises_app()
-
-### Community 38 - "Core Components"
-
+### Community 47 - "Community 47"
 Cohesion: 0.22
-Nodes (8): _extract_ticker(), _normalize_tx_type(), Try to extract a ticker symbol from an asset description.      Looks for pattern, Normalize transaction type string to Purchase/Sale/Exchange/Other., Scrape House PTR filings and return parsed CongressTrade records.      Parameter, scrape_house_trades(), test_full_pipeline(), TestScrapeHouseTrades
+Nodes (7): Save Congress scan results as CSV and JSON.      Returns the output directory., Save Congress scan results as CSV and JSON.      Returns the output directory., save_congress_results(), TestSaveCongressResults, Test save → reload round-trip preserves data., Filter → save only filtered results., TestSaveReloadPipeline
 
-### Community 39 - "Tests Components"
-
+### Community 48 - "Community 48"
 Cohesion: 0.31
 Nodes (4): Search the House index for matching filings.      Parameters     ----------, search_filings(), name=None should return all PTR filings., TestSearchFilings
 
-### Community 41 - "Core Components"
+### Community 49 - "Community 49"
+Cohesion: 0.29
+Nodes (4): _on_scan_finished(), Fetch the N most recent trades from each EU source globally (no ISIN filter)., Fetch the N most recent trades from each EU source globally (no ISIN filter)., Fetch the N most recent trades from each EU source globally (no ISIN filter).
 
+### Community 51 - "Community 51"
 Cohesion: 0.27
-Nodes (9): _normalise_trade_type(),_parse_nl_date(), _parse_record(), Dutch insider trade scraper — AFM Directors' Dealings register.  Fetches insid, Fetch Directors' Dealings for an ISIN from the AFM register.      Parameters, Parse date strings from AFM API responses., Map AFM transaction type strings to Buy / Sell / Other., Convert a single AFM API result record to an EuropeanInsiderTrade. (+1 more)
+Nodes (9): _normalise_trade_type(), _parse_nl_date(), _parse_record(), Dutch insider trade scraper — AFM Directors' Dealings register.  Fetches insid, Fetch Directors' Dealings for an ISIN from the AFM register.      Parameters, Parse date strings from AFM API responses., Map AFM transaction type strings to Buy / Sell / Other., Convert a single AFM API result record to an EuropeanInsiderTrade. (+1 more)
 
-### Community 42 - "Core Components"
+### Community 52 - "Community 52"
+Cohesion: 0.24
+Nodes (4): InsiderTrade, Common data models for insider trades., Unified insider trade record from any source., TestBuildEdgarUrl
 
+### Community 53 - "Community 53"
 Cohesion: 0.22
-Nodes (8): Shared European scan orchestration used by GUI and CLI., Fetch the N most recent insider trades from each selected EU source.      Unli, Filter out false-match records and assign the query ISIN to blank ones.      S, Dispatch scraping for one ISIN across the selected European sources., scrape_eu_latest(), scrape_eu_trades_for_isin(), _verify_isin(), TestEuropeanScan
+Nodes (7): _load_congress_names(), Reload congress_members.json and repopulate the dropdown., Reload congress_members.json and repopulate the dropdown., Reload congress_members.json and repopulate the dropdown., Load Congress member names from the JSON data file.      Returns a sorted list, Load Congress member names from the JSON data file.      Returns a sorted list, TestLoadCongressNames
 
-### Community 43 - "Tests Components"
+### Community 54 - "Community 54"
+Cohesion: 0.2
+Nodes (9): create_sqlite_engine(), SQLite engine creation and connection configuration., Create a SQLite engine with foreign keys and transactional DDL enabled., Create a SQLite engine with foreign keys and transactional DDL enabled., Create a SQLite engine with foreign keys and transactional DDL enabled., engine(), test_bootstrap_rejects_invalid_stored_schema_history(), test_migration_one_ignores_tables_added_to_runtime_metadata() (+1 more)
 
-Cohesion: 0.20
-Nodes (6): Test that the congress_tab scan flow calls scrapers correctly., Simulate a House-only scan through the pipeline., Simulate a Senate-only scan through the pipeline., Simulate the full House + Senate scan → filter → save flow., Simulate 'All' officials scan (official_name=None)., TestScraperIntegration
-
-### Community 44 - "Tests Components"
-
-Cohesion: 0.22
-Nodes (8): Resolve a ticker symbol to a SEC CIK number.      Uses the SEC company_tickers.j, resolve_cik(), cmd_resolve_cik(), Resolve a ticker to SEC CIK., test_both_fail(), test_json_miss_html_fallback(), test_json_primary_success(), TestEdgarLive
-
-### Community 45 - "Tests Components"
-
+### Community 55 - "Community 55"
 Cohesion: 0.28
-Nodes (6): _index_xml_path(), parse_house_index(), Parse the House financial disclosure XML index for a given year.      Returns a, Path where the extracted XML index lives., BOM-prefixed XML (as found in real data) should parse correctly., TestParseHouseIndex
+Nodes (6): _index_xml_path(), parse_house_index(), Parse the House financial disclosure XML index for a given year.      Returns, Path where the extracted XML index lives., BOM-prefixed XML (as found in real data) should parse correctly., TestParseHouseIndex
 
-### Community 46 - "Tests Components"
-
+### Community 56 - "Community 56"
 Cohesion: 0.36
 Nodes (3): _parse_date_flexible(), Parse a date from various formats found in PDFs., TestParseDateFlexible
 
-### Community 47 - "Core Components"
+### Community 57 - "Community 57"
+Cohesion: 0.22
+Nodes (7): get_filing_url(), Return the EDGAR filing listing URL for a given CIK., cmd_resolve_cik(), Resolve a ticker to SEC CIK., Resolve a ticker to SEC CIK., Resolve a ticker to SEC CIK., TestFilingUrl
 
+### Community 58 - "Community 58"
 Cohesion: 0.25
-Nodes (6): fetch_filings_page(), get_filing_url(), SEC EDGAR CIK resolver and Form 4 filing lookup.  Compliance: Uses proper User-A, Return the EDGAR filing listing URL for a given CIK., Fetch the EDGAR Form 4 filings listing page for a CIK.      Parameters     -----, TestFilingUrl
+Nodes (7): fetch_ptr_pdf(), _pdf_cache_path(), Download a PTR PDF and return its raw bytes.      Caches locally under data/ho, Path where a cached PTR PDF lives., Second call should use cache, not HTTP., test_download_and_cache(), TestFetchPtrPdf
 
-### Community 48 - "Core Components"
-
-Cohesion: 0.25
-Nodes (7): fetch_ptr_pdf(), _pdf_cache_path(), Download a PTR PDF and return its raw bytes.      Caches locally under data/hous, Path where a cached PTR PDF lives., Second call should use cache, not HTTP., test_download_and_cache(), TestFetchPtrPdf
-
-### Community 49 - "Tests Components"
-
+### Community 59 - "Community 59"
 Cohesion: 0.39
 Nodes (3): _determine_years(), Determine which year indexes need to be fetched for the date range., TestDetermineYears
 
-### Community 50 - "Tests Components"
+### Community 60 - "Community 60"
+Cohesion: 0.29
+Nodes (7): Shared European scan orchestration used by GUI and CLI., Fetch the N most recent insider trades from each selected EU source.      Unli, Filter out false-match records and assign the query ISIN to blank ones.      S, Dispatch scraping for one ISIN across the selected European sources., scrape_eu_latest(), scrape_eu_trades_for_isin(), _verify_isin()
 
+### Community 61 - "Community 61"
+Cohesion: 0.25
+Nodes (4): _on_scan_result(), European Insider Scan tab — GUI for UK, DE, FR, NL disclosures.  Provides a fu, Backward-compatible wrapper around the core EU dispatcher., _scrape_isin()
+
+### Community 62 - "Community 62"
+Cohesion: 0.32
+Nodes (5): parse_cik_from_html(), Extract CIK from EDGAR company search result page., Resolve CIK by scraping the EDGAR company browse page (fallback)., _resolve_cik_html(), TestParseCik
+
+### Community 63 - "Community 63"
+Cohesion: 0.29
+Nodes (6): Resolve a ticker symbol to a SEC CIK number.      Uses the SEC company_tickers, resolve_cik(), test_both_fail(), test_json_miss_html_fallback(), test_json_primary_success(), TestEdgarLive
+
+### Community 64 - "Community 64"
 Cohesion: 0.39
-Nodes (3): parse_search_results(), Parse the JSON response from the EFD search API.      Each result row is: [first, TestParseSearchResults
+Nodes (3): Split an official name into (first_name, last_name) for search.      Handles f, _split_name(), TestSplitName
 
-### Community 51 - "Tests Components"
-
+### Community 65 - "Community 65"
 Cohesion: 0.39
-Nodes (3): Split an official name into (first_name, last_name) for search.      Handles for, _split_name(), TestSplitName
+Nodes (3): parse_search_results(), Parse the JSON response from the EFD search API.      Each result row is: [fir, TestParseSearchResults
 
-### Community 52 - "Tests Components"
-
+### Community 66 - "Community 66"
 Cohesion: 0.29
 Nodes (4): Tests for European source-specific parsing helpers., _sample_trade(), TestAfmParsing, TestEuScanDispatch
 
-### Community 53 - "Tests Components"
+### Community 67 - "Community 67"
+Cohesion: 0.25
+Nodes (7): Database bootstrap and ordered migration execution., Require unique versions ordered contiguously from version one., Require unique versions ordered contiguously from version one., Validate stored versions as an exact supported contiguous prefix., _validate_migrations(), _validate_schema_history(), test_migration_sequence_validation_rejects_invalid_versions()
 
-Cohesion: 0.32
-Nodes (4): Tests for European models, orchestration, and GUI behavior., TestEuropeanMerger, TestEuropeanModels, _trade()
-
-### Community 54 - "Core Components"
-
-Cohesion: 0.32
-Nodes (5): parse_cik_from_html(), Extract CIK from EDGAR company search result page., Resolve CIK by scraping the EDGAR company browse page (fallback).,_resolve_cik_html(), TestParseCik
-
-### Community 55 - "Utils Components"
-
-Cohesion: 0.29
-Nodes (7): fetch_company_info(), Fetch company submission info from EDGAR.      Returns a dict with keys like 'na, fetch_url(),_rate_limit(), Rate-limited HTTP client with SEC EDGAR compliance and optional caching., Block until enough time has passed since the last request., Fetch a URL with optional caching and rate limiting.      Parameters     -------
-
-### Community 56 - "Gui Components"
-
-Cohesion: 0.62
-Nodes (7): GUI Background Task Pattern, CongressTab, EuropeanTab, MainWindow, ScanTab, Reusable GUI Widgets, Background Worker Threading
-
-### Community 57 - "Tests Components"
-
+### Community 68 - "Community 68"
 Cohesion: 0.43
 Nodes (3): _normalize_owner(), Normalize owner code to Self/Spouse/Dependent Child/Joint., TestNormalizeOwner
 
-### Community 58 - "Tests Components"
+### Community 69 - "Community 69"
+Cohesion: 0.29
+Nodes (4): Custom SQLAlchemy persistence types., Store aware datetimes as naive UTC and return aware UTC values., UTCDateTime, TypeDecorator
 
+### Community 70 - "Community 70"
 Cohesion: 0.33
 Nodes (4): Tests for the file-based caching system., TestClearCache, clear_cache(), Remove all cached files. Returns number of files removed.
 
-### Community 60 - "Tests Components"
+### Community 71 - "Community 71"
+Cohesion: 0.29
+Nodes (5): Migration, Ordered Python migrations for the local SQLite schema., One immutable, ordered schema migration., test_concurrent_bootstrap_serializes_atomic_migrations(), test_failed_migration_rolls_back_and_wraps_error()
 
+### Community 72 - "Community 72"
+Cohesion: 0.62
+Nodes (7): GUI Background Task Pattern, CongressTab, EuropeanTab, MainWindow, ScanTab, Reusable GUI Widgets, Background Worker Threading
+
+### Community 74 - "Community 74"
 Cohesion: 0.47
 Nodes (3): TestCacheKey, cache_key(), Create a filesystem-safe cache key from a URL.
 
-### Community 64 - "Tests Components"
+### Community 75 - "Community 75"
+Cohesion: 0.4
+Nodes (4): _load_member_sectors(), Load official_name → sector list mapping from congress_members.json.      Retu, Load official_name → sector list mapping from congress_members.json.      Retu, TestLoadMemberSectors
 
-Cohesion: 0.40
+### Community 76 - "Community 76"
+Cohesion: 0.33
+Nodes (4): Signal the background scan to stop., Signal the background scan to stop., Signal the background scan to stop., Request cooperative cancellation without blocking the GUI thread.
+
+### Community 77 - "Community 77"
+Cohesion: 0.4
 Nodes (3): Mock pdfplumber to simulate an electronic PTR PDF., Scanned PDFs (very little text) should return empty., TestParsePtrPdf
 
-### Community 65 - "Utils Components"
-
-Cohesion: 0.50
+### Community 80 - "Community 80"
+Cohesion: 0.5
 Nodes (4): SEC EDGAR Compliance, File-based Caching, Configuration, Rate-limited HTTP Client
 
-### Community 66 - "Core Components"
-
+### Community 81 - "Community 81"
 Cohesion: 0.67
 Nodes (3): House of Representatives Scraper, CongressTrade Data Model, Senate Disclosures Scraper
 
-### Community 67 - "Test Components"
-
+### Community 82 - "Community 82"
 Cohesion: 0.67
 Nodes (3): Congress Data Pipeline Rationale, Congress Pipeline Integration Tests, Congress Member Flagging Tests
 
 ## Knowledge Gaps
-
-- **29 isolated node(s):** `TestScrapeOpeninsider`, `TestFetchFederalLegislators`, `TestFetchStateLegislators`, `TestFetchCommittees`, `TestFetchCommitteeMembership` (+24 more)
+- **410 isolated node(s):** `Map a committee name to a market sector.      Returns the sector string (e.g.`, `Determine all relevant sectors from a list of committee names.      Returns a`, `Fetch current committee definitions and return {committee_id: name}.      Uses`, `Fetch committee membership and return {bioguide_id: [committee_ids]}.      Use`, `Add 'committees' and 'sector' fields to each member dict in-place.      Parame` (+405 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **31 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **35 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
+_Questions this graph is uniquely positioned to answer:_
 
-_Questions this graph is uniquely positioned to answer:*
-
-- **Why does `CongressTrade` connect `Tests Components` to `Tests Components`, `Tests Components`, `Tests Components`, `Core Components`, `Tests Components`, `Core Components`, `Tests Components`, `Gui Components`, `Tests Components`, `Gui Components`, `Tests Components`, `Tests Components`, `Core Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Core Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`?**
-  *High betweenness centrality (0.266) - this node is a cross-community bridge.*
-- **Why does `EuropeanInsiderTrade` connect `Tests Components` to `Gui Components`, `Tests Components`, `Gui Components`, `Core Components`, `Core Components`, `Core Components`, `Core Components`, `Core Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Gui Components`, `Tests Components`, `Gui Components`, `Gui Components`?**
-  *High betweenness centrality (0.176) - this node is a cross-community bridge.*
-- **Why does `InsiderTrade` connect `Tests Components` to `Tests Components`, `Tests Components`, `Tests Components`, `Tests Components`, `Core Components`, `Core Components`?**
-  *High betweenness centrality (0.175) - this node is a cross-community bridge.*
-- **Are the 49 inferred relationships involving `CongressTrade` (e.g. with `EFDSession` and `TestExtractTicker`) actually correct?**
-  *`CongressTrade` has 49 INFERRED edges - model-reasoned connections that need verification.*
-- **Are the 22 inferred relationships involving `ScanTab` (e.g. with `MainWindow` and `SortableTableModel`) actually correct?**
-  *`ScanTab` has 22 INFERRED edges - model-reasoned connections that need verification.*
-- **Are the 36 inferred relationships involving `EuropeanInsiderTrade` (e.g. with `_RawRns` and `EuropeanTab`) actually correct?**
-  *`EuropeanInsiderTrade` has 36 INFERRED edges - model-reasoned connections that need verification.*
-- **Are the 20 inferred relationships involving `EuropeanTab` (e.g. with `EuropeanInsiderTrade` and `SortableTableModel`) actually correct?**
-  *`EuropeanTab` has 20 INFERRED edges - model-reasoned connections that need verification.*
+- **Why does `CongressTrade` connect `Community 36` to `Community 0`, `Community 1`, `Community 4`, `Community 11`, `Community 13`, `Community 17`, `Community 18`, `Community 20`, `Community 22`, `Community 24`, `Community 37`, `Community 38`, `Community 46`, `Community 47`, `Community 48`, `Community 50`, `Community 52`, `Community 53`, `Community 55`, `Community 56`, `Community 58`, `Community 59`, `Community 64`, `Community 65`, `Community 68`, `Community 73`, `Community 75`, `Community 77`, `Community 78`, `Community 79`?**
+  _High betweenness centrality (0.263) - this node is a cross-community bridge._
+- **Why does `EuropeanInsiderTrade` connect `Community 30` to `Community 0`, `Community 1`, `Community 66`, `Community 4`, `Community 6`, `Community 39`, `Community 10`, `Community 44`, `Community 45`, `Community 12`, `Community 14`, `Community 16`, `Community 15`, `Community 19`, `Community 51`, `Community 21`, `Community 24`, `Community 27`?**
+  _High betweenness centrality (0.240) - this node is a cross-community bridge._
+- **Why does `InsiderTrade` connect `Community 52` to `Community 0`, `Community 1`, `Community 2`, `Community 3`, `Community 4`, `Community 8`, `Community 41`, `Community 9`, `Community 21`, `Community 24`, `Community 57`, `Community 62`?**
+  _High betweenness centrality (0.210) - this node is a cross-community bridge._
+- **Are the 66 inferred relationships involving `CongressTrade` (e.g. with `EFDSession` and `UpsertResult`) actually correct?**
+  _`CongressTrade` has 66 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 58 inferred relationships involving `EuropeanInsiderTrade` (e.g. with `_RawRns` and `EuropeanTab`) actually correct?**
+  _`EuropeanInsiderTrade` has 58 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 42 inferred relationships involving `InsiderTrade` (e.g. with `UpsertResult` and `UsTradeRepository`) actually correct?**
+  _`InsiderTrade` has 42 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 23 inferred relationships involving `ScanTab` (e.g. with `MainWindowInitializationError` and `MainWindow`) actually correct?**
+  _`ScanTab` has 23 INFERRED edges - model-reasoned connections that need verification._

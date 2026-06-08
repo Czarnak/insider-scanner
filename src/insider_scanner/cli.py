@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from collections.abc import Callable
 from datetime import date
+from pathlib import Path
 
-from insider_scanner.utils.config import ensure_dirs
-from insider_scanner.utils.logging import setup_logging, get_logger
+from insider_scanner.services.application import (
+    ApplicationServices,
+    open_application_services,
+)
+from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
+from insider_scanner.utils.logging import get_logger, setup_logging
 
 log = get_logger("cli")
 
@@ -21,12 +28,19 @@ def _parse_date_arg(value: str) -> date:
         )
 
 
-def cmd_scan(args: argparse.Namespace) -> None:
+def _parse_positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Expected a positive integer: {value!r}")
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"Expected a positive integer: {value!r}")
+    return parsed
+
+
+def cmd_scan(args: argparse.Namespace, services: ApplicationServices) -> None:
     """Scan for insider trades on a ticker."""
-    from insider_scanner.core.secform4 import scrape_ticker as sf4_scrape
-    from insider_scanner.core.openinsider import scrape_ticker as oi_scrape
     from insider_scanner.core.merger import (
-        merge_trades,
         filter_trades,
         save_scan_results,
     )
@@ -36,16 +50,16 @@ def cmd_scan(args: argparse.Namespace) -> None:
     until = getattr(args, "until", None)
     log.info("Scanning insider trades for %s...", ticker)
 
-    sf4_trades = sf4_scrape(
-        ticker, use_cache=not args.no_cache, start_date=since, end_date=until
-    )
-    oi_trades = oi_scrape(
-        ticker, use_cache=not args.no_cache, start_date=since, end_date=until
+    trades = services.us.scan(
+        ticker,
+        sources=("secform4", "openinsider"),
+        start_date=since,
+        end_date=until,
+        use_cache=not args.no_cache,
     )
 
-    merged = merge_trades(sf4_trades, oi_trades)
     filtered = filter_trades(
-        merged,
+        trades,
         trade_type=args.type,
         min_value=args.min_value,
         congress_only=args.congress_only,
@@ -69,14 +83,13 @@ def cmd_scan(args: argparse.Namespace) -> None:
         print(f"\nResults saved to: {out}")
 
 
-def cmd_latest(args: argparse.Namespace) -> None:
+def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     """Fetch latest insider trades across all tickers."""
-    from insider_scanner.core.openinsider import scrape_latest
-
     since = getattr(args, "since", None)
     until = getattr(args, "until", None)
-    trades = scrape_latest(
+    trades = services.us.latest(
         count=args.count,
+        sources=("openinsider",),
         use_cache=not args.no_cache,
         start_date=since,
         end_date=until,
@@ -96,7 +109,10 @@ def cmd_latest(args: argparse.Namespace) -> None:
         save_scan_results(trades, label="latest_scan")
 
 
-def cmd_resolve_cik(args: argparse.Namespace) -> None:
+def cmd_resolve_cik(
+    args: argparse.Namespace,
+    _services: ApplicationServices,
+) -> None:
     """Resolve a ticker to SEC CIK."""
     from insider_scanner.core.edgar import resolve_cik, get_filing_url
 
@@ -110,7 +126,10 @@ def cmd_resolve_cik(args: argparse.Namespace) -> None:
         print(f"Could not resolve CIK for {ticker}")
 
 
-def cmd_init_congress(args: argparse.Namespace) -> None:
+def cmd_init_congress(
+    args: argparse.Namespace,
+    _services: ApplicationServices,
+) -> None:
     """Initialize the default Congress member list."""
     from insider_scanner.core.senate import init_default_congress_file
     from insider_scanner.utils.config import CONGRESS_FILE
@@ -119,14 +138,16 @@ def cmd_init_congress(args: argparse.Namespace) -> None:
     print(f"Congress member list created at: {CONGRESS_FILE}")
 
 
-def cmd_eu_scan(args: argparse.Namespace) -> None:
+def cmd_eu_scan(
+    args: argparse.Namespace,
+    services: ApplicationServices | None = None,
+) -> None:
     """Scan European insider transactions for one or more ISINs."""
     from insider_scanner.core.eu_merger import (
         filter_eu_trades,
         merge_eu_trades,
         save_eu_results,
     )
-    from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin
     from insider_scanner.utils.config import load_eu_watchlist
 
     since = getattr(args, "since", None)
@@ -137,7 +158,7 @@ def cmd_eu_scan(args: argparse.Namespace) -> None:
     if args.watchlist:
         isins = load_eu_watchlist()
         if not isins:
-            print("EU watchlist is empty. Add ISINs to data/eu_watchlist.txt.")
+            print(f"EU watchlist is empty. Add ISINs to {EU_WATCHLIST_FILE}.")
             return
     elif args.isin:
         isins = [args.isin.upper()]
@@ -145,10 +166,21 @@ def cmd_eu_scan(args: argparse.Namespace) -> None:
         print("Provide an ISIN or use --watchlist.")
         return
 
+    if services is None:
+        raise RuntimeError("European scan service is required")
+
     all_trades = []
     for isin in isins:
         print(f"Scanning {isin}…")
-        all_trades.extend(scrape_eu_trades_for_isin(isin, country, since, until))
+        all_trades.extend(
+            services.european.scan(
+                isin,
+                country=country,
+                start_date=since,
+                end_date=until,
+                use_cache=True,
+            )
+        )
 
     merged = merge_eu_trades(all_trades)
     filtered = filter_eu_trades(
@@ -174,6 +206,32 @@ def cmd_eu_scan(args: argparse.Namespace) -> None:
         label = (args.isin or "watchlist").upper() + "_eu_scan"
         out = save_eu_results(filtered, label=label)
         print(f"\nResults saved to: {out}")
+
+
+def cmd_import_legacy(
+    args: argparse.Namespace,
+    services: ApplicationServices,
+) -> int:
+    """Import legacy JSON exports into local persistence."""
+    from insider_scanner.services.importer import import_legacy_path
+
+    report = import_legacy_path(
+        args.path,
+        services.persistence,
+        max_file_size_bytes=args.max_file_size_mib * 1024 * 1024,
+    )
+    for item in report.files:
+        print(
+            f"{item.path}: inserted={item.inserted} updated={item.updated} "
+            f"skipped={item.skipped} errors={item.errors}"
+        )
+        for message in item.messages:
+            print(f"  {message}")
+    print(
+        f"Total: inserted={report.inserted} updated={report.updated} "
+        f"skipped={report.skipped} errors={report.errors}"
+    )
+    return 1 if report.errors else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -244,20 +302,69 @@ def build_parser() -> argparse.ArgumentParser:
     p_eu.add_argument(
         "--watchlist",
         action="store_true",
-        help="Scan all ISINs in data/eu_watchlist.txt",
+        help=f"Scan all ISINs in {EU_WATCHLIST_FILE}",
     )
     p_eu.add_argument("--save", action="store_true")
     p_eu.set_defaults(func=cmd_eu_scan)
 
+    p_import = sub.add_parser(
+        "import-legacy",
+        help="Import legacy JSON trade exports",
+    )
+    p_import.add_argument("path", type=Path)
+    p_import.add_argument(
+        "--max-file-size-mib",
+        type=_parse_positive_int,
+        default=50,
+        help="Maximum size of each JSON file in MiB (default: 50)",
+    )
+    p_import.set_defaults(func=cmd_import_legacy)
+
     return parser
 
 
-def main() -> None:
+def run(
+    argv: list[str] | None = None,
+    *,
+    service_factory: Callable[[], ApplicationServices] = open_application_services,
+) -> int:
+    """Run one CLI command and return a process exit code."""
     setup_logging()
-    ensure_dirs()
     parser = build_parser()
-    args = parser.parse_args()
-    args.func(args)
+    args = parser.parse_args(argv)
+    services: ApplicationServices | None = None
+    try:
+        ensure_dirs()
+        services = service_factory()
+    except Exception:
+        log.exception("Persistence startup failed")
+        print("Could not initialize local database.", file=sys.stderr)
+        return 1
+    result = 0
+    try:
+        command_result = args.func(args, services)
+        if isinstance(command_result, int):
+            result = command_result
+    except Exception:
+        log.exception("CLI command failed")
+        print("Command failed. See logs for details.", file=sys.stderr)
+        result = 1
+    if services is not None:
+        try:
+            services.close()
+        except Exception as error:
+            log.error(
+                "CLI service shutdown failed: exception=%s",
+                type(error).__name__,
+            )
+            print("Could not close local database cleanly.", file=sys.stderr)
+            if result == 0:
+                result = 1
+    return result
+
+
+def main() -> None:
+    raise SystemExit(run())
 
 
 if __name__ == "__main__":

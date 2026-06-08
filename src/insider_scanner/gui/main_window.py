@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import (
-    QLabel,
     QMainWindow,
     QStatusBar,
     QTabWidget,
 )
 
+from insider_scanner.utils.logging import get_logger
+
+log = get_logger("gui.main_window")
+
+
+class MainWindowInitializationError(RuntimeError):
+    """Raised when the main window cannot be initialized safely."""
+
 
 class MainWindow(QMainWindow):
     """Insider Scanner main window."""
 
-    def __init__(self):
+    def __init__(self, services=None, *, shutdown_timeout_ms: int = 5_000):
         super().__init__()
+        if shutdown_timeout_ms < 0:
+            raise ValueError("shutdown_timeout_ms must not be negative")
+        self._services = services
+        self._thread_pool = QThreadPool(self)
+        self._shutdown_timeout_ms = shutdown_timeout_ms
         self.setWindowTitle("Insider Scanner")
         self.setMinimumSize(900, 550)
         self.resize(1100, 650)
@@ -22,49 +35,72 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
 
-        self._init_scan_tab()
-        self._init_congress_tab()
-        self._init_european_tab()
+        self._initialize_tabs()
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
-    def _init_scan_tab(self):
-        try:
-            from insider_scanner.gui.scan_tab import ScanTab
+    def _initialize_tabs(self) -> None:
+        initializers = (
+            ("Scan", self._init_scan_tab),
+            ("Congress", self._init_congress_tab),
+            ("European", self._init_european_tab),
+        )
+        for tab_name, initialize in initializers:
+            try:
+                initialize()
+            except Exception as exc:
+                log.exception("%s tab initialization failed", tab_name)
+                raise MainWindowInitializationError(
+                    "Could not initialize application window."
+                ) from exc
 
-            self.scan_tab = ScanTab()
-            self.tabs.addTab(self.scan_tab, "Insider Scan")
-        except Exception as exc:
-            self.tabs.addTab(
-                QLabel(f"Scan tab failed to load: {exc}"),
-                "Insider Scan",
-            )
+    def _init_scan_tab(self):
+        from insider_scanner.gui.scan_tab import ScanTab
+
+        service = None if self._services is None else self._services.us
+        self.scan_tab = ScanTab(service, thread_pool=self._thread_pool)
+        self.tabs.addTab(self.scan_tab, "Insider Scan")
 
     def _init_congress_tab(self):
-        try:
-            from insider_scanner.gui.congress_tab import CongressTab
+        from insider_scanner.gui.congress_tab import CongressTab
 
-            self.congress_tab = CongressTab()
-            self.tabs.addTab(self.congress_tab, "Congress Scan")
-        except Exception as exc:
-            self.tabs.addTab(
-                QLabel(f"Congress tab failed to load: {exc}"),
-                "Congress Scan",
-            )
+        service = None if self._services is None else self._services.congress
+        self.congress_tab = CongressTab(service, thread_pool=self._thread_pool)
+        self.tabs.addTab(self.congress_tab, "Congress Scan")
 
     def _init_european_tab(self):
-        try:
-            from insider_scanner.gui.european_tab import EuropeanTab
+        from insider_scanner.gui.european_tab import EuropeanTab
 
-            self.european_tab = EuropeanTab()
-            self.tabs.addTab(self.european_tab, "European Insiders")
-        except Exception as exc:
-            self.tabs.addTab(
-                QLabel(f"European tab failed to load: {exc}"),
-                "European Insiders",
-            )
+        service = None if self._services is None else self._services.european
+        self.european_tab = EuropeanTab(service, thread_pool=self._thread_pool)
+        self.tabs.addTab(self.european_tab, "European Insiders")
+
+    def request_cancellation(self) -> None:
+        """Request cancellation from every tab before worker shutdown."""
+        for name in ("scan_tab", "congress_tab", "european_tab"):
+            tab = getattr(self, name, None)
+            if tab is not None:
+                tab.request_cancellation()
+
+    def shutdown_workers(self) -> bool:
+        """Cancel and wait a bounded time for all window-owned workers."""
+        self.request_cancellation()
+        if self._thread_pool.waitForDone(self._shutdown_timeout_ms):
+            return True
+        log.warning(
+            "Timed out waiting for GUI workers to stop after %d ms",
+            self._shutdown_timeout_ms,
+        )
+        return False
+
+    def closeEvent(self, event) -> None:
+        """Keep the window open while a worker could still access persistence."""
+        if self.shutdown_workers():
+            event.accept()
+        else:
+            event.ignore()
 
     def log_status(self, message: str):
         self.status_bar.showMessage(message)

@@ -29,14 +29,26 @@ from PySide6.QtWidgets import (
 )
 
 from insider_scanner.gui.widgets import SortableTableModel
+from insider_scanner.utils.config import TICKERS_FILE
+from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker
+
+log = get_logger("scan_tab")
 
 
 class ScanTab(QWidget):
     """Full scan workflow: enter ticker → select sources → scan → view → EDGAR."""
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        service=None,
+        parent=None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ):
         super().__init__(parent)
+        self._service = service
+        self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._trades: list = []
         self._cancel_event = Event()
         self._build_ui()
@@ -74,7 +86,7 @@ class ScanTab(QWidget):
 
         self.btn_watchlist = QPushButton("Watchlist Scan")
         self.btn_watchlist.clicked.connect(self._run_watchlist)
-        self.btn_watchlist.setToolTip("Scan all tickers in data/tickers_watchlist.txt")
+        self.btn_watchlist.setToolTip(f"Scan all tickers in {TICKERS_FILE}")
         search_l.addWidget(self.btn_watchlist)
 
         search_l.addStretch()
@@ -251,9 +263,13 @@ class ScanTab(QWidget):
 
     def _stop_scan(self):
         """Signal the running watchlist scan to stop."""
-        self._cancel_event.set()
+        self.request_cancellation()
         self.btn_stop.setEnabled(False)
         self.progress.setFormat("Stopping...")
+
+    def request_cancellation(self) -> None:
+        """Request cooperative cancellation without blocking the GUI thread."""
+        self._cancel_event.set()
 
     def _run_scan(self):
         ticker = self.ticker_edit.text().strip().upper()
@@ -261,6 +277,7 @@ class ScanTab(QWidget):
             QMessageBox.warning(self, "Input", "Enter a ticker symbol.")
             return
 
+        self._cancel_event.clear()
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
@@ -268,31 +285,39 @@ class ScanTab(QWidget):
 
         use_sf4 = self.chk_secform4.isChecked()
         use_oi = self.chk_openinsider.isChecked()
+        sources = tuple(
+            source
+            for source, enabled in (
+                ("secform4", use_sf4),
+                ("openinsider", use_oi),
+            )
+            if enabled
+        )
+        if not sources:
+            self._set_scan_buttons_enabled(True)
+            self.progress.setVisible(False)
+            QMessageBox.warning(self, "Sources", "Select at least one source.")
+            return
         sd = self._get_start_date()
         ed = self._get_end_date()
 
         def work():
-            from insider_scanner.core.secform4 import scrape_ticker as sf4
-            from insider_scanner.core.openinsider import scrape_ticker as oi
-            from insider_scanner.core.merger import merge_trades
-            from insider_scanner.core.senate import flag_congress_trades
-
-            lists = []
-            if use_sf4:
-                lists.append(sf4(ticker, start_date=sd, end_date=ed))
-            if use_oi:
-                lists.append(oi(ticker, start_date=sd, end_date=ed))
-
-            merged = merge_trades(*lists)
-            flag_congress_trades(merged)
-            return merged
+            return self._service.scan(
+                ticker,
+                sources=sources,
+                start_date=sd,
+                end_date=ed,
+                use_cache=True,
+                cancelled=self._cancel_event.is_set,
+            )
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     def _run_latest(self):
+        self._cancel_event.clear()
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
@@ -303,17 +328,19 @@ class ScanTab(QWidget):
         count = self.latest_count_spin.value()
 
         def work():
-            from insider_scanner.core.openinsider import scrape_latest
-            from insider_scanner.core.senate import flag_congress_trades
-
-            trades = scrape_latest(count=count, start_date=sd, end_date=ed)
-            flag_congress_trades(trades)
-            return trades
+            return self._service.latest(
+                count=count,
+                sources=("openinsider",),
+                start_date=sd,
+                end_date=ed,
+                use_cache=True,
+                cancelled=self._cancel_event.is_set,
+            )
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     def _run_watchlist(self):
         from insider_scanner.utils.config import load_watchlist
@@ -323,7 +350,7 @@ class ScanTab(QWidget):
             QMessageBox.warning(
                 self,
                 "Watchlist",
-                "No tickers found in data/tickers_watchlist.txt",
+                f"No tickers found in {TICKERS_FILE}",
             )
             return
 
@@ -339,32 +366,46 @@ class ScanTab(QWidget):
         sd = self._get_start_date()
         ed = self._get_end_date()
         cancel = self._cancel_event
+        sources = tuple(
+            source
+            for source, enabled in (
+                ("secform4", use_sf4),
+                ("openinsider", use_oi),
+            )
+            if enabled
+        )
+        if not sources:
+            self.progress.setVisible(False)
+            self._set_scan_buttons_enabled(True)
+            QMessageBox.warning(self, "Sources", "Select at least one source.")
+            return
 
         def work():
-            from insider_scanner.core.secform4 import scrape_ticker as sf4
-            from insider_scanner.core.openinsider import scrape_ticker as oi
             from insider_scanner.core.merger import merge_trades
-            from insider_scanner.core.senate import flag_congress_trades
 
             all_lists = []
             for i, ticker in enumerate(tickers):
                 if cancel.is_set():
                     break
-                lists = []
-                if use_sf4:
-                    lists.append(sf4(ticker, start_date=sd, end_date=ed))
-                if use_oi:
-                    lists.append(oi(ticker, start_date=sd, end_date=ed))
-                all_lists.extend(lists)
+                all_lists.append(
+                    self._service.scan(
+                        ticker,
+                        sources=sources,
+                        start_date=sd,
+                        end_date=ed,
+                        use_cache=True,
+                        cancelled=cancel.is_set,
+                    )
+                )
+                worker.signals.progress.emit(i + 1)
 
-            merged = merge_trades(*all_lists)
-            flag_congress_trades(merged)
-            return merged
+            return merge_trades(*all_lists)
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
-        QThreadPool.globalInstance().start(worker)
+        worker.signals.progress.connect(self.progress.setValue)
+        self._thread_pool.start(worker)
 
     @Slot(object)
     def _on_scan_done(self, trades):
@@ -388,7 +429,15 @@ class ScanTab(QWidget):
         self.btn_stop.setEnabled(True)
         self._set_scan_buttons_enabled(True)
         exc_type, exc_value, _ = error_info
-        QMessageBox.critical(self, "Scan Error", f"{exc_type.__name__}: {exc_value}")
+        log.error(
+            "Scan failed",
+            exc_info=(exc_type, exc_value, error_info[2]),
+        )
+        QMessageBox.critical(
+            self,
+            "Scan Error",
+            "Scan failed. See logs for details.",
+        )
 
     # ------------------------------------------------------------------
     # Display + filter

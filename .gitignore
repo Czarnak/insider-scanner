@@ -316,6 +316,7 @@ data/
 .claude/
 .vscode/
 .tmp_pytest/
+.pytest-temp/
 graphify-out/cache/
 graphify-out/manifest.json
 graphify-out/cost.json

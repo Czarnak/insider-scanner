@@ -9,6 +9,7 @@ data fields populated wins, with EDGAR URL preserved if available.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -31,8 +32,11 @@ def _dedup_key(trade: InsiderTrade) -> tuple:
     return (ticker, name, td, shares_bucket)
 
 
-def _richness_score(trade: InsiderTrade) -> int:
-    """Score how many fields are populated (for picking the best duplicate)."""
+_MERGED_METADATA_FIELDS = frozenset({"edgar_url", "is_congress", "congress_member"})
+
+
+def _primary_richness_score(trade: InsiderTrade) -> int:
+    """Score stable core fields used to select the primary duplicate."""
     score = 0
     if trade.company:
         score += 1
@@ -50,9 +54,40 @@ def _richness_score(trade: InsiderTrade) -> int:
         score += 1
     if trade.value:
         score += 1
-    if trade.edgar_url:
-        score += 2  # EDGAR links are high-value
     return score
+
+
+def _primary_rank(trade: InsiderTrade) -> tuple[int, str]:
+    stable_values = {
+        key: value
+        for key, value in trade.to_dict().items()
+        if key not in _MERGED_METADATA_FIELDS
+    }
+    return (
+        _primary_richness_score(trade),
+        json.dumps(stable_values, sort_keys=True),
+    )
+
+
+def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
+    """Merge duplicate trades deterministically without mutating inputs."""
+    left_rank = _primary_rank(left)
+    right_rank = _primary_rank(right)
+    primary = right if right_rank > left_rank else left
+    edgar_urls = sorted(trade.edgar_url for trade in (left, right) if trade.edgar_url)
+    congress_members = sorted(
+        {
+            trade.congress_member
+            for trade in (left, right)
+            if trade.is_congress and trade.congress_member
+        }
+    )
+    return replace(
+        primary,
+        edgar_url=edgar_urls[-1] if edgar_urls else "",
+        is_congress=left.is_congress or right.is_congress,
+        congress_member=congress_members[-1] if congress_members else "",
+    )
 
 
 def merge_trades(
@@ -78,22 +113,9 @@ def merge_trades(
             existing = seen.get(key)
 
             if existing is None:
-                seen[key] = trade
+                seen[key] = replace(trade)
             else:
-                # Keep the richer record, but merge edgar_url if available
-                if _richness_score(trade) > _richness_score(existing):
-                    if existing.edgar_url and not trade.edgar_url:
-                        trade.edgar_url = existing.edgar_url
-                    if existing.is_congress:
-                        trade.is_congress = True
-                        trade.congress_member = existing.congress_member
-                    seen[key] = trade
-                else:
-                    if trade.edgar_url and not existing.edgar_url:
-                        existing.edgar_url = trade.edgar_url
-                    if trade.is_congress:
-                        existing.is_congress = True
-                        existing.congress_member = trade.congress_member
+                seen[key] = merge_trade_pair(existing, trade)
 
     merged = list(seen.values())
 

@@ -29,7 +29,10 @@ from PySide6.QtWidgets import (
 )
 
 from insider_scanner.gui.widgets import SortableTableModel
+from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker
+
+log = get_logger("congress_tab")
 
 # Sector categories — matches committee→sector mapping in update_congress.py
 SECTORS = [
@@ -193,8 +196,16 @@ def save_congress_results(
 class CongressTab(QWidget):
     """Congress trade scanner: select official → scan sources → filter → view."""
 
-    def __init__(self, parent=None):
+    def __init__(
+        self,
+        service=None,
+        parent=None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ):
         super().__init__(parent)
+        self._service = service
+        self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._trades: list = []
         self._filtered_trades: list = []
         self._cancel_event = threading.Event()
@@ -408,9 +419,13 @@ class CongressTab(QWidget):
 
     def _stop_scan(self):
         """Signal the background scan to stop."""
-        self._cancel_event.set()
+        self.request_cancellation()
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Cancelling scan...")
+
+    def request_cancellation(self) -> None:
+        """Request cooperative cancellation without blocking the GUI thread."""
+        self._cancel_event.set()
 
     # ------------------------------------------------------------------
     # Scan — wire to House + Senate backends
@@ -441,47 +456,36 @@ class CongressTab(QWidget):
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # indeterminate
 
-        official_name = None if selected == "All" else selected
         sd = self._get_start_date()
         ed = self._get_end_date()
         cancel = self._cancel_event
+        sources = tuple(
+            source
+            for source, enabled in (
+                ("house", use_house),
+                ("senate", use_senate),
+            )
+            if enabled
+        )
 
         self.progress.setFormat(
-            f"Scanning {'all officials' if not official_name else official_name}..."
+            f"Scanning {'all officials' if selected == 'All' else selected}..."
         )
 
         def work():
-            from insider_scanner.core.congress_house import (
-                scrape_house_trades,
+            return self._service.scan(
+                selected,
+                sources=sources,
+                start_date=sd,
+                end_date=ed,
+                use_cache=True,
+                cancelled=cancel.is_set,
             )
-            from insider_scanner.core.congress_senate import (
-                scrape_senate_trades,
-            )
-
-            all_trades = []
-
-            if use_house and not cancel.is_set():
-                house_trades = scrape_house_trades(
-                    official_name=official_name,
-                    date_from=sd,
-                    date_to=ed,
-                )
-                all_trades.extend(house_trades)
-
-            if use_senate and not cancel.is_set():
-                senate_trades = scrape_senate_trades(
-                    official_name=official_name,
-                    date_from=sd,
-                    date_to=ed,
-                )
-                all_trades.extend(senate_trades)
-
-            return all_trades
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)
         worker.signals.error.connect(self._on_scan_error)
-        QThreadPool.globalInstance().start(worker)
+        self._thread_pool.start(worker)
 
     @Slot(object)
     def _on_scan_done(self, trades):
@@ -504,7 +508,15 @@ class CongressTab(QWidget):
         self.progress.setVisible(False)
         self._set_scan_buttons_enabled(True)
         exc_type, exc_value, _ = error_info
-        QMessageBox.critical(self, "Scan Error", f"{exc_type.__name__}: {exc_value}")
+        log.error(
+            "Congress scan failed",
+            exc_info=(exc_type, exc_value, error_info[2]),
+        )
+        QMessageBox.critical(
+            self,
+            "Scan Error",
+            "Scan failed. See logs for details.",
+        )
 
     # ------------------------------------------------------------------
     # Display + filter
