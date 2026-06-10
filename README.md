@@ -33,6 +33,7 @@ python -m insider_scanner.main
 The GUI tabs cover the core use cases:
 
 #### Insider Scan tab
+
 - Search a ticker and run both secform4.com and openinsider.com scrapers in one click.
 - Fetch the latest trades (configurable count) and run watchlist scans backed by the user data directory's `tickers_watchlist.txt`.
 - Toggle sources, specify a date range, trade type, minimum value, or Congress-only filter.
@@ -40,11 +41,13 @@ The GUI tabs cover the core use cases:
 - Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
 
 #### Congress Scan tab
+
 - Pick a legislator (House/Senate dropdown) or the whole committee list, select sources (House/Senate), and preview results in a threaded worker with progress + cancel.
 - Use filters such as trade type, sector, and minimum value, then double-click any row to open the original PDF/PTR.
 - Save filtered results to CSV/JSON, with exports reflecting the current filters.
 
 #### European Insiders tab
+
 - Choose All/UK/DE/FR/NL, type an ISIN, or scan the user data directory's `eu_watchlist.txt`.
 - Enable optional date bounds, filter by trade type and minimum value, and watch the progress bar while each ISIN is processed.
 - Results are sortable, show normalized positions/currency, provide detail text on double-click, and allow opening the regulator source URL.
@@ -237,6 +240,7 @@ Session 1 only supplies price models/providers. No schema migration is required 
 `insider_scanner.persistence` and `services.context.PersistenceContext` remain preserved.
 
 Later Session 2 integration will use:
+
 - Existing `persistence.schema.price_history`
 - A new native `PriceHistoryRepository`
 - Existing `CoverageRepository`
@@ -265,7 +269,7 @@ All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 r
 ## Runtime Files
 
 | Location within runtime paths | Description |
-|------|-------------|
+| ------ | ------------- |
 | `insider_scanner.sqlite3` | Parsed trades, coverage intervals, refresh state, and schema version |
 | `congress_members.json` | Editable Congress member list with committee assignments and sector mappings |
 | `tickers_watchlist.txt` | Editable ticker watchlist |
