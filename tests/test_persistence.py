@@ -245,7 +245,7 @@ def test_bootstrap_sets_schema_version_to_one(engine):
             select(schema_version.c.version).order_by(schema_version.c.version)
         ).scalars()
 
-        assert list(versions) == [1]
+        assert list(versions) == [1, 2]
 
 
 def test_bootstrap_is_idempotent(engine):
@@ -255,7 +255,7 @@ def test_bootstrap_is_idempotent(engine):
     with engine.connect() as connection:
         versions = connection.execute(select(schema_version.c.version)).scalars()
 
-        assert list(versions) == [1]
+        assert list(versions) == [1, 2]
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
 
 

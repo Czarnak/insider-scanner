@@ -12,6 +12,7 @@ from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
 )
+from insider_scanner.core.prices import get_price_history
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
 
@@ -234,6 +235,27 @@ def cmd_import_legacy(
     return 1 if report.errors else 0
 
 
+def cmd_price(
+    args: argparse.Namespace,
+    services: ApplicationServices | None = None,
+) -> None:
+    """Fetch + cache daily bars for a US ticker and print them."""
+    from datetime import date, timedelta
+
+    end = args.until or date.today()
+    start = args.since or (end - timedelta(days=365))
+    engine = services.persistence.engine if services else None
+    bars = get_price_history(args.ticker.upper(), start, end, engine=engine)
+    if not bars:
+        print(f"No price data for {args.ticker.upper()} in {start}..{end}")
+        return
+    print(f"{args.ticker.upper()}  {start}..{end}  ({len(bars)} bars)")
+    print(f"{'date':<12} {'open':>10} {'high':>10} {'low':>10} {'close':>10} {'volume':>14}")
+    for b in bars:
+        print(f"{b.date.isoformat():<12} {b.open:>10.2f} {b.high:>10.2f} "
+              f"{b.low:>10.2f} {b.close:>10.2f} {b.volume:>14.0f}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="insider-scanner-cli",
@@ -319,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum size of each JSON file in MiB (default: 50)",
     )
     p_import.set_defaults(func=cmd_import_legacy)
+
+    p_price = sub.add_parser("price", help="Fetch + cache daily prices for a US ticker")
+    p_price.add_argument("ticker", help="US stock ticker symbol")
+    p_price.add_argument("--since", type=_parse_date_arg, default=None)
+    p_price.add_argument("--until", type=_parse_date_arg, default=None)
+    p_price.set_defaults(func=cmd_price)
 
     return parser
 
