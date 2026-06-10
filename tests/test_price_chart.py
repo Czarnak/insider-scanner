@@ -92,3 +92,26 @@ def test_build_marker_tooltip_contains_key_fields():
     assert "1,000" in tip      # shares formatted with thousands sep
     assert "10,000" in tip     # value formatted
     assert "2026-01-05" in tip
+
+
+def test_set_trade_markers_splits_buy_and_sell(chart):
+    chart.set_price_data(_bars())
+    trades = [
+        InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 5), trade_type="Buy",
+                     insider_name="A", shares=10, value=100),
+        InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 7), trade_type="Sell",
+                     insider_name="B", shares=20, value=200),
+    ]
+    chart.set_trade_markers(trades)
+    assert len(chart.buy_scatter.data) == 1
+    assert len(chart.sell_scatter.data) == 1
+
+
+def test_set_trade_markers_replaces_previous(chart):
+    chart.set_price_data(_bars())
+    chart.set_trade_markers([
+        InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 5), trade_type="Buy"),
+    ])
+    chart.set_trade_markers([])  # clear
+    assert len(chart.buy_scatter.data) == 0
+    assert len(chart.sell_scatter.data) == 0

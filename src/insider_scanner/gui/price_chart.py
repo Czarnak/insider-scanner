@@ -51,6 +51,39 @@ class PriceChartWidget(QWidget):
         self.plot_widget.addItem(self._hline, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
+        self.buy_scatter = pg.ScatterPlotItem(
+            size=12, symbol="t1", brush=pg.mkBrush("#2ca02c"),
+            pen=pg.mkPen("#155b15"), hoverable=True,
+            tip=lambda x, y, data: data.get("tip", "") if data else "",
+        )
+        self.sell_scatter = pg.ScatterPlotItem(
+            size=12, symbol="t", brush=pg.mkBrush("#d62728"),
+            pen=pg.mkPen("#7a1718"), hoverable=True,
+            tip=lambda x, y, data: data.get("tip", "") if data else "",
+        )
+        self.plot_widget.addItem(self.buy_scatter)
+        self.plot_widget.addItem(self.sell_scatter)
+
+    def set_trade_markers(self, trades: list[InsiderTrade]) -> None:
+        """Overlay buy/sell markers on the current price line."""
+        buys, sells = [], []
+        for t in trades:
+            if t.trade_date is None:
+                continue
+            spot = {
+                "pos": (_to_timestamp(t.trade_date), marker_y_for_trade(t, self._bars)),
+                "data": {"tip": build_marker_tooltip(t)},
+            }
+            (buys if is_buy(t) else sells).append(spot)
+        self.buy_scatter.setData(
+            [b["pos"][0] for b in buys], [b["pos"][1] for b in buys],
+            data=[b["data"] for b in buys],
+        )
+        self.sell_scatter.setData(
+            [s["pos"][0] for s in sells], [s["pos"][1] for s in sells],
+            data=[s["data"] for s in sells],
+        )
+
     def set_price_data(self, bars: list[PriceBar]) -> None:
         """Render the price line, replacing any previous curve."""
         self._bars = list(bars)
