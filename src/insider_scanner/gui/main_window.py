@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
             ("Scan", self._init_scan_tab),
             ("Congress", self._init_congress_tab),
             ("European", self._init_european_tab),
+            ("Analysis", self._init_analysis_tab),
         )
         for tab_name, initialize in initializers:
             try:
@@ -77,11 +78,24 @@ class MainWindow(QMainWindow):
         self.european_tab = EuropeanTab(service, thread_pool=self._thread_pool)
         self.tabs.addTab(self.european_tab, "European Insiders")
 
+    def _init_analysis_tab(self):
+        try:
+            from insider_scanner.gui.analysis_tab import AnalysisTab
+
+            self.analysis_tab = AnalysisTab()
+            self.tabs.addTab(self.analysis_tab, "Analysis")
+        except Exception as exc:
+            from PySide6.QtWidgets import QLabel
+            self.tabs.addTab(
+                QLabel(f"Analysis tab failed to load: {exc}"),
+                "Analysis",
+            )
+
     def request_cancellation(self) -> None:
         """Request cancellation from every tab before worker shutdown."""
-        for name in ("scan_tab", "congress_tab", "european_tab"):
+        for name in ("scan_tab", "congress_tab", "european_tab", "analysis_tab"):
             tab = getattr(self, name, None)
-            if tab is not None:
+            if tab is not None and hasattr(tab, "request_cancellation"):
                 tab.request_cancellation()
 
     def shutdown_workers(self) -> bool:

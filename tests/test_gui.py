@@ -201,6 +201,14 @@ class TestMainWindow:
         win.log_status("Testing")
         assert win.status_bar.currentMessage() == "Testing"
 
+    def test_main_window_has_analysis_tab(self, qtbot):
+        from insider_scanner.gui.main_window import MainWindow
+
+        win = MainWindow()
+        qtbot.addWidget(win)
+        tab_titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+        assert "Analysis" in tab_titles
+
 
 class TestEuropeanTab:
     def _sample_trade(self, **overrides):
