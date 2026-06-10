@@ -70,3 +70,39 @@ class PriceChartWidget(QWidget):
         point = vb.mapSceneToView(pos)
         self._vline.setPos(point.x())
         self._hline.setPos(point.y())
+
+
+from insider_scanner.core.models import InsiderTrade
+
+BUY_TYPES = {"Buy", "Purchase", "Exercise"}
+
+
+def marker_y_for_trade(trade: InsiderTrade, bars: list[PriceBar]) -> float:
+    """Y position for a trade marker: close on the trade date, else the
+    most recent prior trading day's close, else the trade's own price."""
+    if not bars or trade.trade_date is None:
+        return trade.price
+    best: float | None = None
+    for b in bars:  # bars are date-sorted ascending
+        if b.date <= trade.trade_date:
+            best = b.close
+        else:
+            break
+    return best if best is not None else bars[0].close
+
+
+def is_buy(trade: InsiderTrade) -> bool:
+    return trade.trade_type in BUY_TYPES
+
+
+def build_marker_tooltip(trade: InsiderTrade) -> str:
+    """Multi-line hover text for an insider trade marker."""
+    who = trade.insider_name or trade.congress_member or "Unknown"
+    lines = [
+        f"{trade.trade_type}  {trade.ticker}",
+        f"{who}" + (f" — {trade.insider_title}" if trade.insider_title else ""),
+        f"Date: {trade.trade_date.isoformat() if trade.trade_date else 'n/a'}",
+        f"Shares: {trade.shares:,.0f}",
+        f"Value: ${trade.value:,.0f}",
+    ]
+    return "\n".join(lines)
