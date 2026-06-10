@@ -178,7 +178,7 @@ class TestMainWindow:
 
         win = MainWindow()
         qtbot.addWidget(win)
-        assert win.tabs.count() == 3
+        assert win.tabs.count() == 4
 
     def test_tab_name(self, qtbot):
         from insider_scanner.gui.main_window import MainWindow
@@ -190,6 +190,7 @@ class TestMainWindow:
             "Insider Scan",
             "Congress Scan",
             "European Insiders",
+            "Analysis",
         ]
         assert isinstance(win.european_tab, EuropeanTab)
 
