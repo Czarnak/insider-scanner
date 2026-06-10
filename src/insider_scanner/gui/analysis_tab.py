@@ -20,6 +20,21 @@ from insider_scanner.utils.config import load_watchlist
 from insider_scanner.utils.threading import Worker
 
 
+from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.prices.model import PriceBar
+
+
+def load_trades_for_ticker(ticker: str) -> list[InsiderTrade]:
+    """Load stored insider trades for a US ticker from the Phase 1 DB."""
+    from insider_scanner.services.context import open_persistence
+
+    ctx = open_persistence()
+    try:
+        return list(ctx.us_trades.query(ticker=ticker.upper()))
+    finally:
+        ctx.close()
+
+
 class AnalysisTab(QWidget):
     """Pick a US ticker -> price line + insider markers from local data."""
 
@@ -63,4 +78,39 @@ class AnalysisTab(QWidget):
                 self.symbol_combo.setCurrentIndex(idx)
 
     def _load_selected(self) -> None:
-        pass
+        symbol = self.symbol_combo.currentText().strip().upper()
+        if not symbol:
+            self.status_label.setText("No symbol selected")
+            return
+        self.btn_load.setEnabled(False)
+        self.status_label.setText(f"Loading {symbol}…")
+
+        end = date.today()
+        start = end - timedelta(days=365 * 2)
+
+        def work():
+            bars = get_price_history(symbol, start, end)
+            trades = load_trades_for_ticker(symbol)
+            return bars, trades
+
+        worker = Worker(work)
+        worker.signals.result.connect(self._on_loaded)
+        worker.signals.error.connect(self._on_error)
+        worker.signals.finished.connect(lambda: self.btn_load.setEnabled(True))
+        QThreadPool.globalInstance().start(worker)
+
+    @Slot(object)
+    def _on_loaded(self, payload) -> None:
+        bars, trades = payload
+        self._render(bars, trades)
+        self.status_label.setText(
+            f"{self.symbol_combo.currentText()}: {len(bars)} bars, {len(trades)} trades"
+        )
+
+    @Slot(tuple)
+    def _on_error(self, error_info) -> None:
+        self.status_label.setText(f"Load failed: {error_info[1]}")
+
+    def _render(self, bars: list[PriceBar], trades: list[InsiderTrade]) -> None:
+        self.chart.set_price_data(bars)
+        self.chart.set_trade_markers(trades)
