@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from datetime import date
 
 from insider_scanner.core.prices.model import PriceBar

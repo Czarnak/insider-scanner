@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import pyqtgraph as pg
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
 
 
@@ -17,11 +21,6 @@ def bars_to_xy(bars: list[PriceBar]) -> tuple[list[float], list[float]]:
     xs = [_to_timestamp(b.date) for b in bars]
     ys = [b.plot_close for b in bars]
     return xs, ys
-
-
-import pyqtgraph as pg
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 
 class PriceChartWidget(QWidget):
@@ -104,8 +103,6 @@ class PriceChartWidget(QWidget):
         self._vline.setPos(point.x())
         self._hline.setPos(point.y())
 
-
-from insider_scanner.core.models import InsiderTrade
 
 BUY_TYPES = {"Buy", "Purchase", "Exercise"}
 
