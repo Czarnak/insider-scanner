@@ -231,6 +231,17 @@ scripts/
 3. **Merge**: `eu_scan.scrape_eu_trades_for_isin` runs the requested sources, `eu_merger.merge_eu_trades` deduplicates across regulators, and `eu_merger.filter_eu_trades` applies the GUI/CLI filters (country, trade type, min value, date range).
 4. **Save**: The European tab (and `eu-scan`) use `eu_merger.save_eu_results` to output labeled CSV/JSON bundles after the filters are applied.
 
+### Price History (Session 2 Integration)
+
+Session 1 only supplies price models/providers. No schema migration is required in Session 1.
+`insider_scanner.persistence` and `services.context.PersistenceContext` remain preserved.
+
+Later Session 2 integration will use:
+- Existing `persistence.schema.price_history`
+- A new native `PriceHistoryRepository`
+- Existing `CoverageRepository`
+- Existing `PersistenceContext.us_trades.query()`
+
 ### Congress Tab — GUI Integration
 
 The **Congress Scan** tab provides a full GUI workflow for scanning congressional financial disclosures:
