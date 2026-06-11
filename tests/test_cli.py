@@ -22,6 +22,22 @@ class TestParseDateArg:
 
 
 class TestBuildParser:
+    def test_uses_published_command_name(self):
+        assert cli.build_parser().prog == "insider-scan-cli"
+
+    def test_help_lists_published_name_and_resolve_cik(self):
+        help_text = cli.build_parser().format_help()
+
+        assert help_text.startswith("usage: insider-scan-cli")
+        assert "resolve-cik" in help_text
+
+    @pytest.mark.parametrize("command", ["resolve-cik", "cik"])
+    def test_resolve_cik_command_and_legacy_alias(self, command):
+        args = cli.build_parser().parse_args([command, "AAPL"])
+
+        assert args.ticker == "AAPL"
+        assert args.func is cli.cmd_resolve_cik
+
     def test_eu_scan_parser_populates_expected_fields(self):
         args = cli.build_parser().parse_args(
             [

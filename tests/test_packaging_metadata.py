@@ -15,8 +15,10 @@ def test_distribution_name_is_insider_scan():
 
 def test_console_scripts_present():
     scripts = _load()["project"]["scripts"]
-    assert scripts["insider-scan"] == "insider_scanner.main:main"
-    assert scripts["insider-scan-cli"] == "insider_scanner.cli:main"
+    assert scripts == {
+        "insider-scan": "insider_scanner.main:main",
+        "insider-scan-cli": "insider_scanner.cli:main",
+    }
 
 
 def test_requires_python_floor():
@@ -25,7 +27,7 @@ def test_requires_python_floor():
 
 def test_has_python_version_classifiers():
     classifiers = _load()["project"]["classifiers"]
-    for version in ("3.11", "3.12", "3.13"):
+    for version in ("3.11", "3.12", "3.13", "3.14"):
         assert any(f"Python :: {version}" in classifier for classifier in classifiers)
     assert any(
         "License :: OSI Approved :: MIT" in classifier for classifier in classifiers
@@ -43,6 +45,7 @@ def test_core_runtime_deps_are_bounded():
     joined = " ".join(dependencies)
     for dependency_name in ("curl-cffi", "pyqtgraph", "SQLAlchemy"):
         assert dependency_name in joined
+    assert "lxml>=4.9,<7" in dependencies
     assert all(
         "~=" in dependency or (">=" in dependency and "<" in dependency)
         for dependency in dependencies

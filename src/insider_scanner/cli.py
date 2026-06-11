@@ -262,7 +262,7 @@ def cmd_price(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="insider-scanner-cli",
+        prog="insider-scan-cli",
         description="Scan insider trades from secform4.com, openinsider.com, SEC EDGAR, and European regulators.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -290,8 +290,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_latest.add_argument("--no-cache", action="store_true")
     p_latest.set_defaults(func=cmd_latest)
 
-    # cik
-    p_cik = sub.add_parser("cik", help="Resolve ticker to SEC CIK number")
+    # resolve-cik
+    p_cik = sub.add_parser(
+        "resolve-cik",
+        aliases=["cik"],
+        help="Resolve ticker to SEC CIK number",
+    )
     p_cik.add_argument("ticker")
     p_cik.add_argument("--no-cache", action="store_true")
     p_cik.set_defaults(func=cmd_resolve_cik)
