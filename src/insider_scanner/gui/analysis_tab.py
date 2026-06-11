@@ -20,17 +20,24 @@ from insider_scanner.utils.config import load_watchlist
 from insider_scanner.utils.threading import Worker
 
 
-from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.models import InsiderTrade, CongressTrade
 from insider_scanner.core.prices.model import PriceBar
 
 
-def load_trades_for_ticker(ticker: str) -> list[InsiderTrade]:
+def load_trades_for_ticker(ticker: str) -> list[InsiderTrade | CongressTrade]:
     """Load stored insider trades for a US ticker from the Phase 1 DB."""
     from insider_scanner.services.context import open_persistence
 
     ctx = open_persistence()
     try:
-        return list(ctx.us_trades.query(ticker=ticker.upper()))
+        us_trades = list(ctx.us_trades.query(ticker=ticker.upper()))
+        
+        # Load Congress trades and filter by ticker
+        all_congress = ctx.congress_trades.query()
+        congress = [t for t in all_congress if t.ticker == ticker.upper()]
+        
+        # Return a unified list
+        return us_trades + congress
     finally:
         ctx.close()
 
@@ -96,8 +103,12 @@ class AnalysisTab(QWidget):
         worker = Worker(work)
         worker.signals.result.connect(self._on_loaded)
         worker.signals.error.connect(self._on_error)
-        worker.signals.finished.connect(lambda: self.btn_load.setEnabled(True))
+        worker.signals.finished.connect(self._on_finished)
         QThreadPool.globalInstance().start(worker)
+
+    @Slot()
+    def _on_finished(self) -> None:
+        self.btn_load.setEnabled(True)
 
     @Slot(object)
     def _on_loaded(self, payload) -> None:
@@ -111,6 +122,6 @@ class AnalysisTab(QWidget):
     def _on_error(self, error_info) -> None:
         self.status_label.setText(f"Load failed: {error_info[1]}")
 
-    def _render(self, bars: list[PriceBar], trades: list[InsiderTrade]) -> None:
+    def _render(self, bars: list[PriceBar], trades: list[InsiderTrade | CongressTrade]) -> None:
         self.chart.set_price_data(bars)
         self.chart.set_trade_markers(trades)

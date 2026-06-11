@@ -53,6 +53,14 @@ The GUI tabs cover the core use cases:
 - Results are sortable, show normalized positions/currency, provide detail text on double-click, and allow opening the regulator source URL.
 - Save filtered results to CSV/JSON (filename reflects the ISIN + country) or clear filters to adjust the view.
 
+#### Analysis tab
+
+- Select a US ticker from the dropdown list and click "Load Chart".
+- Visualizes the past 2 years of daily price history using an interactive line graph with crosshairs.
+- Overlays insider trade markers directly on the price line: corporate trades and congressional disclosures are both shown.
+- Hover over trade markers to view detailed tooltips including insider name, role, trade size, and total value.
+- The chart supports standard panning and zooming via pyqtgraph.
+
 ### CLI
 
 ```bash
@@ -173,6 +181,8 @@ src/insider_scanner/
 │   ├── scan_tab.py      # Insider scan workflow: search, filters, table, EDGAR links
 │   ├── congress_tab.py  # Congress tab with sector filtering and save/export helpers
 │   ├── european_tab.py  # European tab with ISIN/watchlist scans and detail panel
+│   ├── analysis_tab.py  # Analysis tab integrating price history and trade markers
+│   ├── price_chart.py   # PyQtGraph price chart widget with crosshairs and scatter overlays
 │   └── widgets.py       # Pandas table model, sortable proxy, table helpers
 ├── persistence/
 │   ├── schema.py        # SQLAlchemy Core table definitions
@@ -234,17 +244,14 @@ scripts/
 3. **Merge**: `eu_scan.scrape_eu_trades_for_isin` runs the requested sources, `eu_merger.merge_eu_trades` deduplicates across regulators, and `eu_merger.filter_eu_trades` applies the GUI/CLI filters (country, trade type, min value, date range).
 4. **Save**: The European tab (and `eu-scan`) use `eu_merger.save_eu_results` to output labeled CSV/JSON bundles after the filters are applied.
 
-### Price History (Session 2 Integration)
+### Price History & Analysis Tab
 
-Session 1 only supplies price models/providers. No schema migration is required in Session 1.
-`insider_scanner.persistence` and `services.context.PersistenceContext` remain preserved.
+The application integrates daily price history from Yahoo Finance via an unofficial API using session handling, configurable user-agents, and exponential backoff to respect rate limits and bypass blocks.
 
-Later Session 2 integration will use:
-
-- Existing `persistence.schema.price_history`
-- A new native `PriceHistoryRepository`
-- Existing `CoverageRepository`
-- Existing `PersistenceContext.us_trades.query()`
+1. **Fetch**: `insider_scanner.core.prices` requests adjusted daily price bars over a specified date range.
+2. **Persist**: Price bars and missing gaps are cached locally in the `price_history` SQLite table.
+3. **Visualize**: The **Analysis tab** merges local insider trades (`us_trades` and `congress_trades`) with the price history to provide an interactive visual overlay using `pyqtgraph`.
+4. **Resilience**: The backend parser gracefully handles missing Yahoo data, challenge pages, malformed timestamps, and invalid JSON structures.
 
 ### Congress Tab — GUI Integration
 
