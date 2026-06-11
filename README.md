@@ -2,6 +2,10 @@
 
 Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, and European regulators (FCA, BaFin, AMF, AFM). Includes congressional financial disclosure scanning (House and Senate), multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links plus a European scan workspace.
 
+![insider_scanners](img/readme_img.jpeg)
+
+**Note:** Image was generated using AI. Any resemblance to real people is random.
+
 ---
 
 ## Setup
