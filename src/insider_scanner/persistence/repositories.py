@@ -114,13 +114,20 @@ class UsTradeRepository:
         sources: Iterable[str] | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        trade_start_date: date | None = None,
+        trade_end_date: date | None = None,
     ) -> list[InsiderTrade]:
         _validate_range(start_date, end_date)
+        _validate_range(trade_start_date, trade_end_date)
         conditions = [us_trades.c.ticker == ticker.strip().upper()]
         if start_date is not None:
             conditions.append(us_trades.c.filing_date >= start_date)
         if end_date is not None:
             conditions.append(us_trades.c.filing_date <= end_date)
+        if trade_start_date is not None:
+            conditions.append(us_trades.c.trade_date >= trade_start_date)
+        if trade_end_date is not None:
+            conditions.append(us_trades.c.trade_date <= trade_end_date)
         try:
             with self._engine.begin() as connection:
                 rows = connection.execute(
@@ -239,8 +246,11 @@ class CongressTradeRepository:
         chamber: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
+        trade_start_date: date | None = None,
+        trade_end_date: date | None = None,
     ) -> list[CongressTrade]:
         _validate_range(start_date, end_date)
+        _validate_range(trade_start_date, trade_end_date)
         conditions = []
         if official and official.casefold() != "all":
             conditions.append(congress_trades.c.official_name == official)
@@ -252,6 +262,10 @@ class CongressTradeRepository:
             conditions.append(congress_trades.c.filing_date >= start_date)
         if end_date is not None:
             conditions.append(congress_trades.c.filing_date <= end_date)
+        if trade_start_date is not None:
+            conditions.append(congress_trades.c.trade_date >= trade_start_date)
+        if trade_end_date is not None:
+            conditions.append(congress_trades.c.trade_date <= trade_end_date)
         try:
             with self._engine.begin() as connection:
                 statement = select(congress_trades)

@@ -130,12 +130,12 @@ def marker_y_for_trade(
     best: float | None = None
     for b in bars:  # bars are date-sorted ascending
         if b.date <= trade.trade_date:
-            best = b.close
+            best = b.plot_close
         else:
             break
     if best is not None:
         return best
-    return bars[0].close if bars else price
+    return bars[0].plot_close if bars else price
 
 
 def is_buy(trade: InsiderTrade | CongressTrade) -> bool:

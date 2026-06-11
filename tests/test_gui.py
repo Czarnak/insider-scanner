@@ -209,6 +209,7 @@ class TestMainWindow:
         qtbot.addWidget(win)
         tab_titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
         assert "Analysis" in tab_titles
+        assert win.analysis_tab._thread_pool is win._thread_pool
 
 
 class TestEuropeanTab:

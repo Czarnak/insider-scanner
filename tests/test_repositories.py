@@ -158,6 +158,52 @@ def test_us_round_trip_filters_order_and_returns_fresh_instances(engine):
     assert repo.query("AAPL", sources="edgar") == [first[0]]
 
 
+def test_trade_queries_filter_trade_dates_independently_of_filing_dates(engine):
+    us_repository = UsTradeRepository(engine)
+    us_visible = _us(
+        insider_name="Visible Insider",
+        trade_date=date(2026, 1, 5),
+        filing_date=date(2027, 1, 2),
+    )
+    us_repository.upsert(
+        [
+            us_visible,
+            _us(
+                insider_name="Old Insider",
+                trade_date=date(2025, 12, 31),
+                filing_date=date(2026, 1, 2),
+            ),
+        ]
+    )
+
+    congress_repository = CongressTradeRepository(engine)
+    congress_visible = _congress(
+        doc_id="visible",
+        trade_date=date(2026, 1, 6),
+        filing_date=date(2027, 1, 2),
+    )
+    congress_repository.upsert(
+        [
+            congress_visible,
+            _congress(
+                doc_id="old",
+                trade_date=date(2025, 12, 31),
+                filing_date=date(2026, 1, 2),
+            ),
+        ]
+    )
+
+    assert us_repository.query(
+        "AAPL",
+        trade_start_date=date(2026, 1, 1),
+        trade_end_date=date(2026, 12, 31),
+    ) == [us_visible]
+    assert congress_repository.query(
+        trade_start_date=date(2026, 1, 1),
+        trade_end_date=date(2026, 12, 31),
+    ) == [congress_visible]
+
+
 def test_upsert_reports_insert_update_and_unchanged(engine):
     repository = UsTradeRepository(engine)
 

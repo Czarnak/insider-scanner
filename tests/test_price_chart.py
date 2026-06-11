@@ -64,6 +64,42 @@ def test_marker_y_uses_close_on_trade_date():
     assert marker_y_for_trade(t, _bars()) == 10.0
 
 
+def test_marker_y_uses_adjusted_close_when_chart_does():
+    bars = [
+        PriceBar(
+            "AAPL",
+            date(2026, 1, 5),
+            90,
+            110,
+            80,
+            100,
+            10,
+            adjusted_close=50,
+        )
+    ]
+    t = InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 5), price=99)
+
+    assert marker_y_for_trade(t, bars) == 50
+
+
+def test_marker_y_before_first_bar_uses_first_adjusted_close():
+    bars = [
+        PriceBar(
+            "AAPL",
+            date(2026, 1, 5),
+            90,
+            110,
+            80,
+            100,
+            10,
+            adjusted_close=50,
+        )
+    ]
+    t = InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 4), price=99)
+
+    assert marker_y_for_trade(t, bars) == 50
+
+
 def test_marker_y_falls_back_to_prior_trading_day():
     # trade on a non-trading day (Jan 6) -> use prior bar's close (Jan 5)
     t = InsiderTrade(ticker="AAPL", trade_date=date(2026, 1, 6), price=9.9)
@@ -117,6 +153,34 @@ def test_set_trade_markers_splits_buy_and_sell(chart):
     chart.set_trade_markers(trades)
     assert len(chart.buy_scatter.data) == 1
     assert len(chart.sell_scatter.data) == 1
+
+
+def test_set_trade_markers_uses_plotted_adjusted_close(chart):
+    bars = [
+        PriceBar(
+            "AAPL",
+            date(2026, 1, 5),
+            90,
+            110,
+            80,
+            100,
+            10,
+            adjusted_close=50,
+        )
+    ]
+    chart.set_price_data(bars)
+    chart.set_trade_markers(
+        [
+            InsiderTrade(
+                ticker="AAPL",
+                trade_date=date(2026, 1, 5),
+                trade_type="Buy",
+            )
+        ]
+    )
+
+    _, ys = chart.buy_scatter.getData()
+    assert list(ys) == [50]
 
 
 def test_set_trade_markers_replaces_previous(chart):

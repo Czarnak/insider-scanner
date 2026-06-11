@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from functools import partial
 
 from PySide6.QtCore import QThreadPool, Slot
 from PySide6.QtWidgets import (
@@ -14,30 +15,39 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices import get_price_history
+from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui.price_chart import PriceChartWidget
 from insider_scanner.utils.config import load_watchlist
 from insider_scanner.utils.threading import Worker
 
 
-from insider_scanner.core.models import InsiderTrade, CongressTrade
-from insider_scanner.core.prices.model import PriceBar
-
-
-def load_trades_for_ticker(ticker: str) -> list[InsiderTrade | CongressTrade]:
+def load_trades_for_ticker(
+    ticker: str, start: date, end: date
+) -> list[InsiderTrade | CongressTrade]:
     """Load stored insider trades for a US ticker from the Phase 1 DB."""
     from insider_scanner.services.context import open_persistence
 
+    normalized_ticker = ticker.upper()
     ctx = open_persistence()
     try:
-        us_trades = list(ctx.us_trades.query(ticker=ticker.upper()))
-
-        # Load Congress trades and filter by ticker
-        all_congress = ctx.congress_trades.query()
-        congress = [t for t in all_congress if t.ticker == ticker.upper()]
-
-        # Return a unified list
-        return us_trades + congress
+        us_trades = ctx.us_trades.query(
+            ticker=normalized_ticker,
+            trade_start_date=start,
+            trade_end_date=end,
+        )
+        congress_trades = ctx.congress_trades.query(
+            trade_start_date=start,
+            trade_end_date=end,
+        )
+        return [
+            trade
+            for trade in [*us_trades, *congress_trades]
+            if trade.ticker == normalized_ticker
+            and trade.trade_date is not None
+            and start <= trade.trade_date <= end
+        ]
     finally:
         ctx.close()
 
@@ -45,8 +55,11 @@ def load_trades_for_ticker(ticker: str) -> list[InsiderTrade | CongressTrade]:
 class AnalysisTab(QWidget):
     """Pick a US ticker -> price line + insider markers from local data."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, thread_pool: QThreadPool | None = None) -> None:
         super().__init__(parent)
+        self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._request_id = 0
+        self._active_request: tuple[int, str] | None = None
         self._build_ui()
         self._refresh_symbols()
 
@@ -57,6 +70,7 @@ class AnalysisTab(QWidget):
         controls.addWidget(QLabel("Symbol:"))
         self.symbol_combo = QComboBox()
         self.symbol_combo.setMinimumWidth(120)
+        self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
         controls.addWidget(self.symbol_combo)
 
         self.btn_load = QPushButton("Load Chart")
@@ -94,33 +108,60 @@ class AnalysisTab(QWidget):
 
         end = date.today()
         start = end - timedelta(days=365 * 2)
+        self._request_id += 1
+        request_id = self._request_id
+        self._active_request = (request_id, symbol)
 
         def work():
             bars = get_price_history(symbol, start, end)
-            trades = load_trades_for_ticker(symbol)
-            return bars, trades
+            trades = load_trades_for_ticker(symbol, start, end)
+            return request_id, symbol, bars, trades
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_loaded)
-        worker.signals.error.connect(self._on_error)
-        worker.signals.finished.connect(self._on_finished)
-        QThreadPool.globalInstance().start(worker)
+        worker.signals.error.connect(partial(self._on_error, request_id, symbol))
+        worker.signals.finished.connect(partial(self._on_finished, request_id))
+        self._thread_pool.start(worker)
 
-    @Slot()
-    def _on_finished(self) -> None:
+    def request_cancellation(self) -> None:
+        """Invalidate pending callbacks during window shutdown."""
+        self._invalidate_active_request()
+
+    @Slot(str)
+    def _on_symbol_changed(self, _symbol: str) -> None:
+        if self._active_request is None:
+            return
+        self._invalidate_active_request()
         self.btn_load.setEnabled(True)
 
     @Slot(object)
     def _on_loaded(self, payload) -> None:
-        bars, trades = payload
+        request_id, symbol, bars, trades = payload
+        if not self._is_current_request(request_id, symbol):
+            return
         self._render(bars, trades)
         self.status_label.setText(
-            f"{self.symbol_combo.currentText()}: {len(bars)} bars, {len(trades)} trades"
+            f"{symbol}: {len(bars)} bars, {len(trades)} trades"
         )
 
-    @Slot(tuple)
-    def _on_error(self, error_info) -> None:
+    def _on_error(self, request_id: int, symbol: str, error_info) -> None:
+        if not self._is_current_request(request_id, symbol):
+            return
         self.status_label.setText(f"Load failed: {error_info[1]}")
+
+    def _on_finished(self, request_id: int) -> None:
+        if self._active_request is None or self._active_request[0] != request_id:
+            return
+        self._active_request = None
+        self.btn_load.setEnabled(True)
+
+    def _is_current_request(self, request_id: int, symbol: str) -> bool:
+        current_symbol = self.symbol_combo.currentText().strip().upper()
+        return self._active_request == (request_id, symbol) and current_symbol == symbol
+
+    def _invalidate_active_request(self) -> None:
+        self._request_id += 1
+        self._active_request = None
 
     def _render(
         self, bars: list[PriceBar], trades: list[InsiderTrade | CongressTrade]

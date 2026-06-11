@@ -82,7 +82,7 @@ class MainWindow(QMainWindow):
         try:
             from insider_scanner.gui.analysis_tab import AnalysisTab
 
-            self.analysis_tab = AnalysisTab()
+            self.analysis_tab = AnalysisTab(thread_pool=self._thread_pool)
             self.tabs.addTab(self.analysis_tab, "Analysis")
         except Exception as exc:
             from PySide6.QtWidgets import QLabel
