@@ -314,6 +314,9 @@ __marimo__/
 /playground.ipynb
 data/
 .claude/
+.codex/
+.gemini/
+.agent/
 .vscode/
 .tmp_pytest/
 *.md

@@ -57,10 +57,7 @@ def parse_yahoo_chart(payload: object, symbol: str) -> list[PriceBar]:
         if not quotes:
             raise ValueError
         quote_data = _mapping(quotes[0])
-        required = {
-            field: _array(quote_data[field])
-            for field in _REQUIRED_FIELDS
-        }
+        required = {field: _array(quote_data[field]) for field in _REQUIRED_FIELDS}
         if any(len(values) != len(timestamps) for values in required.values()):
             raise ValueError
 
@@ -105,7 +102,9 @@ class YahooSource:
         else:
             self._session = requests.Session()
             self._session.headers.update(
-                {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+                }
             )
 
     def fetch_daily(self, symbol: str, start: Date, end: Date) -> list[PriceBar]:

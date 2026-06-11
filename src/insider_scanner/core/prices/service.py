@@ -37,6 +37,7 @@ def get_price_history(
     own_engine = engine is None
     if own_engine:
         from insider_scanner.services.context import open_persistence
+
         ctx = open_persistence()
         e = ctx.engine
     else:
@@ -53,19 +54,25 @@ def get_price_history(
                 repo.upsert_bars(e, fetched, source=src_name)
             except Exception as exc:
                 fetch_failed = True
-                log.warning("Price fetch failed for %s %s..%s: %s",
-                            symbol, g_start, g_end, exc)
+                log.warning(
+                    "Price fetch failed for %s %s..%s: %s", symbol, g_start, g_end, exc
+                )
         bars = repo.get_bars(e, symbol, start, end)
     finally:
-        if own_engine and 'ctx' in locals():
+        if own_engine and "ctx" in locals():
             ctx.close()
 
     if not bars and fetch_failed:
-        raise PriceSourceError("get_price_history", cause=Exception(f"No price data for {symbol} and fetch failed"))
+        raise PriceSourceError(
+            "get_price_history",
+            cause=Exception(f"No price data for {symbol} and fetch failed"),
+        )
     return bars
 
 
-def validate_coverage(symbols: list[str], source: PriceSource | None = None) -> dict[str, bool]:
+def validate_coverage(
+    symbols: list[str], source: PriceSource | None = None
+) -> dict[str, bool]:
     """Return {symbol: has_recent_data}. Used to vet a source vs. the watchlist."""
     from datetime import timedelta
 

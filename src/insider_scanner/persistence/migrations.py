@@ -24,7 +24,9 @@ def _create_initial_schema(connection: Connection) -> None:
 
 
 def _add_price_history_source(connection: Connection) -> None:
-    connection.exec_driver_sql("ALTER TABLE price_history ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT ''")
+    connection.exec_driver_sql(
+        "ALTER TABLE price_history ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT ''"
+    )
 
 
 MIGRATIONS: tuple[Migration, ...] = (

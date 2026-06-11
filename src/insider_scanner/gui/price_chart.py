@@ -44,20 +44,30 @@ class PriceChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.plot_widget)
 
-        self._vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#888", width=1))
-        self._hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#888", width=1))
+        self._vline = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("#888", width=1)
+        )
+        self._hline = pg.InfiniteLine(
+            angle=0, movable=False, pen=pg.mkPen("#888", width=1)
+        )
         self.plot_widget.addItem(self._vline, ignoreBounds=True)
         self.plot_widget.addItem(self._hline, ignoreBounds=True)
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
         self.buy_scatter = pg.ScatterPlotItem(
-            size=12, symbol="t1", brush=pg.mkBrush("#2ca02c"),
-            pen=pg.mkPen("#155b15"), hoverable=True,
+            size=12,
+            symbol="t1",
+            brush=pg.mkBrush("#2ca02c"),
+            pen=pg.mkPen("#155b15"),
+            hoverable=True,
             tip=lambda x, y, data: data.get("tip", "") if data else "",
         )
         self.sell_scatter = pg.ScatterPlotItem(
-            size=12, symbol="t", brush=pg.mkBrush("#d62728"),
-            pen=pg.mkPen("#7a1718"), hoverable=True,
+            size=12,
+            symbol="t",
+            brush=pg.mkBrush("#d62728"),
+            pen=pg.mkPen("#7a1718"),
+            hoverable=True,
             tip=lambda x, y, data: data.get("tip", "") if data else "",
         )
         self.plot_widget.addItem(self.buy_scatter)
@@ -75,11 +85,13 @@ class PriceChartWidget(QWidget):
             }
             (buys if is_buy(t) else sells).append(spot)
         self.buy_scatter.setData(
-            [b["pos"][0] for b in buys], [b["pos"][1] for b in buys],
+            [b["pos"][0] for b in buys],
+            [b["pos"][1] for b in buys],
             data=[b["data"] for b in buys],
         )
         self.sell_scatter.setData(
-            [s["pos"][0] for s in sells], [s["pos"][1] for s in sells],
+            [s["pos"][0] for s in sells],
+            [s["pos"][1] for s in sells],
             data=[s["data"] for s in sells],
         )
 
@@ -107,7 +119,9 @@ class PriceChartWidget(QWidget):
 BUY_TYPES = {"Buy", "Purchase", "Exercise"}
 
 
-def marker_y_for_trade(trade: InsiderTrade | CongressTrade, bars: list[PriceBar]) -> float:
+def marker_y_for_trade(
+    trade: InsiderTrade | CongressTrade, bars: list[PriceBar]
+) -> float:
     """Y position for a trade marker: close on the trade date, else the
     most recent prior trading day's close, else the trade's own price."""
     price = getattr(trade, "price", 0.0)
@@ -130,10 +144,17 @@ def is_buy(trade: InsiderTrade | CongressTrade) -> bool:
 
 def build_marker_tooltip(trade: InsiderTrade | CongressTrade) -> str:
     """Multi-line hover text for an insider trade marker."""
-    who = getattr(trade, "insider_name", None) or getattr(trade, "congress_member", None) or getattr(trade, "official_name", "Unknown")
+    who = (
+        getattr(trade, "insider_name", None)
+        or getattr(trade, "congress_member", None)
+        or getattr(trade, "official_name", "Unknown")
+    )
     lines = [
         f"{trade.trade_type}  {trade.ticker}",
-        f"{who}" + (f" — {trade.insider_title}" if getattr(trade, "insider_title", None) else ""),
+        f"{who}"
+        + (
+            f" — {trade.insider_title}" if getattr(trade, "insider_title", None) else ""
+        ),
         f"Date: {trade.trade_date.isoformat() if trade.trade_date else 'n/a'}",
     ]
     if hasattr(trade, "shares"):

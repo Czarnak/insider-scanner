@@ -8,7 +8,10 @@ from .source import PriceSource
 from .tiingo import TiingoSource
 from .yahoo import YahooSource
 
-def get_price_source(name: str | None = None, api_key: str | None = None) -> PriceSource:
+
+def get_price_source(
+    name: str | None = None, api_key: str | None = None
+) -> PriceSource:
     """Resolve and configure a price provider based on arguments or environment."""
     provider_name = name
     if provider_name is None:
@@ -22,7 +25,7 @@ def get_price_source(name: str | None = None, api_key: str | None = None) -> Pri
     key = api_key
     if key is None:
         key = os.environ.get("TIINGO_API_KEY")
-    
+
     if key is not None:
         key = key.strip()
         if not key:
@@ -32,7 +35,9 @@ def get_price_source(name: str | None = None, api_key: str | None = None) -> Pri
         return YahooSource()
     elif provider_name == "tiingo":
         if not key:
-            raise ValueError("TIINGO_API_KEY is required when using the tiingo provider.")
+            raise ValueError(
+                "TIINGO_API_KEY is required when using the tiingo provider."
+            )
         return TiingoSource(key)
     elif provider_name is not None:
         raise ValueError(f"Unknown price provider: {provider_name}")
@@ -40,5 +45,5 @@ def get_price_source(name: str | None = None, api_key: str | None = None) -> Pri
     # No provider specified
     if key:
         return TiingoSource(key)
-    
+
     return YahooSource()

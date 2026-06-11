@@ -339,4 +339,6 @@ scan_coverage = metadata.tables["scan_coverage"]
 refresh_state = metadata.tables["refresh_state"]
 price_history = metadata.tables["price_history"]
 
-price_history.append_column(Column("source", String(32), nullable=False, server_default=""))
+price_history.append_column(
+    Column("source", String(32), nullable=False, server_default="")
+)

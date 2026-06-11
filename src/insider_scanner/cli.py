@@ -250,10 +250,14 @@ def cmd_price(
         print(f"No price data for {args.ticker.upper()} in {start}..{end}")
         return
     print(f"{args.ticker.upper()}  {start}..{end}  ({len(bars)} bars)")
-    print(f"{'date':<12} {'open':>10} {'high':>10} {'low':>10} {'close':>10} {'volume':>14}")
+    print(
+        f"{'date':<12} {'open':>10} {'high':>10} {'low':>10} {'close':>10} {'volume':>14}"
+    )
     for b in bars:
-        print(f"{b.date.isoformat():<12} {b.open:>10.2f} {b.high:>10.2f} "
-              f"{b.low:>10.2f} {b.close:>10.2f} {b.volume:>14.0f}")
+        print(
+            f"{b.date.isoformat():<12} {b.open:>10.2f} {b.high:>10.2f} "
+            f"{b.low:>10.2f} {b.close:>10.2f} {b.volume:>14.0f}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

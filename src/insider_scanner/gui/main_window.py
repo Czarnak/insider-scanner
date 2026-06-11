@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(self.analysis_tab, "Analysis")
         except Exception as exc:
             from PySide6.QtWidgets import QLabel
+
             self.tabs.addTab(
                 QLabel(f"Analysis tab failed to load: {exc}"),
                 "Analysis",

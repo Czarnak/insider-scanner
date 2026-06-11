@@ -34,12 +34,16 @@ def upsert_bars(engine: Engine, bars: list[PriceBar], source: str = "") -> int:
     written = 0
     with immediate_transaction(engine) as connection:
         for bar in bars:
-            existing_row = connection.execute(
-                select(price_history).where(
-                    price_history.c.symbol == bar.symbol,
-                    price_history.c.price_date == bar.date,
+            existing_row = (
+                connection.execute(
+                    select(price_history).where(
+                        price_history.c.symbol == bar.symbol,
+                        price_history.c.price_date == bar.date,
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
 
             if existing_row is None:
                 connection.execute(
@@ -66,7 +70,7 @@ def upsert_bars(engine: Engine, bars: list[PriceBar], source: str = "") -> int:
                 }
                 if source:
                     update_values["source"] = source
-                    
+
                 connection.execute(
                     price_history.update()
                     .where(
@@ -82,17 +86,21 @@ def upsert_bars(engine: Engine, bars: list[PriceBar], source: str = "") -> int:
 def get_bars(engine: Engine, symbol: str, start: date, end: date) -> list[PriceBar]:
     """Return stored bars for symbol in [start, end], sorted by date."""
     with engine.begin() as connection:
-        rows = connection.execute(
-            select(price_history)
-            .where(
-                and_(
-                    price_history.c.symbol == symbol.upper(),
-                    price_history.c.price_date >= start,
-                    price_history.c.price_date <= end,
+        rows = (
+            connection.execute(
+                select(price_history)
+                .where(
+                    and_(
+                        price_history.c.symbol == symbol.upper(),
+                        price_history.c.price_date >= start,
+                        price_history.c.price_date <= end,
+                    )
                 )
+                .order_by(price_history.c.price_date)
             )
-            .order_by(price_history.c.price_date)
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     return [_to_bar(r) for r in rows]
 
 
@@ -100,14 +108,16 @@ def get_coverage(engine: Engine, symbol: str) -> tuple[date, date] | None:
     """Return (min_date, max_date) of stored bars for symbol, or None."""
     with engine.begin() as connection:
         row = connection.execute(
-            select(func.min(price_history.c.price_date), func.max(price_history.c.price_date))
-            .where(price_history.c.symbol == symbol.upper())
+            select(
+                func.min(price_history.c.price_date),
+                func.max(price_history.c.price_date),
+            ).where(price_history.c.symbol == symbol.upper())
         ).first()
-    
+
     if not row or row[0] is None:
         return None
-    
-    # SQLite returns string dates if using standard sqlite driver sometimes, 
+
+    # SQLite returns string dates if using standard sqlite driver sometimes,
     # but SQLAlchemy Date type handles translation. Let's ensure it's a date object.
     min_date = row[0] if isinstance(row[0], date) else date.fromisoformat(row[0])
     max_date = row[1] if isinstance(row[1], date) else date.fromisoformat(row[1])

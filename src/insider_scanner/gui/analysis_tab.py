@@ -31,11 +31,11 @@ def load_trades_for_ticker(ticker: str) -> list[InsiderTrade | CongressTrade]:
     ctx = open_persistence()
     try:
         us_trades = list(ctx.us_trades.query(ticker=ticker.upper()))
-        
+
         # Load Congress trades and filter by ticker
         all_congress = ctx.congress_trades.query()
         congress = [t for t in all_congress if t.ticker == ticker.upper()]
-        
+
         # Return a unified list
         return us_trades + congress
     finally:
@@ -122,6 +122,8 @@ class AnalysisTab(QWidget):
     def _on_error(self, error_info) -> None:
         self.status_label.setText(f"Load failed: {error_info[1]}")
 
-    def _render(self, bars: list[PriceBar], trades: list[InsiderTrade | CongressTrade]) -> None:
+    def _render(
+        self, bars: list[PriceBar], trades: list[InsiderTrade | CongressTrade]
+    ) -> None:
         self.chart.set_price_data(bars)
         self.chart.set_trade_markers(trades)

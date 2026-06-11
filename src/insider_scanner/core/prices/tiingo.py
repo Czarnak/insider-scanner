@@ -90,7 +90,9 @@ class TiingoSource:
     ) -> None:
         if not isinstance(api_key, str):
             raise TypeError("api_key must be a string")
-        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in api_key):
+        if any(
+            ord(character) < 0x20 or ord(character) == 0x7F for character in api_key
+        ):
             raise ValueError("api_key contains invalid control characters")
         normalized_key = api_key.strip()
         if not normalized_key:
@@ -105,10 +107,7 @@ class TiingoSource:
 
         try:
             response = self._session.get(
-                (
-                    f"{_DAILY_URL}/"
-                    f"{quote(normalized_symbol, safe='')}/prices"
-                ),
+                (f"{_DAILY_URL}/{quote(normalized_symbol, safe='')}/prices"),
                 params={
                     "startDate": start.isoformat(),
                     "endDate": end.isoformat(),

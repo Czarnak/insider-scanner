@@ -23,6 +23,7 @@ def test_bar_roundtrips_through_db():
     assert out[0].close == 1.5
     assert out[0].adjusted_close == 1.4
 
+
 def test_get_coverage_none_when_empty():
     e = make_engine()
     assert repo.get_coverage(e, "AAPL") is None
@@ -30,10 +31,13 @@ def test_get_coverage_none_when_empty():
 
 def test_get_coverage_returns_min_max():
     e = make_engine()
-    repo.upsert_bars(e, [
-        PriceBar("AAPL", date(2026, 1, 5), 1, 1, 1, 1, 1),
-        PriceBar("AAPL", date(2026, 1, 9), 1, 1, 1, 1, 1),
-    ])
+    repo.upsert_bars(
+        e,
+        [
+            PriceBar("AAPL", date(2026, 1, 5), 1, 1, 1, 1, 1),
+            PriceBar("AAPL", date(2026, 1, 9), 1, 1, 1, 1, 1),
+        ],
+    )
     assert repo.get_coverage(e, "AAPL") == (date(2026, 1, 5), date(2026, 1, 9))
 
 
