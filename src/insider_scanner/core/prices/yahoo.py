@@ -100,7 +100,13 @@ class YahooSource:
     """Fetch validated daily bars from Yahoo Finance's chart endpoint."""
 
     def __init__(self, session: requests.Session | None = None) -> None:
-        self._session = session if session is not None else requests.Session()
+        if session is not None:
+            self._session = session
+        else:
+            self._session = requests.Session()
+            self._session.headers.update(
+                {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"}
+            )
 
     def fetch_daily(self, symbol: str, start: Date, end: Date) -> list[PriceBar]:
         """Fetch daily bars for an inclusive UTC date range."""

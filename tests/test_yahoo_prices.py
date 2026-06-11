@@ -271,6 +271,7 @@ class FakeSession:
         self.response = response or FakeResponse(payload=yahoo_payload())
         self.error = error
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.headers = {}
 
     def get(self, url: str, **kwargs: object) -> FakeResponse:
         self.calls.append((url, kwargs))
