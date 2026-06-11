@@ -1,18 +1,35 @@
 # Insider Scanner
 
+[![PyPI](https://img.shields.io/pypi/v/insider-scan.svg)](https://pypi.org/project/insider-scan/)
+[![CI](https://github.com/Czarnak/insider-scan/actions/workflows/ci.yml/badge.svg)](https://github.com/Czarnak/insider-scan/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/insider-scan.svg)](https://pypi.org/project/insider-scan/)
+
 Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, and European regulators (FCA, BaFin, AMF, AFM). Includes congressional financial disclosure scanning (House and Senate), multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links plus a European scan workspace.
 
 ![insider_scanners](img/readme_img.jpeg)
 
 **Note:** Image was generated using AI. Any resemblance to real people is random.
 
----
-
-## Setup
+## Install
 
 ```bash
-git clone <repo-url>
-cd insider-scanner
+pipx install insider-scan      # isolated app install (recommended)
+# or
+pip install insider-scan
+```
+
+## Run
+
+```bash
+insider-scan            # launch the desktop GUI
+insider-scan-cli --help # command-line interface
+```
+
+## Development Setup
+
+```bash
+git clone https://github.com/Czarnak/insider-scan.git
+cd insider-scan
 pip install -e ".[dev]"
 ```
 
@@ -29,7 +46,7 @@ SQLAlchemy.
 ### GUI
 
 ```bash
-insider-scanner
+insider-scan
 # or
 python -m insider_scanner.main
 ```
@@ -69,36 +86,36 @@ The GUI tabs cover the core use cases:
 
 ```bash
 # Scan a specific ticker
-insider-scanner-cli scan AAPL
-insider-scanner-cli scan AAPL --type Buy --min-value 1000000 --save
+insider-scan-cli scan AAPL
+insider-scan-cli scan AAPL --type Buy --min-value 1000000 --save
 
 # Scan with date range
-insider-scanner-cli scan AAPL --since 2025-01-01 --until 2025-06-30
+insider-scan-cli scan AAPL --since 2025-01-01 --until 2025-06-30
 
 # Fetch latest insider trades
-insider-scanner-cli latest --count 50 --save
-insider-scanner-cli latest --since 2025-06-01
+insider-scan-cli latest --count 50 --save
+insider-scan-cli latest --since 2025-06-01 --until 2025-06-30
 
 # Resolve SEC CIK
-insider-scanner-cli cik AAPL
+insider-scan-cli resolve-cik AAPL
 
 # Initialize default Congress member list
-insider-scanner-cli init-congress
+insider-scan-cli init-congress
 
 # Congress-only filter
-insider-scanner-cli scan AAPL --congress-only
+insider-scan-cli scan AAPL --congress-only
 
 # Import legacy JSON exports into SQLite
-insider-scanner-cli import-legacy ./old-exports
-insider-scanner-cli import-legacy ./large.json --max-file-size-mib 100
+insider-scan-cli import-legacy ./old-exports
+insider-scan-cli import-legacy ./large.json --max-file-size-mib 100
 ```
 
 ### European scan CLI
 
 ```bash
 # Scan a single ISIN or run the built-in watchlist
-insider-scanner-cli eu-scan GB0002875804
-insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
+insider-scan-cli eu-scan GB0002875804
+insider-scan-cli eu-scan --watchlist --country UK --min-value 50000 --save
 ```
 
 Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every configured ISIN, and `--save` to persist the filtered CSV/JSON bundle.
@@ -156,7 +173,7 @@ If startup reports a database or migration failure:
 4. Restore a known-good database backup, or rename the corrupt database and
    restart the application to build a fresh database.
 5. Optionally repopulate the fresh database with
-   `insider-scanner-cli import-legacy PATH` using validated legacy JSON exports.
+   `insider-scan-cli import-legacy PATH` using validated legacy JSON exports.
 
 ---
 
