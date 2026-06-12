@@ -7,13 +7,20 @@ Run inside an environment where the built wheel is installed:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
 
 def check_cli() -> None:
+    cli_path = shutil.which(
+        "insider-scan-cli",
+        path=os.path.dirname(sys.executable),
+    )
+    if cli_path is None:
+        raise RuntimeError("insider-scan-cli is not installed beside this Python")
     result = subprocess.run(
-        ["insider-scan-cli", "--help"],
+        [cli_path, "--help"],
         capture_output=True,
         text=True,
     )
@@ -43,11 +50,17 @@ def check_resources() -> None:
         [
             sys.executable,
             "-c",
-            "from importlib.resources import files; "
-            "seeds = files('insider_scanner.resources.seeds'); "
-            "assert (seeds / 'congress_members.json').is_file(); "
-            "assert (seeds / 'tickers_watchlist.txt').is_file(); "
-            "print('seeds ok')",
+            "from importlib.resources import files\n"
+            "seeds = files('insider_scanner.resources.seeds')\n"
+            "names = (\n"
+            "    'congress_members.json',\n"
+            "    'tickers_watchlist.txt',\n"
+            "    'eu_watchlist.txt',\n"
+            ")\n"
+            "missing = [name for name in names if not (seeds / name).is_file()]\n"
+            "if missing:\n"
+            "    raise SystemExit(f'missing packaged seeds: {missing}')\n"
+            "print('seeds ok')\n",
         ],
         check=True,
     )

@@ -29,8 +29,13 @@ def test_has_python_version_classifiers():
     classifiers = _load()["project"]["classifiers"]
     for version in ("3.11", "3.12", "3.13", "3.14"):
         assert any(f"Python :: {version}" in classifier for classifier in classifiers)
-    assert any(
-        "License :: OSI Approved :: MIT" in classifier for classifier in classifiers
+
+
+def test_uses_spdx_license_metadata():
+    project = _load()["project"]
+    assert project["license"] == "MIT"
+    assert not any(
+        classifier.startswith("License ::") for classifier in project["classifiers"]
     )
 
 

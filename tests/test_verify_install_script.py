@@ -27,6 +27,7 @@ def test_verify_install_script_exists() -> None:
 def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_script()
     calls: list[tuple[list[str], dict[str, object]]] = []
+    cli_path = str(Path(module.sys.executable).with_name("insider-scan-cli"))
 
     def fake_run(
         command: list[str], **kwargs: object
@@ -34,13 +35,14 @@ def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> Non
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, stdout="usage: insider-scan-cli")
 
+    monkeypatch.setattr(module.shutil, "which", lambda *args, **kwargs: cli_path)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
     module.check_cli()
 
     assert calls == [
         (
-            ["insider-scan-cli", "--help"],
+            [cli_path, "--help"],
             {"capture_output": True, "text": True},
         )
     ]
@@ -48,6 +50,13 @@ def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_check_cli_rejects_missing_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_script()
+    monkeypatch.setattr(
+        module.shutil,
+        "which",
+        lambda *args, **kwargs: str(
+            Path(module.sys.executable).with_name("insider-scan-cli")
+        ),
+    )
 
     def fake_run(
         command: list[str], **kwargs: object
@@ -100,4 +109,7 @@ def test_check_resources_uses_packaged_seed_location(
     assert "insider_scanner.resources.seeds" in command[2]
     assert "congress_members.json" in command[2]
     assert "tickers_watchlist.txt" in command[2]
+    assert "eu_watchlist.txt" in command[2]
+    assert "assert " not in command[2]
+    assert "raise SystemExit" in command[2]
     assert captured["check"] is True
