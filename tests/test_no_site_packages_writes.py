@@ -14,6 +14,22 @@ SEED_TARGETS = (
     "eu_watchlist_file",
 )
 
+EXPORTED_RUNTIME_PATHS = {
+    "PROJECT_ROOT": "data_dir",
+    "DATA_DIR": "data_dir",
+    "CACHE_DIR": "cache_dir",
+    "DATABASE_FILE": "database_file",
+    "OUTPUTS_DIR": "outputs_dir",
+    "SCAN_OUTPUTS_DIR": "scan_outputs_dir",
+    "EDGAR_CACHE_DIR": "edgar_cache_dir",
+    "SCRAPER_CACHE_DIR": "scraper_cache_dir",
+    "EU_CACHE_DIR": "eu_cache_dir",
+    "CONGRESS_FILE": "congress_file",
+    "TICKERS_FILE": "tickers_file",
+    "EU_WATCHLIST_FILE": "eu_watchlist_file",
+    "HOUSE_DISCLOSURES_DIR": "house_disclosures_dir",
+}
+
 
 def _is_under(path: Path, root: Path) -> bool:
     resolved_path = path.resolve()
@@ -45,6 +61,21 @@ def test_runtime_paths_resolve_outside_the_installed_package(tmp_path):
     assert paths.scan_outputs_dir == data_dir / "exports" / "scans"
     assert paths.eu_cache_dir == cache_dir / "eu_scrapers"
     assert paths.eu_watchlist_file == data_dir / "eu_watchlist.txt"
+
+
+def test_default_runtime_paths_resolve_outside_the_installed_package():
+    package_dir = Path(insider_scanner.__file__).resolve().parent
+
+    for field in fields(config.DEFAULT_PATHS):
+        runtime_path = getattr(config.DEFAULT_PATHS, field.name).resolve()
+        assert package_dir != runtime_path
+        assert package_dir not in runtime_path.parents
+
+    for exported_name, field_name in EXPORTED_RUNTIME_PATHS.items():
+        assert getattr(config, exported_name) == getattr(
+            config.DEFAULT_PATHS,
+            field_name,
+        )
 
 
 def test_ensure_dirs_only_writes_user_roots_and_copies_packaged_seeds(tmp_path):
@@ -84,4 +115,9 @@ def test_ensure_dirs_only_writes_user_roots_and_copies_packaged_seeds(tmp_path):
         assert _is_under(user_seed, data_dir)
         assert user_seed.read_bytes() == expected_content
 
+    user_edit = b"user-managed watchlist\n"
+    paths.tickers_file.write_bytes(user_edit)
+    config.ensure_dirs(paths)
+
+    assert paths.tickers_file.read_bytes() == user_edit
     assert _snapshot_tree(package_dir) == package_before

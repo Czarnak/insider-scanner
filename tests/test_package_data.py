@@ -17,5 +17,8 @@ def test_packaged_seed_files_are_readable():
         seed = seed_root.joinpath(seed_name)
 
         assert seed.is_file()
-        with seed.open("rb") as seed_file:
-            seed_file.read(1)
+        content = seed.read_text(encoding="utf-8").strip()
+        assert content
+
+        if seed_name == "congress_members.json":
+            assert content.startswith(("{", "["))
