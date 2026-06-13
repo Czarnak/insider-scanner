@@ -27,13 +27,15 @@ def test_verify_install_script_exists() -> None:
 def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_script()
     calls: list[tuple[list[str], dict[str, object]]] = []
-    cli_path = str(Path(module.sys.executable).with_name("insider-scan-cli"))
+    cli_path = str(Path(module.sys.executable).with_name("insider-scanner-cli"))
 
     def fake_run(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, stdout="usage: insider-scan-cli")
+        return subprocess.CompletedProcess(
+            command, 0, stdout="usage: insider-scanner-cli"
+        )
 
     monkeypatch.setattr(module.shutil, "which", lambda *args, **kwargs: cli_path)
     monkeypatch.setattr(module.subprocess, "run", fake_run)
@@ -54,7 +56,7 @@ def test_check_cli_rejects_missing_usage(monkeypatch: pytest.MonkeyPatch) -> Non
         module.shutil,
         "which",
         lambda *args, **kwargs: str(
-            Path(module.sys.executable).with_name("insider-scan-cli")
+            Path(module.sys.executable).with_name("insider-scanner-cli")
         ),
     )
 
@@ -110,6 +112,29 @@ def test_check_resources_uses_packaged_seed_location(
     assert "congress_members.json" in command[2]
     assert "tickers_watchlist.txt" in command[2]
     assert "eu_watchlist.txt" in command[2]
+    assert "assert " not in command[2]
+    assert "raise SystemExit" in command[2]
+    assert captured["check"] is True
+
+
+def test_check_fonts_uses_packaged_font_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        captured.update({"command": command, **kwargs})
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module.check_fonts()
+
+    command = captured["command"]
+    assert command[:2] == [module.sys.executable, "-c"]
+    assert "insider_scanner.resources.fonts" in command[2]
+    assert "Inter-Regular.ttf" in command[2]
+    assert "JetBrainsMono-Regular.ttf" in command[2]
     assert "assert " not in command[2]
     assert "raise SystemExit" in command[2]
     assert captured["check"] is True

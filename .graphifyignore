@@ -320,3 +320,4 @@ data/
 .vscode/
 .tmp_pytest/
 *.md
+UI_design/

@@ -34,6 +34,10 @@ def run() -> int:
     app.setApplicationName("Insider Scanner")
     app.setOrganizationName("InsiderScanner")
 
+    from insider_scanner.gui.theme import get_theme_manager
+
+    get_theme_manager().install(app)
+
     try:
         ensure_dirs()
         init_default_congress_file()

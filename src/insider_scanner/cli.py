@@ -262,7 +262,7 @@ def cmd_price(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="insider-scan-cli",
+        prog="insider-scanner-cli",
         description="Scan insider trades from secform4.com, openinsider.com, SEC EDGAR, and European regulators.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

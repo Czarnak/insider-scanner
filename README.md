@@ -1,35 +1,31 @@
 # Insider Scanner
 
-[![PyPI](https://img.shields.io/pypi/v/insider-scan.svg)](https://pypi.org/project/insider-scan/)
-[![CI](https://github.com/Czarnak/insider-scan/actions/workflows/ci.yml/badge.svg)](https://github.com/Czarnak/insider-scan/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/pypi/pyversions/insider-scan.svg)](https://pypi.org/project/insider-scan/)
+[![PyPI](https://img.shields.io/pypi/v/insider-scanner.svg)](https://pypi.org/project/insider-scanner/)
+[![CI](https://github.com/Czarnak/insider-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Czarnak/insider-scanner/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/insider-scanner.svg)](https://pypi.org/project/insider-scanner/)
 
 Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, and European regulators (FCA, BaFin, AMF, AFM). Includes congressional financial disclosure scanning (House and Senate), multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links plus a European scan workspace.
-
-![insider_scanners](img/readme_img.jpeg)
-
-**Note:** Image was generated using AI. Any resemblance to real people is random.
 
 ## Install
 
 ```bash
-pipx install insider-scan      # isolated app install (recommended)
+pipx install insider-scanner      # isolated app install (recommended)
 # or
-pip install insider-scan
+pip install insider-scanner
 ```
 
 ## Run
 
 ```bash
-insider-scan            # launch the desktop GUI
-insider-scan-cli --help # command-line interface
+insider-scanner            # launch the desktop GUI
+insider-scanner-cli --help # command-line interface
 ```
 
 ## Development Setup
 
 ```bash
-git clone https://github.com/Czarnak/insider-scan.git
-cd insider-scan
+git clone https://github.com/Czarnak/insider-scanner.git
+cd insider-scanner
 pip install -e ".[dev]"
 ```
 
@@ -46,7 +42,7 @@ SQLAlchemy.
 ### GUI
 
 ```bash
-insider-scan
+insider-scanner
 # or
 python -m insider_scanner.main
 ```
@@ -61,11 +57,15 @@ The GUI tabs cover the core use cases:
 - View sortable tables that display filing/trade dates, highlight congressional filings, show EDGAR links, and let you export CSV/JSON.
 - Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
 
+![insider_scanners](img/insiderTab.png)
+
 #### Congress Scan tab
 
 - Pick a legislator (House/Senate dropdown) or the whole committee list, select sources (House/Senate), and preview results in a threaded worker with progress + cancel.
 - Use filters such as trade type, sector, and minimum value, then double-click any row to open the original PDF/PTR.
 - Save filtered results to CSV/JSON, with exports reflecting the current filters.
+
+![insider_scanners](img/congressTab.png)
 
 #### European Insiders tab
 
@@ -73,6 +73,8 @@ The GUI tabs cover the core use cases:
 - Enable optional date bounds, filter by trade type and minimum value, and watch the progress bar while each ISIN is processed.
 - Results are sortable, show normalized positions/currency, provide detail text on double-click, and allow opening the regulator source URL.
 - Save filtered results to CSV/JSON (filename reflects the ISIN + country) or clear filters to adjust the view.
+
+![insider_scanners](img/europeanTab.png)
 
 #### Analysis tab
 
@@ -82,40 +84,49 @@ The GUI tabs cover the core use cases:
 - Hover over trade markers to view detailed tooltips including insider name, role, trade size, and total value.
 - The chart supports standard panning and zooming via pyqtgraph.
 
+![insider_scanners](img/analysisTab.png)
+
+#### Appearance & themes
+
+- A single semantic design-token system drives both **light** and **dark** themes (WCAG AA contrast).
+- Switch via **View ▸ Theme** (System / Light / Dark); the choice is remembered between sessions, and **System** follows the OS color scheme.
+- Transaction colors are semantic and always paired with text/sign (green = purchase, red = sale, amber = flagged/congress); tickers, dates, and monetary values use a monospace face for tabular alignment.
+- The UI bundles the open-source **Inter** (sans) and **JetBrains Mono** (monospace) fonts, falling back to system fonts (Segoe UI / Consolas) when unavailable.
+
 ### CLI
 
 ```bash
 # Scan a specific ticker
-insider-scan-cli scan AAPL
-insider-scan-cli scan AAPL --type Buy --min-value 1000000 --save
+insider-scanner-cli scan AAPL
+insider-scanner-cli scan AAPL --type Buy --min-value 1000000 --save
 
 # Scan with date range
-insider-scan-cli scan AAPL --since 2025-01-01 --until 2025-06-30
+insider-scanner-cli scan AAPL --since 2025-01-01 --until 2025-06-30
 
 # Fetch latest insider trades
-insider-scan-cli latest --count 50 --save
-insider-scan-cli latest --since 2025-06-01 --until 2025-06-30
+insider-scanner-cli latest --count 50 --save
+insider-scanner-cli latest --since 2025-06-01 --until 2025-06-30
 
 # Resolve SEC CIK
-insider-scan-cli resolve-cik AAPL
+insider-scanner-cli resolve-cik AAPL
 
 # Initialize default Congress member list
-insider-scan-cli init-congress
+insider-scanner-cli init-congress
 
 # Congress-only filter
-insider-scan-cli scan AAPL --congress-only
+insider-scanner-cli scan AAPL --congress-only
 
 # Import legacy JSON exports into SQLite
-insider-scan-cli import-legacy ./old-exports
-insider-scan-cli import-legacy ./large.json --max-file-size-mib 100
+insider-scanner-cli import-legacy ./old-exports
+insider-scanner-cli import-legacy ./large.json --max-file-size-mib 100
 ```
 
 ### European scan CLI
 
 ```bash
 # Scan a single ISIN or run the built-in watchlist
-insider-scan-cli eu-scan GB0002875804
-insider-scan-cli eu-scan --watchlist --country UK --min-value 50000 --save
+insider-scanner-cli eu-scan GB0002875804
+insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
 ```
 
 Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every configured ISIN, and `--save` to persist the filtered CSV/JSON bundle.
@@ -173,7 +184,7 @@ If startup reports a database or migration failure:
 4. Restore a known-good database backup, or rename the corrupt database and
    restart the application to build a fresh database.
 5. Optionally repopulate the fresh database with
-   `insider-scan-cli import-legacy PATH` using validated legacy JSON exports.
+   `insider-scanner-cli import-legacy PATH` using validated legacy JSON exports.
 
 ---
 
@@ -362,6 +373,10 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for deta
 ## License
 
 MIT
+
+Bundled UI fonts are licensed separately under the SIL Open Font License 1.1:
+[Inter](src/insider_scanner/resources/fonts/OFL-Inter.txt) and
+[JetBrains Mono](src/insider_scanner/resources/fonts/OFL-JetBrainsMono.txt).
 
 ---
 

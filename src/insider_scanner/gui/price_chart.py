@@ -2,13 +2,56 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 import pyqtgraph as pg
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from insider_scanner.core.models import InsiderTrade, CongressTrade
 from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.gui.theme.tokens import ThemePalette
+
+
+@dataclass(frozen=True)
+class ChartColors:
+    """Resolved hex colors for every styled element of the price chart."""
+
+    price: str
+    buy_brush: str
+    buy_pen: str
+    sell_brush: str
+    sell_pen: str
+    grid: str
+    crosshair: str
+    background: str
+    axis: str
+
+
+def _darken(hex_color: str, factor: int = 150) -> str:
+    """Return a darker shade of *hex_color* as a hex string (#rrggbb)."""
+    return QColor(hex_color).darker(factor).name()
+
+
+def chart_colors(palette: ThemePalette) -> ChartColors:
+    """Derive chart element colors from a theme palette."""
+    return ChartColors(
+        price=palette.accent,
+        buy_brush=palette.purchase,
+        buy_pen=_darken(palette.purchase),
+        sell_brush=palette.sale,
+        sell_pen=_darken(palette.sale),
+        grid=palette.border,
+        crosshair=palette.text_muted,
+        background=palette.surface,
+        axis=palette.border,
+    )
+
+
+#: Subtle grid transparency kept across themes.
+_GRID_ALPHA: float = 0.3
 
 
 def _to_timestamp(d: date) -> float:
@@ -33,11 +76,15 @@ class PriceChartWidget(QWidget):
         self._bars: list[PriceBar] = []
         self.price_curve: pg.PlotDataItem | None = None
 
+        self._palette: ThemePalette = get_theme_manager().palette()
+        colors = chart_colors(self._palette)
+
         self.plot_widget = pg.PlotWidget(
             axisItems={"bottom": pg.DateAxisItem(orientation="bottom")}
         )
+        self.plot_widget.setBackground(colors.background)
         self.plot_widget.setLabel("left", "Price")
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.showGrid(x=True, y=True, alpha=_GRID_ALPHA)
         self.plot_widget.addLegend()
 
         layout = QVBoxLayout(self)
@@ -45,10 +92,10 @@ class PriceChartWidget(QWidget):
         layout.addWidget(self.plot_widget)
 
         self._vline = pg.InfiniteLine(
-            angle=90, movable=False, pen=pg.mkPen("#888", width=1)
+            angle=90, movable=False, pen=pg.mkPen(colors.crosshair, width=1)
         )
         self._hline = pg.InfiniteLine(
-            angle=0, movable=False, pen=pg.mkPen("#888", width=1)
+            angle=0, movable=False, pen=pg.mkPen(colors.crosshair, width=1)
         )
         self.plot_widget.addItem(self._vline, ignoreBounds=True)
         self.plot_widget.addItem(self._hline, ignoreBounds=True)
@@ -57,21 +104,51 @@ class PriceChartWidget(QWidget):
         self.buy_scatter = pg.ScatterPlotItem(
             size=12,
             symbol="t1",
-            brush=pg.mkBrush("#2ca02c"),
-            pen=pg.mkPen("#155b15"),
+            brush=pg.mkBrush(colors.buy_brush),
+            pen=pg.mkPen(colors.buy_pen),
             hoverable=True,
             tip=lambda x, y, data: data.get("tip", "") if data else "",
         )
         self.sell_scatter = pg.ScatterPlotItem(
             size=12,
             symbol="t",
-            brush=pg.mkBrush("#d62728"),
-            pen=pg.mkPen("#7a1718"),
+            brush=pg.mkBrush(colors.sell_brush),
+            pen=pg.mkPen(colors.sell_pen),
             hoverable=True,
             tip=lambda x, y, data: data.get("tip", "") if data else "",
         )
         self.plot_widget.addItem(self.buy_scatter)
         self.plot_widget.addItem(self.sell_scatter)
+
+        self._apply_axis_pens(colors)
+
+        get_theme_manager().paletteChanged.connect(self._apply_palette)
+
+    def _apply_axis_pens(self, colors: ChartColors) -> None:
+        """Apply axis pens; guarded so missing axes never raise."""
+        for axis_name in ("left", "bottom"):
+            try:
+                axis = self.plot_widget.getAxis(axis_name)
+                if axis is not None:
+                    axis.setPen(pg.mkPen(colors.axis))
+            except Exception:  # noqa: BLE001 — cosmetic only
+                pass
+
+    def _apply_palette(self, palette: ThemePalette) -> None:
+        """Recompute colors and re-pen all themed chart elements."""
+        self._palette = palette
+        colors = chart_colors(palette)
+
+        self.plot_widget.setBackground(colors.background)
+        self._vline.setPen(pg.mkPen(colors.crosshair, width=1))
+        self._hline.setPen(pg.mkPen(colors.crosshair, width=1))
+        self.buy_scatter.setBrush(pg.mkBrush(colors.buy_brush))
+        self.buy_scatter.setPen(pg.mkPen(colors.buy_pen))
+        self.sell_scatter.setBrush(pg.mkBrush(colors.sell_brush))
+        self.sell_scatter.setPen(pg.mkPen(colors.sell_pen))
+        if self.price_curve is not None:
+            self.price_curve.setPen(pg.mkPen(colors.price, width=2))
+        self._apply_axis_pens(colors)
 
     def set_trade_markers(self, trades: list[InsiderTrade | CongressTrade]) -> None:
         """Overlay buy/sell markers on the current price line."""
@@ -99,9 +176,10 @@ class PriceChartWidget(QWidget):
         """Render the price line, replacing any previous curve."""
         self._bars = list(bars)
         xs, ys = bars_to_xy(self._bars)
+        colors = chart_colors(self._palette)
         if self.price_curve is None:
             self.price_curve = self.plot_widget.plot(
-                xs, ys, pen=pg.mkPen("#1f77b4", width=2), name="Price"
+                xs, ys, pen=pg.mkPen(colors.price, width=2), name="Price"
             )
         else:
             self.price_curve.setData(xs, ys)

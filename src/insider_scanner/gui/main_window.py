@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QThreadPool
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QLabel,
     QMainWindow,
     QStatusBar,
     QTabWidget,
 )
 
+from insider_scanner.gui.theme import ThemeMode, get_theme_manager
+from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.utils.logging import get_logger
 
 log = get_logger("gui.main_window")
@@ -41,6 +45,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+        self._init_theme_menu()
+        self._init_theme_indicator()
+
     def _initialize_tabs(self) -> None:
         initializers = (
             ("Scan", self._init_scan_tab),
@@ -56,6 +63,55 @@ class MainWindow(QMainWindow):
                 raise MainWindowInitializationError(
                     "Could not initialize application window."
                 ) from exc
+
+    def _init_theme_menu(self) -> None:
+        """Build the View > Theme submenu wired to the theme manager."""
+        self.view_menu = self.menuBar().addMenu("View")
+        self.theme_menu = self.view_menu.addMenu("Theme")
+
+        self._theme_action_group = QActionGroup(self)
+        self._theme_action_group.setExclusive(True)
+
+        self._theme_actions: dict[ThemeMode, QAction] = {}
+        entries = (
+            ("System", ThemeMode.SYSTEM),
+            ("Light", ThemeMode.LIGHT),
+            ("Dark", ThemeMode.DARK),
+        )
+        for label, mode in entries:
+            action = QAction(label, self)
+            action.setCheckable(True)
+            self._theme_action_group.addAction(action)
+            self.theme_menu.addAction(action)
+            self._theme_actions[mode] = action
+            action.triggered.connect(
+                lambda _checked=False, m=mode: get_theme_manager().set_mode(m)
+            )
+
+        self._sync_theme_actions()
+        self.theme_menu.aboutToShow.connect(self._sync_theme_actions)
+
+    def _sync_theme_actions(self) -> None:
+        """Re-check the action matching the manager's current mode."""
+        current = get_theme_manager().mode()
+        action = self._theme_actions.get(current)
+        if action is not None and not action.isChecked():
+            action.setChecked(True)
+
+    def _init_theme_indicator(self) -> None:
+        """Add a right-aligned permanent label showing the active theme."""
+        manager = get_theme_manager()
+        self.theme_indicator = QLabel(self._theme_indicator_text(manager.palette()))
+        self.status_bar.addPermanentWidget(self.theme_indicator)
+        manager.paletteChanged.connect(self._on_palette_changed)
+
+    @staticmethod
+    def _theme_indicator_text(palette: ThemePalette) -> str:
+        return f"Theme: {palette.name}"
+
+    def _on_palette_changed(self, palette: ThemePalette) -> None:
+        """Slot: update the status-bar indicator when the palette changes."""
+        self.theme_indicator.setText(self._theme_indicator_text(palette))
 
     def _init_scan_tab(self):
         from insider_scanner.gui.scan_tab import ScanTab

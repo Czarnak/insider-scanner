@@ -23,12 +23,12 @@ class TestParseDateArg:
 
 class TestBuildParser:
     def test_uses_published_command_name(self):
-        assert cli.build_parser().prog == "insider-scan-cli"
+        assert cli.build_parser().prog == "insider-scanner-cli"
 
     def test_help_lists_published_name_and_resolve_cik(self):
         help_text = cli.build_parser().format_help()
 
-        assert help_text.startswith("usage: insider-scan-cli")
+        assert help_text.startswith("usage: insider-scanner-cli")
         assert "resolve-cik" in help_text
 
     @pytest.mark.parametrize("command", ["resolve-cik", "cik"])

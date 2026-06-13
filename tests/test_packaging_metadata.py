@@ -10,14 +10,14 @@ def _load() -> dict:
 
 
 def test_distribution_name_is_insider_scan():
-    assert _load()["project"]["name"] == "insider-scan"
+    assert _load()["project"]["name"] == "insider-scanner"
 
 
 def test_console_scripts_present():
     scripts = _load()["project"]["scripts"]
     assert scripts == {
-        "insider-scan": "insider_scanner.main:main",
-        "insider-scan-cli": "insider_scanner.cli:main",
+        "insider-scanner": "insider_scanner.main:main",
+        "insider-scanner-cli": "insider_scanner.cli:main",
     }
 
 
@@ -42,7 +42,7 @@ def test_uses_spdx_license_metadata():
 def test_has_project_urls():
     urls = _load()["project"]["urls"]
     assert "Repository" in urls
-    assert "insider-scan" in urls["Repository"]
+    assert "insider-scanner" in urls["Repository"]
 
 
 def test_core_runtime_deps_are_bounded():

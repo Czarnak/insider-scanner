@@ -140,9 +140,7 @@ class AnalysisTab(QWidget):
         if not self._is_current_request(request_id, symbol):
             return
         self._render(bars, trades)
-        self.status_label.setText(
-            f"{symbol}: {len(bars)} bars, {len(trades)} trades"
-        )
+        self.status_label.setText(f"{symbol}: {len(bars)} bars, {len(trades)} trades")
 
     def _on_error(self, request_id: int, symbol: str, error_info) -> None:
         if not self._is_current_request(request_id, symbol):

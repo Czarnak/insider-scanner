@@ -92,10 +92,7 @@ def test_ensure_dirs_only_writes_user_roots_and_copies_packaged_seeds(tmp_path):
 
     config.ensure_dirs(paths)
 
-    created_paths = {
-        path.relative_to(tmp_path)
-        for path in tmp_path.rglob("*")
-    }
+    created_paths = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     assert created_paths == {
         Path("cache"),
         Path("cache/edgar"),

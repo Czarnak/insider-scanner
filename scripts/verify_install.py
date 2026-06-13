@@ -1,4 +1,4 @@
-"""Verify a clean insider-scan installation.
+"""Verify a clean insider-scanner installation.
 
 Run inside an environment where the built wheel is installed:
     python scripts/verify_install.py
@@ -14,11 +14,11 @@ import sys
 
 def check_cli() -> None:
     cli_path = shutil.which(
-        "insider-scan-cli",
+        "insider-scanner-cli",
         path=os.path.dirname(sys.executable),
     )
     if cli_path is None:
-        raise RuntimeError("insider-scan-cli is not installed beside this Python")
+        raise RuntimeError("insider-scanner-cli is not installed beside this Python")
     result = subprocess.run(
         [cli_path, "--help"],
         capture_output=True,
@@ -28,7 +28,7 @@ def check_cli() -> None:
         raise RuntimeError(f"CLI --help failed: {result.stderr}")
     if "usage" not in result.stdout.lower():
         raise RuntimeError("CLI help missing usage text")
-    print("[ok] insider-scan-cli --help")
+    print("[ok] insider-scanner-cli --help")
 
 
 def check_gui_import() -> None:
@@ -67,10 +67,32 @@ def check_resources() -> None:
     print("[ok] packaged seeds resolve")
 
 
+def check_fonts() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from importlib.resources import files\n"
+            "fonts = files('insider_scanner.resources.fonts')\n"
+            "names = (\n"
+            "    'Inter-Regular.ttf',\n"
+            "    'JetBrainsMono-Regular.ttf',\n"
+            ")\n"
+            "missing = [name for name in names if not (fonts / name).is_file()]\n"
+            "if missing:\n"
+            "    raise SystemExit(f'missing packaged fonts: {missing}')\n"
+            "print('fonts ok')\n",
+        ],
+        check=True,
+    )
+    print("[ok] packaged fonts resolve")
+
+
 def main() -> None:
     check_cli()
     check_gui_import()
     check_resources()
+    check_fonts()
     print("ALL SMOKE CHECKS PASSED")
 
 

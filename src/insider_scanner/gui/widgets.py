@@ -12,10 +12,42 @@ from PySide6.QtCore import (
     QModelIndex,
     QSortFilterProxyModel,
 )
+from PySide6.QtGui import QColor, QFont
+
+from insider_scanner.gui.theme import (
+    cell_foreground,
+    column_alignment,
+    column_is_monospace,
+    get_theme_manager,
+)
+from insider_scanner.gui.theme.tokens import FONT_SIZE_XL, RADIUS_PANEL, ThemePalette
+from insider_scanner.utils.logging import get_logger
+
+_log = get_logger("gui.widgets")
+
+#: Columns that receive buy/sell foreground emphasis (kept narrow so names stay
+#: dominant and the whole row is not flooded with green/red).
+_TRADE_FG_COLUMNS: frozenset[str] = frozenset({"trade_type", "value"})
+
+#: Monospace font-family fallback chain used by numeric/identifier cells.
+_MONO_FAMILIES: list[str] = [
+    "JetBrains Mono",
+    "Cascadia Mono",
+    "Consolas",
+    "Courier New",
+]
+
+
+def _build_mono_font() -> QFont:
+    """Build the cached monospace QFont used for numeric/identifier columns."""
+    font = QFont()
+    font.setFamilies(_MONO_FAMILIES)
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    return font
 
 
 class PandasTableModel(QAbstractTableModel):
-    """Qt table model backed by a pandas DataFrame."""
+    """Qt table model backed by a pandas DataFrame, themed via the theme manager."""
 
     def __init__(
         self,
@@ -26,6 +58,21 @@ class PandasTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._df = df if df is not None else pd.DataFrame()
         self._headers = headers or []
+        self._palette: ThemePalette = get_theme_manager().palette()
+        self._mono_font: QFont = _build_mono_font()
+        get_theme_manager().paletteChanged.connect(self._on_palette_changed)
+
+    def _on_palette_changed(self, palette: ThemePalette) -> None:
+        """Refresh cached palette and repaint all cells so colors recolor live."""
+        self._palette = palette
+        rows = len(self._df)
+        cols = len(self._df.columns)
+        if rows == 0 or cols == 0:
+            return
+        self.dataChanged.emit(
+            self.index(0, 0),
+            self.index(rows - 1, cols - 1),
+        )
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
         self.beginResetModel()
@@ -45,6 +92,9 @@ class PandasTableModel(QAbstractTableModel):
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
+
+        col_name = str(self._df.columns[index.column()])
+
         if role == Qt.ItemDataRole.DisplayRole:
             val = self._df.iloc[index.row(), index.column()]
             # pandas stores None and np.nan as NaN in numeric columns.
@@ -55,15 +105,31 @@ class PandasTableModel(QAbstractTableModel):
             if isinstance(val, float):
                 return f"{val:,.2f}"
             return str(val)
-        if role == Qt.ItemDataRole.TextAlignmentRole:
-            return Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        # Highlight congress trades
-        if role == Qt.ItemDataRole.ForegroundRole:
-            if "is_congress" in self._df.columns:
-                if self._df.iloc[index.row()]["is_congress"]:
-                    from PySide6.QtGui import QColor
 
-                    return QColor(200, 50, 50)
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            return column_alignment(col_name, self._df.dtypes.iloc[index.column()])
+
+        if role == Qt.ItemDataRole.FontRole:
+            if column_is_monospace(col_name):
+                return self._mono_font
+            return None
+
+        if role == Qt.ItemDataRole.ForegroundRole:
+            row = self._df.iloc[index.row()]
+            val = self._df.iloc[index.row(), index.column()]
+            fg = cell_foreground(col_name, val, row, self._palette)
+            if fg is None:
+                return None
+            # Congress is a row-level categorical state: color the whole row
+            # (amber) to preserve the prior whole-row emphasis.
+            if fg == self._palette.warning:
+                return QColor(fg)
+            # Buy/sell: scope the green/red to a couple of columns so the
+            # textual columns (names) stay dominant.
+            if col_name.lower() in _TRADE_FG_COLUMNS:
+                return QColor(fg)
+            return None
+
         return None
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -81,7 +147,11 @@ class PandasTableModel(QAbstractTableModel):
 
 
 class SortableTableModel(QSortFilterProxyModel):
-    """Proxy adding sort/filter on top of PandasTableModel."""
+    """Proxy adding sort/filter on top of PandasTableModel.
+
+    The source ``PandasTableModel`` carries the palette subscription; this
+    proxy simply forwards its roles unchanged.
+    """
 
     def __init__(
         self,
@@ -112,43 +182,63 @@ class SortableTableModel(QSortFilterProxyModel):
 
 
 class PriceChangeCard(QtWidgets.QFrame):
-    """Card showing a price and 1-day % change with colored background."""
+    """Card showing a price and 1-day % change, themed via palette tokens."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setObjectName("PriceChangeCard")
-        self.setStyleSheet("""
-            QFrame#PriceChangeCard {
-                border: 1px solid rgba(128,128,128,80);
-                border-radius: 10px;
-                padding: 10px;
-            }
-        """)
 
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(6)
 
         self.title_lbl = QtWidgets.QLabel(title)
-        self.title_lbl.setStyleSheet("font-weight: 600;")
-
+        self.title_lbl.setObjectName("CardTitle")
         self.price_lbl = QtWidgets.QLabel("—")
-        self.price_lbl.setStyleSheet("font-size: 22px; font-weight: 700;")
-
+        self.price_lbl.setObjectName("CardValue")
         self.chg_lbl = QtWidgets.QLabel("")
-        self.chg_lbl.setStyleSheet("font-weight: 600; color: #cccccc;")
+        self.chg_lbl.setObjectName("CardMeta")
 
         lay.addWidget(self.title_lbl)
         lay.addWidget(self.price_lbl)
         lay.addWidget(self.chg_lbl)
         lay.addStretch(1)
 
+        self._apply_style(get_theme_manager().palette())
+        get_theme_manager().paletteChanged.connect(self._apply_style)
+
+    def _apply_style(self, palette: ThemePalette) -> None:
+        """Rebuild the card QSS from palette tokens."""
+        self.setStyleSheet(
+            f"""
+            QFrame#PriceChangeCard {{
+                border: 1px solid {palette.border};
+                border-radius: {RADIUS_PANEL}px;
+                background-color: {palette.surface};
+                padding: 10px;
+            }}
+            QLabel#CardTitle {{
+                color: {palette.text_secondary};
+                font-weight: 600;
+            }}
+            QLabel#CardValue {{
+                color: {palette.text_primary};
+                font-size: {FONT_SIZE_XL}px;
+                font-weight: 700;
+            }}
+            QLabel#CardMeta {{
+                color: {palette.text_muted};
+                font-weight: 600;
+            }}
+            """
+        )
+
     def set_value(
         self,
         price_usd: Optional[float],
         pct_change: Optional[float],
-        bg_rgba: Tuple[int, int, int, int] = (40, 40, 40, 120),
+        bg_rgba: Tuple[int, int, int, int] | None = None,  # noqa: ARG002 — legacy arg, ignored
     ):
         if price_usd is None:
             self.price_lbl.setText("n/a")
@@ -157,22 +247,16 @@ class PriceChangeCard(QtWidgets.QFrame):
 
         if pct_change is None:
             self.chg_lbl.setText("Δ1D: n/a")
+            self.chg_lbl.setStyleSheet(
+                f"color: {get_theme_manager().palette().text_muted}; font-weight: 600;"
+            )
         else:
-            sign = "+" if pct_change >= 0 else ""
-            self.chg_lbl.setText(f"Δ1D: {sign}{pct_change:.2f}%")
-
-        r, g, b, a = bg_rgba
-        self.setStyleSheet(
-            """
-            QFrame#PriceChangeCard {
-                border: 1px solid rgba(128,128,128,80);
-                border-radius: 10px;
-                padding: 10px;
-                background-color: rgba(%d,%d,%d,%d);
-            }
-        """
-            % (r, g, b, a)
-        )
+            sign = "+" if pct_change >= 0 else "-"
+            magnitude = abs(pct_change)
+            self.chg_lbl.setText(f"Δ1D: {sign}{magnitude:.2f}%")
+            palette = get_theme_manager().palette()
+            color = palette.purchase if pct_change >= 0 else palette.sale
+            self.chg_lbl.setStyleSheet(f"color: {color}; font-weight: 600;")
 
 
 class ValueCard(QtWidgets.QFrame):
@@ -182,50 +266,59 @@ class ValueCard(QtWidgets.QFrame):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setObjectName("ValueCard")
-        self.setStyleSheet("""
-            QFrame#ValueCard {
-                border: 1px solid rgba(128,128,128,80);
-                border-radius: 10px;
-                padding: 10px;
-            }
-        """)
 
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(6)
 
         self.title_lbl = QtWidgets.QLabel(title)
-        self.title_lbl.setStyleSheet("font-weight: 600;")
+        self.title_lbl.setObjectName("CardTitle")
         self.value_lbl = QtWidgets.QLabel("—")
-        self.value_lbl.setStyleSheet("font-size: 22px; font-weight: 700;")
+        self.value_lbl.setObjectName("CardValue")
         self.meta_lbl = QtWidgets.QLabel("")
-        self.meta_lbl.setStyleSheet("color: black;")
+        self.meta_lbl.setObjectName("CardMeta")
 
         lay.addWidget(self.title_lbl)
         lay.addWidget(self.value_lbl)
         lay.addWidget(self.meta_lbl)
         lay.addStretch(1)
 
+        self._apply_style(get_theme_manager().palette())
+        get_theme_manager().paletteChanged.connect(self._apply_style)
+
+    def _apply_style(self, palette: ThemePalette) -> None:
+        """Rebuild the card QSS from palette tokens."""
+        self.setStyleSheet(
+            f"""
+            QFrame#ValueCard {{
+                border: 1px solid {palette.border};
+                border-radius: {RADIUS_PANEL}px;
+                background-color: {palette.surface};
+                padding: 10px;
+            }}
+            QLabel#CardTitle {{
+                color: {palette.text_secondary};
+                font-weight: 600;
+            }}
+            QLabel#CardValue {{
+                color: {palette.text_primary};
+                font-size: {FONT_SIZE_XL}px;
+                font-weight: 700;
+            }}
+            QLabel#CardMeta {{
+                color: {palette.text_muted};
+            }}
+            """
+        )
+
     def set_value(
         self,
         value_text: str,
         meta_text: str = "",
-        bg_rgba: Tuple[int, int, int, int] = (40, 40, 40, 120),
+        bg_rgba: Tuple[int, int, int, int] | None = None,  # noqa: ARG002 — legacy arg, ignored
     ):
         self.value_lbl.setText(value_text)
         self.meta_lbl.setText(meta_text)
-        r, g, b, a = bg_rgba
-        self.setStyleSheet(
-            """
-            QFrame#ValueCard {
-                border: 1px solid rgba(128,128,128,80);
-                border-radius: 10px;
-                padding: 10px;
-                background-color: rgba(%d,%d,%d,%d);
-            }
-        """
-            % (r, g, b, a)
-        )
 
 
 # -------------------------------------------------------------------
@@ -233,30 +326,35 @@ class ValueCard(QtWidgets.QFrame):
 # -------------------------------------------------------------------
 
 
-def fg_color(value: int) -> Tuple[int, int, int, int]:
-    """Map a 0–100 Fear & Greed score to an RGBA background color."""
+def fg_color(value: int, palette: ThemePalette | None = None) -> str:
+    """Map a 0–100 Fear & Greed score to a semantic palette color (hex str)."""
+    if palette is None:
+        palette = get_theme_manager().palette()
     if value < 25:
-        return (180, 40, 40, 160)  # Extreme Fear — red
+        return palette.error  # Extreme Fear — red
     if value < 50:
-        return (200, 120, 40, 160)  # Fear — orange
+        return palette.warning  # Fear — amber
     if value < 75:
-        return (200, 180, 40, 160)  # Greed — yellow
-    return (60, 160, 80, 160)  # Extreme Greed — green
+        return palette.warning  # Greed — amber
+    return palette.success  # Extreme Greed — green
 
 
 def indicator_color(
     value: float,
     bands: Tuple[Tuple[float, float, str], ...],
-) -> Tuple[int, int, int, int]:
-    """Map a numeric value to an RGBA color using band definitions."""
-    palette = {
-        "red": (180, 40, 40, 160),
-        "orange": (200, 120, 40, 160),
-        "yellow": (200, 180, 40, 160),
-        "green": (60, 160, 80, 160),
-        "gray": (80, 80, 80, 120),
+    palette: ThemePalette | None = None,
+) -> str:
+    """Map a numeric value to a semantic palette color (hex str) via bands."""
+    if palette is None:
+        palette = get_theme_manager().palette()
+    color_map = {
+        "red": palette.error,
+        "orange": palette.warning,
+        "yellow": palette.warning,
+        "green": palette.success,
+        "gray": palette.text_muted,
     }
     for lo, hi, name in bands:
         if lo <= value < hi:
-            return palette.get(name, palette["gray"])
-    return palette["gray"]
+            return color_map.get(name, color_map["gray"])
+    return color_map["gray"]
