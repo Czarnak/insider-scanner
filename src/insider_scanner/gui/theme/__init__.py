@@ -19,7 +19,11 @@ Public API — import everything from here:
 from __future__ import annotations
 
 from insider_scanner.gui.theme.fonts import MONO_STACK, SANS_STACK
-from insider_scanner.gui.theme.manager import ThemeManager, get_theme_manager
+from insider_scanner.gui.theme.manager import (
+    ThemeManager,
+    get_theme_manager,
+    reset_theme_manager,
+)
 from insider_scanner.gui.theme.stylesheet import build_stylesheet
 from insider_scanner.gui.theme.table_style import (
     IDENTIFIER_COLS,
@@ -62,6 +66,7 @@ __all__ = [
     # Manager
     "ThemeManager",
     "get_theme_manager",
+    "reset_theme_manager",
     # Font stacks
     "SANS_STACK",
     "MONO_STACK",

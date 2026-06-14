@@ -11,6 +11,14 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
+try:  # shiboken6 ships with PySide6; guard so non-Qt envs still import.
+    from shiboken6 import isValid as _is_valid
+except ImportError:  # pragma: no cover - PySide6 always provides shiboken6
+
+    def _is_valid(_obj: object) -> bool:
+        return True
+
+
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.utils.logging import get_logger
@@ -101,6 +109,7 @@ class MainWindow(QMainWindow):
     def _init_theme_indicator(self) -> None:
         """Add a right-aligned permanent label showing the active theme."""
         manager = get_theme_manager()
+        self._theme_manager = manager  # exact instance to disconnect from on close
         self.theme_indicator = QLabel(self._theme_indicator_text(manager.palette()))
         self.status_bar.addPermanentWidget(self.theme_indicator)
         manager.paletteChanged.connect(self._on_palette_changed)
@@ -111,7 +120,8 @@ class MainWindow(QMainWindow):
 
     def _on_palette_changed(self, palette: ThemePalette) -> None:
         """Slot: update the status-bar indicator when the palette changes."""
-        self.theme_indicator.setText(self._theme_indicator_text(palette))
+        if _is_valid(self.theme_indicator):
+            self.theme_indicator.setText(self._theme_indicator_text(palette))
 
     def _init_scan_tab(self):
         from insider_scanner.gui.scan_tab import ScanTab
@@ -169,9 +179,21 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Keep the window open while a worker could still access persistence."""
         if self.shutdown_workers():
+            self._disconnect_theme()
             event.accept()
         else:
             event.ignore()
+
+    def _disconnect_theme(self) -> None:
+        """Detach the palette slot from the manager this window connected to."""
+        manager = getattr(self, "_theme_manager", None)
+        self._theme_manager = None
+        if manager is None or not _is_valid(manager):
+            return
+        try:
+            manager.paletteChanged.disconnect(self._on_palette_changed)
+        except (RuntimeError, TypeError):
+            pass
 
     def log_status(self, message: str):
         self.status_bar.showMessage(message)

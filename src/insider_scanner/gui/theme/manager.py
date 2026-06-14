@@ -8,6 +8,14 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QSettings, Signal
 from PySide6.QtWidgets import QApplication
 
+try:  # shiboken6 ships with PySide6; guard so non-Qt envs still import.
+    from shiboken6 import isValid as _is_valid
+except ImportError:  # pragma: no cover - PySide6 always provides shiboken6
+
+    def _is_valid(_obj: object) -> bool:
+        return True
+
+
 from insider_scanner.gui.theme.fonts import load_application_fonts
 from insider_scanner.gui.theme.stylesheet import build_stylesheet
 from insider_scanner.gui.theme.tokens import DARK, LIGHT, ThemeMode, ThemePalette
@@ -35,6 +43,7 @@ class ThemeManager(QObject):
         super().__init__()
         self._mode: ThemeMode = ThemeMode.SYSTEM
         self._palette: ThemePalette = LIGHT  # safe sentinel until apply()
+        self._style_hints = None  # set in install() when colorSchemeChanged connects
 
     # ------------------------------------------------------------------
     # Public API
@@ -79,6 +88,7 @@ class ThemeManager(QObject):
                 hints = app.styleHints()  # type: ignore[union-attr]
                 if hasattr(hints, "colorSchemeChanged"):
                     hints.colorSchemeChanged.connect(self._on_color_scheme_changed)
+                    self._style_hints = hints
         except Exception as exc:  # noqa: BLE001
             _log.warning("Could not connect colorSchemeChanged: %s", exc)
 
@@ -158,7 +168,7 @@ class ThemeManager(QObject):
             app = QApplication.instance()
             if app is not None and hasattr(app, "topLevelWidgets"):
                 for widget in list(app.topLevelWidgets()):
-                    if not widget.isVisible():
+                    if not _is_valid(widget) or not widget.isVisible():
                         continue
                     try:
                         widget.style().unpolish(widget)
@@ -178,6 +188,17 @@ class ThemeManager(QObject):
         """Slot: re-apply when the OS switches color scheme (SYSTEM mode only)."""
         if self._mode is ThemeMode.SYSTEM:
             self.apply()
+
+    def _disconnect_color_scheme(self) -> None:
+        """Disconnect the OS ``colorSchemeChanged`` slot, if connected."""
+        hints = self._style_hints
+        self._style_hints = None
+        if hints is None or not _is_valid(hints):
+            return
+        try:
+            hints.colorSchemeChanged.disconnect(self._on_color_scheme_changed)
+        except (RuntimeError, TypeError) as exc:
+            _log.debug("colorSchemeChanged disconnect skipped: %s", exc)
 
     def _build_fusion_palette(self):  # type: ignore[return]
         """Build a QPalette from palette tokens for the Fusion style.
@@ -225,3 +246,16 @@ def get_theme_manager() -> ThemeManager:
     if _manager is None:
         _manager = ThemeManager()
     return _manager
+
+
+def reset_theme_manager() -> None:
+    """Tear down the process-wide singleton.
+
+    Disconnects the OS color-scheme slot and drops the instance so the next
+    ``get_theme_manager()`` builds a clean manager.  Primarily used by tests to
+    isolate the singleton between cases and avoid signal accumulation.
+    """
+    global _manager  # noqa: PLW0603
+    if _manager is not None:
+        _manager._disconnect_color_scheme()
+        _manager = None
