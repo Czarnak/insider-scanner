@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from unittest.mock import Mock, patch
 
 import pytest
@@ -35,6 +36,45 @@ class DummyWindow:
 
     def shutdown_workers(self):
         return True
+
+
+@pytest.fixture(autouse=True)
+def _stub_theme_manager(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    manager = Mock()
+    monkeypatch.setattr(
+        "insider_scanner.gui.theme.get_theme_manager",
+        lambda: manager,
+    )
+    return manager
+
+
+def test_run_reports_gui_extra_install_when_pyside6_is_missing(capsys):
+    real_import = builtins.__import__
+
+    def import_without_pyside6(name, *args, **kwargs):
+        if name == "PySide6" or name.startswith("PySide6."):
+            raise ModuleNotFoundError("No module named 'PySide6'", name="PySide6")
+        return real_import(name, *args, **kwargs)
+
+    with patch("builtins.__import__", side_effect=import_without_pyside6):
+        result = app_main.run()
+
+    assert result == 1
+    assert 'pip install "insider-scanner[gui]"' in capsys.readouterr().err
+
+
+def test_main_verify_install_exits_without_starting_application(monkeypatch):
+    verify = Mock(return_value=0)
+    run = Mock(return_value=7)
+    monkeypatch.setattr(app_main, "verify_gui_install", verify)
+    monkeypatch.setattr(app_main, "run", run)
+
+    with pytest.raises(SystemExit) as exc:
+        app_main.main(["--verify-install"])
+
+    assert exc.value.code == 0
+    verify.assert_called_once_with()
+    run.assert_not_called()
 
 
 def test_main_initialises_app():

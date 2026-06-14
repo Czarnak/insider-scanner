@@ -8,17 +8,25 @@ Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, a
 
 ## Install
 
+Install the base package for the command-line interface:
+
 ```bash
-pipx install insider-scanner      # isolated app install (recommended)
-# or
 pip install insider-scanner
+insider-scanner-cli --help
+```
+
+Install the optional GUI dependencies for the desktop application:
+
+```bash
+pip install "insider-scanner[gui]"
+insider-scanner
 ```
 
 ## Run
 
 ```bash
-insider-scanner            # launch the desktop GUI
 insider-scanner-cli --help # command-line interface
+insider-scanner            # desktop GUI (requires the gui extra)
 ```
 
 ## Development Setup
@@ -26,14 +34,14 @@ insider-scanner-cli --help # command-line interface
 ```bash
 git clone https://github.com/Czarnak/insider-scanner.git
 cd insider-scanner
-pip install -e ".[dev]"
+pip install -e ".[gui,dev]"
 ```
 
 ### Requirements
 
-Python 3.11+. Dependencies include `requests`, `beautifulsoup4`, `lxml`,
-`pandas`, `PySide6`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and
-SQLAlchemy.
+Python 3.11+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
+`pandas`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and SQLAlchemy.
+The `gui` extra adds `PySide6` and `pyqtgraph`.
 
 ---
 

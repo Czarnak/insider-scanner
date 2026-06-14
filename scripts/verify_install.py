@@ -6,6 +6,7 @@ Run inside an environment where the built wheel is installed:
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -43,6 +44,22 @@ def check_gui_import() -> None:
         env=environment,
     )
     print("[ok] GUI module imports headless")
+
+
+def check_gui_launcher() -> None:
+    gui_path = shutil.which(
+        "insider-scanner",
+        path=os.path.dirname(sys.executable),
+    )
+    if gui_path is None:
+        raise RuntimeError("insider-scanner is not installed beside this Python")
+    environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    subprocess.run(
+        [gui_path, "--verify-install"],
+        check=True,
+        env=environment,
+    )
+    print("[ok] insider-scanner --verify-install")
 
 
 def check_resources() -> None:
@@ -88,13 +105,27 @@ def check_fonts() -> None:
     print("[ok] packaged fonts resolve")
 
 
-def main() -> None:
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode",
+        choices=("base", "gui"),
+        default="base",
+        help="verify the base CLI install or the full GUI install",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
     check_cli()
-    check_gui_import()
     check_resources()
-    check_fonts()
+    if args.mode == "gui":
+        check_gui_import()
+        check_fonts()
+        check_gui_launcher()
     print("ALL SMOKE CHECKS PASSED")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

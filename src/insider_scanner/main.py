@@ -8,6 +8,46 @@ from insider_scanner.utils.logging import get_logger
 
 log = get_logger("main")
 
+GUI_INSTALL_COMMAND = 'pip install "insider-scanner[gui]"'
+
+
+def _load_gui_components():
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from insider_scanner.gui.main_window import MainWindow
+
+    return QApplication, QMessageBox, MainWindow
+
+
+def _report_missing_gui_dependency(exc: ModuleNotFoundError) -> bool:
+    missing_package = (exc.name or "").split(".", maxsplit=1)[0]
+    if missing_package not in {"PySide6", "pyqtgraph"}:
+        return False
+    print(
+        f"Desktop GUI dependencies are not installed. Run: {GUI_INSTALL_COMMAND}",
+        file=sys.stderr,
+    )
+    return True
+
+
+def verify_gui_install() -> int:
+    """Verify GUI dependencies without opening an application window."""
+    try:
+        from importlib.resources import files
+
+        _load_gui_components()
+
+        font_root = files("insider_scanner.resources.fonts")
+        font_names = ("Inter-Regular.ttf", "JetBrainsMono-Regular.ttf")
+        if not all(font_root.joinpath(name).is_file() for name in font_names):
+            print("Bundled GUI fonts are missing.", file=sys.stderr)
+            return 1
+    except ModuleNotFoundError as exc:
+        if not _report_missing_gui_dependency(exc):
+            raise
+        return 1
+    print("GUI launcher dependencies and resources are available.")
+    return 0
+
 
 def _close_services(services) -> None:
     close = getattr(services, "close", None)
@@ -25,8 +65,13 @@ def run() -> int:
     from insider_scanner.utils.logging import setup_logging
     from insider_scanner.core.senate import init_default_congress_file
 
-    from PySide6.QtWidgets import QApplication, QMessageBox
-    from insider_scanner.gui.main_window import MainWindow
+    try:
+        QApplication, QMessageBox, MainWindow = _load_gui_components()
+    except ModuleNotFoundError as exc:
+        if not _report_missing_gui_dependency(exc):
+            raise
+        return 1
+
     from insider_scanner.services.application import open_application_services
 
     setup_logging()
@@ -83,7 +128,10 @@ def run() -> int:
     return 1
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    arguments = sys.argv[1:] if argv is None else argv
+    if "--verify-install" in arguments:
+        sys.exit(verify_gui_install())
     sys.exit(run())
 
 

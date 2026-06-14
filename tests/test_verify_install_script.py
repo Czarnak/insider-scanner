@@ -93,6 +93,27 @@ def test_check_gui_import_uses_headless_environment(
     assert captured["env"]["QT_QPA_PLATFORM"] == "offscreen"
 
 
+def test_check_gui_launcher_executes_installed_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    gui_path = str(Path(module.sys.executable).with_name("insider-scanner"))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(module.shutil, "which", lambda *args, **kwargs: gui_path)
+
+    def fake_run(command: list[str], **kwargs: object) -> None:
+        captured.update({"command": command, **kwargs})
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module.check_gui_launcher()
+
+    assert captured["command"] == [gui_path, "--verify-install"]
+    assert captured["check"] is True
+    assert captured["env"]["QT_QPA_PLATFORM"] == "offscreen"
+
+
 def test_check_resources_uses_packaged_seed_location(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -138,3 +159,37 @@ def test_check_fonts_uses_packaged_font_location(
     assert "assert " not in command[2]
     assert "raise SystemExit" in command[2]
     assert captured["check"] is True
+
+
+def test_main_runs_base_checks_without_gui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "check_cli", lambda: calls.append("cli"))
+    monkeypatch.setattr(module, "check_resources", lambda: calls.append("resources"))
+    monkeypatch.setattr(module, "check_gui_import", lambda: calls.append("gui"))
+    monkeypatch.setattr(module, "check_gui_launcher", lambda: calls.append("launcher"))
+    monkeypatch.setattr(module, "check_fonts", lambda: calls.append("fonts"))
+
+    module.main(["--mode", "base"])
+
+    assert calls == ["cli", "resources"]
+
+
+def test_main_runs_full_checks_with_gui(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "check_cli", lambda: calls.append("cli"))
+    monkeypatch.setattr(module, "check_resources", lambda: calls.append("resources"))
+    monkeypatch.setattr(module, "check_gui_import", lambda: calls.append("gui"))
+    monkeypatch.setattr(module, "check_gui_launcher", lambda: calls.append("launcher"))
+    monkeypatch.setattr(module, "check_fonts", lambda: calls.append("fonts"))
+
+    module.main(["--mode", "gui"])
+
+    assert calls == ["cli", "resources", "gui", "fonts", "launcher"]
