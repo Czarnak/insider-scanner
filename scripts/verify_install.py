@@ -11,13 +11,30 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
+
+
+def _console_script_dirs() -> list[str]:
+    """Directories holding this interpreter's console scripts.
+
+    POSIX installs entry-point scripts next to the interpreter (``bin/``),
+    while Windows installs them into a separate ``Scripts\\`` directory, so
+    both locations must be searched.
+    """
+    candidates = [os.path.dirname(sys.executable), sysconfig.get_path("scripts")]
+    dirs: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
+def _which_console_script(name: str) -> str | None:
+    return shutil.which(name, path=os.pathsep.join(_console_script_dirs()))
 
 
 def check_cli() -> None:
-    cli_path = shutil.which(
-        "insider-scanner-cli",
-        path=os.path.dirname(sys.executable),
-    )
+    cli_path = _which_console_script("insider-scanner-cli")
     if cli_path is None:
         raise RuntimeError("insider-scanner-cli is not installed beside this Python")
     result = subprocess.run(
@@ -47,10 +64,7 @@ def check_gui_import() -> None:
 
 
 def check_gui_launcher() -> None:
-    gui_path = shutil.which(
-        "insider-scanner",
-        path=os.path.dirname(sys.executable),
-    )
+    gui_path = _which_console_script("insider-scanner")
     if gui_path is None:
         raise RuntimeError("insider-scanner is not installed beside this Python")
     environment = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
