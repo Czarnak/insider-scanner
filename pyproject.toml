@@ -61,6 +61,7 @@ dev = [
     "ruff>=0.15.0",
     "build>=1.2",
     "wheel",
+    "setuptools>=68.0",
 ]
 release = ["build>=1.2", "twine>=5.1"]
 
