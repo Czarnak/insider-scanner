@@ -46,7 +46,7 @@ OIDC identity only to the publishing jobs, which require job-scoped
 
 ## Local release gate
 
-Run the gate from a clean checkout before creating any release tag. For 0.7.0:
+Run the gate from a clean checkout before creating any release tag. For 1.0.0:
 
 ```bash
 python -m pip install -e ".[dev,gui,release]"
@@ -63,13 +63,13 @@ python scripts/verify_install.py --mode gui
 
 Delete or move stale artifacts before `python -m build`; only artifacts created
 from the release commit may be published. Review `git diff` and confirm that
-runtime and distribution metadata both report `0.7.0`.
+runtime and distribution metadata both report `1.0.0`.
 
-Verify both installation modes from the newly built 0.7.0 wheel in separate,
+Verify both installation modes from the newly built 1.0.0 wheel in separate,
 clean virtual environments:
 
 ```bash
-python -m pip install "dist/insider_scanner-0.7.0-py3-none-any.whl"
+python -m pip install "dist/insider_scanner-1.0.0-py3-none-any.whl"
 insider-scanner-cli --help
 
 wheel_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.whl')).resolve().as_uri())")"
@@ -87,11 +87,11 @@ public pre-release is intentional.
 For a no-publication dry run, run the local release gate and verify the built
 artifacts locally. Do not push a release tag.
 
-## Cutting 0.7.0
+## Cutting 1.0.0
 
 1. Confirm the local release gate passes and the working tree contains only the
    intended release changes.
-2. Confirm the version is `0.7.0` everywhere exposed to users and tooling.
+2. Confirm the version is `1.0.0` everywhere exposed to users and tooling.
 3. Commit the release changes using the repository's normal review process.
 4. Create the tag locally: `git tag v0.7.0`.
 5. Push the branch and tag only after explicit approval:
