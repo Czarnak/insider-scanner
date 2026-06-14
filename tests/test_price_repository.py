@@ -10,6 +10,7 @@ from insider_scanner.persistence.schema import metadata
 
 import pytest
 
+
 @pytest.fixture
 def e() -> Engine:
     engine = create_engine("sqlite://")  # in-memory
