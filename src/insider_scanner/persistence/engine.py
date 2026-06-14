@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, NullPool
 from sqlalchemy.engine import Connection, Engine, URL
 
 from insider_scanner.persistence.errors import PersistenceError
@@ -43,6 +43,7 @@ def create_sqlite_engine(
             URL.create("sqlite", database=str(resolved_file)),
             echo=echo,
             connect_args={"timeout": busy_timeout_ms / 1_000},
+            poolclass=NullPool,
         )
     except Exception as exc:
         raise PersistenceError(

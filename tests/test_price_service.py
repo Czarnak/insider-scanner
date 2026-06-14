@@ -8,10 +8,14 @@ from insider_scanner.core.prices.service import get_price_history
 from insider_scanner.persistence.schema import metadata
 
 
-def make_engine() -> Engine:
+import pytest
+
+@pytest.fixture
+def e() -> Engine:
     engine = create_engine("sqlite://")
     metadata.create_all(engine)
-    return engine
+    yield engine
+    engine.dispose()
 
 
 class FakeSource:
@@ -28,8 +32,7 @@ class FakeSource:
         return bars
 
 
-def test_first_call_fetches_full_range_and_caches():
-    e = make_engine()
+def test_first_call_fetches_full_range_and_caches(e):
     src = FakeSource()
     bars = get_price_history(
         "AAPL", date(2026, 1, 1), date(2026, 1, 31), source=src, engine=e
@@ -44,8 +47,7 @@ def test_first_call_fetches_full_range_and_caches():
     assert len(bars2) == 2
 
 
-def test_widening_range_fetches_only_edges():
-    e = make_engine()
+def test_widening_range_fetches_only_edges(e):
     src = FakeSource()
     get_price_history(
         "AAPL", date(2026, 1, 10), date(2026, 1, 20), source=src, engine=e

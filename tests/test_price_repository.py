@@ -8,14 +8,17 @@ from insider_scanner.core.prices import repository as repo
 from insider_scanner.persistence.schema import metadata
 
 
-def make_engine() -> Engine:
+import pytest
+
+@pytest.fixture
+def e() -> Engine:
     engine = create_engine("sqlite://")  # in-memory
     metadata.create_all(engine)
-    return engine
+    yield engine
+    engine.dispose()
 
 
-def test_bar_roundtrips_through_db():
-    e = make_engine()
+def test_bar_roundtrips_through_db(e):
     bar = PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 100, adjusted_close=1.4)
     repo.upsert_bars(e, [bar], source="stooq")
     out = repo.get_bars(e, "AAPL", date(2026, 1, 1), date(2026, 1, 31))
@@ -24,13 +27,11 @@ def test_bar_roundtrips_through_db():
     assert out[0].adjusted_close == 1.4
 
 
-def test_get_coverage_none_when_empty():
-    e = make_engine()
+def test_get_coverage_none_when_empty(e):
     assert repo.get_coverage(e, "AAPL") is None
 
 
-def test_get_coverage_returns_min_max():
-    e = make_engine()
+def test_get_coverage_returns_min_max(e):
     repo.upsert_bars(
         e,
         [

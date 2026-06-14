@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/insider-scanner.svg)](https://pypi.org/project/insider-scanner/)
 [![CI](https://github.com/Czarnak/insider-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Czarnak/insider-scanner/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/pypi/pyversions/insider-scanner.svg)](https://pypi.org/project/insider-scanner/)
+[![Downloads](https://static.pepy.tech/badge/insider-scanner)](https://pepy.tech/project/insider-scanner)
 
 Scan insider trades from **secform4.com**, **openinsider.com**, **SEC EDGAR**, and European regulators (FCA, BaFin, AMF, AFM). Includes congressional financial disclosure scanning (House and Senate), multi-source deduplication, committee-based sector filtering, and a desktop GUI with EDGAR filing links plus a European scan workspace.
 

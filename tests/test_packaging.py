@@ -22,21 +22,26 @@ EXPECTED_FONTS = {
 
 def _build_wheel(tmp_path) -> ZipFile:
     project_root = Path(__file__).resolve().parents[1]
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(tmp_path),
-        ],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "build",
+                "--wheel",
+                "--no-isolation",
+                "--outdir",
+                str(tmp_path),
+            ],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Build failed!\nstdout:\n{e.stdout}\nstderr:\n{e.stderr}"
+        ) from e
     wheels = list(tmp_path.glob("*.whl"))
     assert len(wheels) == 1
     return ZipFile(wheels[0])

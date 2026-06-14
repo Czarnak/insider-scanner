@@ -59,6 +59,8 @@ dev = [
     "pytest-qt>=4.2",
     "responses>=0.24",
     "ruff>=0.15.0",
+    "build>=1.2",
+    "wheel",
 ]
 release = ["build>=1.2", "twine>=5.1"]
 
