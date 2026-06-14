@@ -157,7 +157,9 @@ class ThemeManager(QObject):
         try:
             app = QApplication.instance()
             if app is not None and hasattr(app, "topLevelWidgets"):
-                for widget in app.topLevelWidgets():
+                for widget in list(app.topLevelWidgets()):
+                    if not widget.isVisible():
+                        continue
                     try:
                         widget.style().unpolish(widget)
                         widget.style().polish(widget)
