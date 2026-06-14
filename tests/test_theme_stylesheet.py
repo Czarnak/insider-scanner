@@ -14,6 +14,11 @@ from insider_scanner.gui.theme.tokens import DARK, LIGHT
 REQUIRED_SELECTORS = [
     "QWidget",
     "QMainWindow",
+    "QFrame#sidebar",
+    "QFrame#topBar",
+    "QToolButton#navigationButton",
+    "QToolButton#navigationButton:checked",
+    "QLabel#feedState",
     "QTabWidget::pane",
     "QTabBar::tab",
     "QTabBar::tab:selected",
