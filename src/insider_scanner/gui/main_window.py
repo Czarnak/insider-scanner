@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 from functools import partial
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QActionGroup
@@ -11,9 +13,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QStatusBar,
@@ -33,7 +38,16 @@ except ImportError:  # pragma: no cover
 from insider_scanner.gui.feed_page import FeedPageWidget
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
-from insider_scanner.persistence.feed import FeedRepository
+from insider_scanner.persistence.feed import FeedCriteria, FeedRepository
+from insider_scanner.persistence.feed_state import (
+    SCHEMA_VERSION,
+    FeedState,
+    SavedScreen,
+    feed_state_path,
+    load_feed_state,
+    save_feed_state,
+)
+from insider_scanner.utils.config import DEFAULT_PATHS
 from insider_scanner.utils.logging import get_logger
 
 log = get_logger("gui.main_window")
@@ -46,13 +60,21 @@ class MainWindowInitializationError(RuntimeError):
 class MainWindow(QMainWindow):
     """Insider Scanner main window."""
 
-    def __init__(self, services=None, *, shutdown_timeout_ms: int = 5_000):
+    def __init__(
+        self,
+        services=None,
+        *,
+        shutdown_timeout_ms: int = 5_000,
+        state_path: Path | None = None,
+    ):
         super().__init__()
         if shutdown_timeout_ms < 0:
             raise ValueError("shutdown_timeout_ms must not be negative")
         self._services = services
         self._thread_pool = QThreadPool(self)
         self._shutdown_timeout_ms = shutdown_timeout_ms
+        self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
+        self._feed_state: FeedState = load_feed_state(self._state_path)
         self.setWindowTitle("Insider Scanner")
         self.setMinimumSize(900, 550)
         self.resize(1200, 720)
@@ -63,6 +85,11 @@ class MainWindow(QMainWindow):
         self._init_theme_menu()
         self._init_theme_indicator()
         self._select_page("Feed")
+
+        self.persist_timer = QTimer(self)
+        self.persist_timer.setSingleShot(True)
+        self.persist_timer.setInterval(500)
+        self.persist_timer.timeout.connect(self._persist_feed_state)
 
     def _build_shell(self) -> None:
         shell = QWidget()
@@ -141,11 +168,27 @@ class MainWindow(QMainWindow):
         self.reload_button.clicked.connect(self._reload_feed)
         layout.addWidget(self.reload_button)
 
+        self.filters_button = QPushButton("Filters")
+        self.filters_button.setAccessibleName("Toggle filter panel")
+        self.filters_button.clicked.connect(self._toggle_filter_panel)
+        layout.addWidget(self.filters_button)
+
+        self.screens_button = QToolButton()
+        self.screens_button.setText("Screens")
+        self.screens_button.setAccessibleName("Saved screens")
+        self.screens_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.screens_menu = QMenu(self)
+        self.screens_button.setMenu(self.screens_menu)
+        self.screens_menu.aboutToShow.connect(self._rebuild_screens_menu)
+        layout.addWidget(self.screens_button)
+
         self.theme_selector = QComboBox()
         self.theme_selector.setAccessibleName("Application theme")
         self.theme_selector.addItems(["System", "Light", "Dark"])
         self.theme_selector.currentIndexChanged.connect(self._on_theme_selected)
         layout.addWidget(self.theme_selector)
+
+        self._rebuild_screens_menu()
         return top_bar
 
     def _initialize_pages(self) -> None:
@@ -160,9 +203,16 @@ class MainWindow(QMainWindow):
             self.feed_page = FeedPageWidget(
                 repository,
                 thread_pool=self._thread_pool,
+                initial_criteria=self._feed_state.criteria,
             )
             self.feed_page.resultCountChanged.connect(self._set_result_count)
             self.feed_page.freshnessChanged.connect(self.freshness_label.setText)
+            self.feed_page.restore_column_layout(self._feed_state.column_layout)
+            self.feed_page.criteriaChanged.connect(self._on_criteria_changed)
+            self.feed_page.resetRequested.connect(self._on_feed_reset)
+            self.global_search.blockSignals(True)
+            self.global_search.setText(self._feed_state.criteria.search)
+            self.global_search.blockSignals(False)
             self._add_page("Feed", self.feed_page)
         except Exception as exc:
             log.exception("Feed page initialization failed")
@@ -179,9 +229,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _tool_initialization_error() -> MainWindowInitializationError:
-        return MainWindowInitializationError(
-            "Could not initialize application window."
-        )
+        return MainWindowInitializationError("Could not initialize application window.")
 
     def _initialize_tool_page(self, name: str, initializer) -> None:
         try:
@@ -251,6 +299,11 @@ class MainWindow(QMainWindow):
         self.result_count_label.setVisible(is_feed)
         self.freshness_label.setVisible(is_feed)
         self.reload_button.setVisible(is_feed)
+        self.filters_button.setVisible(is_feed)
+        self.screens_button.setVisible(is_feed)
+
+    def _toggle_filter_panel(self) -> None:
+        self.feed_page.toggle_filter_panel()
 
     def _apply_global_search(self) -> None:
         self.feed_page.set_search(self.global_search.text())
@@ -261,6 +314,102 @@ class MainWindow(QMainWindow):
     def _set_result_count(self, count: int) -> None:
         noun = "transaction" if count == 1 else "transactions"
         self.result_count_label.setText(f"{count:,} {noun}")
+
+    # ------------------------------------------------------------------
+    # Screens menu
+    # ------------------------------------------------------------------
+
+    def _rebuild_screens_menu(self) -> None:
+        self.screens_menu.clear()
+        save_action = self.screens_menu.addAction("Save current as screen…")
+        save_action.triggered.connect(self._save_current_screen)
+        self.screens_menu.addSeparator()
+        screens = self._feed_state.screens
+        if not screens:
+            no_screens = self.screens_menu.addAction("No saved screens")
+            no_screens.setEnabled(False)
+            return
+        for screen in screens:
+            submenu = QMenu(screen.name, self.screens_menu)
+            apply_action = submenu.addAction("Apply")
+            apply_action.triggered.connect(partial(self._apply_screen, screen.name))
+            delete_action = submenu.addAction("Delete")
+            delete_action.triggered.connect(partial(self._delete_screen, screen.name))
+            self.screens_menu.addMenu(submenu)
+
+    def _save_current_screen(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save Screen", "Screen name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        new_screen = SavedScreen(name, self.feed_page.criteria())
+        existing = list(self._feed_state.screens)
+        replaced = [s for s in existing if s.name != name]
+        replaced.append(new_screen)
+        capped = tuple(replaced[-200:])
+        self._feed_state = dataclasses.replace(self._feed_state, screens=capped)
+        self._persist_feed_state()
+        self.log_status(f"Saved screen '{name}'")
+
+    def _apply_screen(self, name: str) -> None:
+        screen = next((s for s in self._feed_state.screens if s.name == name), None)
+        if screen is None:
+            return
+        if self._confirm_discard(f"Apply screen '{name}'"):
+            self.feed_page.set_criteria(screen.criteria)
+
+    def _delete_screen(self, name: str) -> None:
+        answer = QMessageBox.question(self, "Delete screen", f"Delete screen '{name}'?")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        remaining = tuple(s for s in self._feed_state.screens if s.name != name)
+        self._feed_state = dataclasses.replace(self._feed_state, screens=remaining)
+        self._persist_feed_state()
+        self._rebuild_screens_menu()
+        self.log_status(f"Deleted screen '{name}'")
+
+    def _confirm_discard(self, action_label: str) -> bool:
+        if not self.feed_page.criteria().is_nontrivial():
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Discard filters?",
+            f"You have active filters. {action_label} and discard them?",
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_feed_reset(self) -> None:
+        if self._confirm_discard("Reset"):
+            current = self.feed_page.criteria()
+            self.feed_page.set_criteria(
+                FeedCriteria(
+                    sort_field=current.sort_field,
+                    descending=current.descending,
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Persistence wiring
+    # ------------------------------------------------------------------
+
+    def _on_criteria_changed(self, criteria: FeedCriteria) -> None:
+        self.global_search.blockSignals(True)
+        self.global_search.setText(criteria.search)
+        self.global_search.blockSignals(False)
+        self.persist_timer.start()
+
+    def _persist_feed_state(self) -> None:
+        try:
+            state = FeedState(
+                version=SCHEMA_VERSION,
+                criteria=self.feed_page.criteria(),
+                column_layout=self.feed_page.column_layout(),
+                screens=self._feed_state.screens,
+            )
+            self._feed_state = state
+            save_feed_state(self._state_path, state)
+        except Exception:
+            log.exception("Failed to persist feed state")
 
     def log_status(self, message: str, timeout_ms: int = 0) -> None:
         """Show a concise user-facing status message."""
@@ -356,6 +505,11 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if self.shutdown_workers():
+            try:
+                self.persist_timer.stop()
+                self._persist_feed_state()
+            except Exception:
+                log.exception("Failed to persist feed state on close")
             self._disconnect_theme()
             event.accept()
         else:

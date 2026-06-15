@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import webbrowser
 from datetime import datetime
 from functools import partial
@@ -19,14 +20,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.gui.feed_filters import FeedFilterChips, FeedFilterPanel
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.persistence.feed import (
     DEFAULT_PAGE_SIZE,
+    FeedCriteria,
+    FeedMarket,
     FeedPage,
-    FeedQuery,
     FeedRecord,
     FeedRepository,
     FeedSortField,
+    TransactionDirection,
 )
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker
@@ -181,6 +185,8 @@ class FeedPageWidget(QWidget):
 
     resultCountChanged = Signal(int)
     freshnessChanged = Signal(str)
+    criteriaChanged = Signal(object)
+    resetRequested = Signal()
 
     def __init__(
         self,
@@ -188,22 +194,27 @@ class FeedPageWidget(QWidget):
         parent=None,
         *,
         thread_pool: QThreadPool | None = None,
+        initial_criteria: FeedCriteria | None = None,
     ) -> None:
         super().__init__(parent)
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._request_id = 0
         self._workers: dict[int, Worker] = {}
-        self._search = ""
-        self._sort_field = FeedSortField.TRANSACTION_DATE
-        self._descending = True
+        self._criteria: FeedCriteria = initial_criteria or FeedCriteria()
         self._total_count = 0
         self._freshness_text = "Local data unavailable"
         self._build_ui()
+        self.filter_panel.set_filters(self._criteria)
+        self.chips.set_criteria(self._criteria)
         if repository is None:
             self._show_state("Local transaction data is unavailable.")
         else:
             self.reload()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -224,6 +235,17 @@ class FeedPageWidget(QWidget):
         self.state_label.setAccessibleName("Feed status")
         self.state_label.hide()
         layout.addWidget(self.state_label)
+
+        self.filter_panel = FeedFilterPanel()
+        self.filter_panel.hide()
+        self.filter_panel.filtersApplied.connect(self._on_filters_applied)
+        self.filter_panel.resetRequested.connect(self._on_reset)
+        layout.addWidget(self.filter_panel)
+
+        self.chips = FeedFilterChips()
+        self.chips.chipRemoved.connect(self._on_chip_removed)
+        self.chips.resetRequested.connect(self._on_reset)
+        layout.addWidget(self.chips)
 
         self.model = FeedTableModel(self)
         self.table = QTableView()
@@ -260,15 +282,34 @@ class FeedPageWidget(QWidget):
         self.table.setSortingEnabled(True)
         self.model.sortRequested.connect(self._on_sort_requested)
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def criteria(self) -> FeedCriteria:
+        """Return the current FeedCriteria (single source of truth)."""
+        return self._criteria
+
+    def set_criteria(self, criteria: FeedCriteria) -> None:
+        """Canonical apply path: store, sync UI, emit criteriaChanged, re-query."""
+        self._criteria = criteria
+        self.filter_panel.set_filters(criteria)
+        self.chips.set_criteria(criteria)
+        self.criteriaChanged.emit(criteria)
+        self._start_query(append=False)
+
+    def toggle_filter_panel(self) -> None:
+        """Show or hide the filter panel."""
+        self.filter_panel.setVisible(not self.filter_panel.isVisible())
+
     def reload(self) -> None:
         self._start_query(append=False)
 
     def set_search(self, search: str) -> None:
         normalized = search.strip()
-        if normalized == self._search and self.model.rowCount() > 0:
+        if normalized == self._criteria.search and self.model.rowCount() > 0:
             return
-        self._search = normalized
-        self._start_query(append=False)
+        self.set_criteria(dataclasses.replace(self._criteria, search=normalized))
 
     def load_more(self) -> None:
         if self.load_more_button.isEnabled():
@@ -280,6 +321,88 @@ class FeedPageWidget(QWidget):
     def request_cancellation(self) -> None:
         self._request_id += 1
 
+    def column_layout(self) -> str | None:
+        """Return the current column layout as a base64-encoded string."""
+        from insider_scanner.persistence.feed_state import encode_column_layout
+
+        return encode_column_layout(bytes(self.table.horizontalHeader().saveState()))
+
+    def restore_column_layout(self, text: str | None) -> None:
+        """Restore column layout from a base64-encoded string; no-op on falsy input."""
+        if not text:
+            return
+        try:
+            from insider_scanner.persistence.feed_state import decode_column_layout
+
+            from PySide6.QtCore import QByteArray
+
+            self.table.horizontalHeader().restoreState(
+                QByteArray(decode_column_layout(text))
+            )
+        except Exception:
+            log.warning("Could not restore column layout: corrupt or invalid blob")
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _on_filters_applied(self, filters: FeedCriteria) -> None:
+        """Merge filter-panel fields into current criteria (keep search + sort)."""
+        merged = dataclasses.replace(
+            self._criteria,
+            markets=filters.markets,
+            directions=filters.directions,
+            transaction_date_from=filters.transaction_date_from,
+            transaction_date_to=filters.transaction_date_to,
+            value_min=filters.value_min,
+            value_max=filters.value_max,
+        )
+        self.set_criteria(merged)
+
+    def _on_chip_removed(self, key: str) -> None:
+        """Clear the single criterion identified by *key* and re-query."""
+        new_criteria = self._clear_chip_key(key)
+        self.set_criteria(new_criteria)
+
+    def _on_reset(self) -> None:
+        """Re-emit resetRequested upward; main_window decides whether to clear."""
+        self.resetRequested.emit()
+
+    def _on_sort_requested(self, field: FeedSortField, descending: bool) -> None:
+        self._criteria = dataclasses.replace(
+            self._criteria, sort_field=field, descending=descending
+        )
+        self.criteriaChanged.emit(self._criteria)
+        self._start_query(append=False)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _clear_chip_key(self, key: str) -> FeedCriteria:
+        """Return a new FeedCriteria with the criterion identified by *key* cleared."""
+        if key.startswith("market:"):
+            value = key[len("market:") :]
+            market = FeedMarket(value)
+            new_markets = tuple(m for m in self._criteria.markets if m != market)
+            return dataclasses.replace(self._criteria, markets=new_markets)
+        if key.startswith("direction:"):
+            value = key[len("direction:") :]
+            direction = TransactionDirection(value)
+            new_dirs = tuple(d for d in self._criteria.directions if d != direction)
+            return dataclasses.replace(self._criteria, directions=new_dirs)
+        if key == "date_from":
+            return dataclasses.replace(self._criteria, transaction_date_from=None)
+        if key == "date_to":
+            return dataclasses.replace(self._criteria, transaction_date_to=None)
+        if key == "value_min":
+            return dataclasses.replace(self._criteria, value_min=None)
+        if key == "value_max":
+            return dataclasses.replace(self._criteria, value_max=None)
+        if key == "search":
+            return dataclasses.replace(self._criteria, search="")
+        return self._criteria
+
     def _start_query(self, *, append: bool) -> None:
         if self._repository is None:
             self._show_state("Local transaction data is unavailable.")
@@ -288,13 +411,7 @@ class FeedPageWidget(QWidget):
         request_id = self._request_id
         offset = self.model.rowCount() if append else 0
         try:
-            query = FeedQuery(
-                search=self._search,
-                sort_field=self._sort_field,
-                descending=self._descending,
-                limit=DEFAULT_PAGE_SIZE,
-                offset=offset,
-            )
+            query = self._criteria.to_query(limit=DEFAULT_PAGE_SIZE, offset=offset)
         except ValueError as exc:
             self._show_state(str(exc))
             return
@@ -331,7 +448,7 @@ class FeedPageWidget(QWidget):
         if page.total_count == 0:
             message = (
                 "No transactions match your search."
-                if self._search
+                if self._criteria.search
                 else "No local transactions yet. Run a scan from Tools."
             )
             self._show_state(message)
@@ -346,11 +463,6 @@ class FeedPageWidget(QWidget):
         self.load_more_button.setEnabled(True)
         self.load_more_button.hide()
         self._show_state("Could not load local transactions.")
-
-    def _on_sort_requested(self, field: FeedSortField, descending: bool) -> None:
-        self._sort_field = field
-        self._descending = descending
-        self._start_query(append=False)
 
     def _set_freshness(self, page: FeedPage) -> None:
         if page.freshness_at is None:

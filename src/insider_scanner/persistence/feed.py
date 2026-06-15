@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     Float,
     String,
+    and_,
     cast,
     func,
     literal,
@@ -31,6 +33,9 @@ MAX_PAGE_SIZE = 500
 MAX_SEARCH_LENGTH = 100
 STALE_AFTER = timedelta(hours=24)
 
+_BUY_TERMS: tuple[str, ...] = ("buy", "purchase")
+_SELL_TERMS: tuple[str, ...] = ("sell", "sale")
+
 
 class FeedMarket(StrEnum):
     """Source market represented by a normalized feed record."""
@@ -51,6 +56,60 @@ class FeedSortField(StrEnum):
     MARKET = "market"
 
 
+class TransactionDirection(StrEnum):
+    """Broad direction of a transaction derived from free-text transaction_type."""
+
+    BUY = "Buy"
+    SELL = "Sell"
+    OTHER = "Other"
+
+
+def _normalize_search(search: str) -> str:
+    """Strip whitespace and validate length; return normalized value."""
+    normalized = search.strip()
+    if len(normalized) > MAX_SEARCH_LENGTH:
+        raise ValueError(f"search must not exceed {MAX_SEARCH_LENGTH} characters")
+    return normalized
+
+
+def _validate_filters(
+    markets: tuple[Any, ...],
+    directions: tuple[Any, ...],
+    transaction_date_from: date | None,
+    transaction_date_to: date | None,
+    value_min: float | None,
+    value_max: float | None,
+) -> None:
+    """Raise ValueError when any filter argument is out of range or wrong type."""
+    for m in markets:
+        if not isinstance(m, FeedMarket):
+            raise ValueError(f"markets contains invalid value: {m!r}")
+    for d in directions:
+        if not isinstance(d, TransactionDirection):
+            raise ValueError(f"directions contains invalid value: {d!r}")
+    if (
+        transaction_date_from is not None
+        and transaction_date_to is not None
+        and transaction_date_from > transaction_date_to
+    ):
+        raise ValueError("transaction_date_from must not be after transaction_date_to")
+    if value_min is not None and value_min < 0:
+        raise ValueError("value_min must not be negative")
+    if value_max is not None and value_max < 0:
+        raise ValueError("value_max must not be negative")
+    if value_min is not None and value_max is not None and value_min > value_max:
+        raise ValueError("value_min must not exceed value_max")
+
+
+def _dedup_tuple(items: tuple[Any, ...]) -> tuple[Any, ...]:
+    """Return a deduplicated tuple preserving order."""
+    seen: list[Any] = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    return tuple(seen)
+
+
 @dataclass(frozen=True)
 class FeedQuery:
     """Validated immutable query for one feed page."""
@@ -60,18 +119,99 @@ class FeedQuery:
     descending: bool = True
     limit: int = DEFAULT_PAGE_SIZE
     offset: int = 0
+    markets: tuple[FeedMarket, ...] = ()
+    directions: tuple[TransactionDirection, ...] = ()
+    transaction_date_from: date | None = None
+    transaction_date_to: date | None = None
+    value_min: float | None = None
+    value_max: float | None = None
 
     def __post_init__(self) -> None:
-        normalized_search = self.search.strip()
-        if len(normalized_search) > MAX_SEARCH_LENGTH:
-            raise ValueError(f"search must not exceed {MAX_SEARCH_LENGTH} characters")
+        normalized_search = _normalize_search(self.search)
         if not isinstance(self.sort_field, FeedSortField):
             raise ValueError("sort_field is invalid")
         if not 1 <= self.limit <= MAX_PAGE_SIZE:
             raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
         if self.offset < 0:
             raise ValueError("offset must not be negative")
+        markets = _dedup_tuple(tuple(self.markets))
+        directions = _dedup_tuple(tuple(self.directions))
+        _validate_filters(
+            markets,
+            directions,
+            self.transaction_date_from,
+            self.transaction_date_to,
+            self.value_min,
+            self.value_max,
+        )
         object.__setattr__(self, "search", normalized_search)
+        object.__setattr__(self, "markets", markets)
+        object.__setattr__(self, "directions", directions)
+
+
+@dataclass(frozen=True)
+class FeedCriteria:
+    """User-facing filter state without pagination.
+
+    Use to_query() to build a paginated FeedQuery.
+    """
+
+    search: str = ""
+    sort_field: FeedSortField = FeedSortField.TRANSACTION_DATE
+    descending: bool = True
+    markets: tuple[FeedMarket, ...] = ()
+    directions: tuple[TransactionDirection, ...] = ()
+    transaction_date_from: date | None = None
+    transaction_date_to: date | None = None
+    value_min: float | None = None
+    value_max: float | None = None
+
+    def __post_init__(self) -> None:
+        normalized_search = _normalize_search(self.search)
+        markets = _dedup_tuple(tuple(self.markets))
+        directions = _dedup_tuple(tuple(self.directions))
+        _validate_filters(
+            markets,
+            directions,
+            self.transaction_date_from,
+            self.transaction_date_to,
+            self.value_min,
+            self.value_max,
+        )
+        object.__setattr__(self, "search", normalized_search)
+        object.__setattr__(self, "markets", markets)
+        object.__setattr__(self, "directions", directions)
+
+    def to_query(self, *, limit: int = DEFAULT_PAGE_SIZE, offset: int = 0) -> FeedQuery:
+        """Build a FeedQuery from this criteria plus pagination parameters."""
+        return FeedQuery(
+            search=self.search,
+            sort_field=self.sort_field,
+            descending=self.descending,
+            limit=limit,
+            offset=offset,
+            markets=self.markets,
+            directions=self.directions,
+            transaction_date_from=self.transaction_date_from,
+            transaction_date_to=self.transaction_date_to,
+            value_min=self.value_min,
+            value_max=self.value_max,
+        )
+
+    def is_nontrivial(self) -> bool:
+        """Return True if any filter (search/markets/directions/dates/values) is set.
+
+        Returns False when only sort/descending differ from defaults.
+        """
+        return bool(
+            self.search
+            or self.markets
+            or self.directions
+            or self.transaction_date_from is not None
+            or self.transaction_date_to is not None
+            or self.value_min is not None
+            or self.value_max is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -191,6 +331,46 @@ def _search_condition(feed, search: str):
     )
 
 
+def _direction_condition(feed, direction: TransactionDirection):
+    """Return a SQLAlchemy condition for a single TransactionDirection."""
+    lower_type = func.lower(func.coalesce(feed.c.transaction_type, ""))
+    if direction == TransactionDirection.BUY:
+        return or_(*[lower_type.like(f"%{term}%") for term in _BUY_TERMS])
+    if direction == TransactionDirection.SELL:
+        return or_(*[lower_type.like(f"%{term}%") for term in _SELL_TERMS])
+    # OTHER: matches neither buy nor sell terms
+    buy_sell_terms = _BUY_TERMS + _SELL_TERMS
+    return ~or_(*[lower_type.like(f"%{term}%") for term in buy_sell_terms])
+
+
+def _directions_condition(feed, directions: tuple[TransactionDirection, ...]):
+    """Return a SQLAlchemy condition matching any of the given directions."""
+    return or_(*[_direction_condition(feed, d) for d in directions])
+
+
+def _filter_conditions(feed, query: FeedQuery) -> list:
+    """Build a list of SQLAlchemy conditions from the query's filter fields.
+
+    Range filters (transaction_date, value_sort) exclude rows with NULL values.
+    """
+    conditions = []
+    if query.search:
+        conditions.append(_search_condition(feed, query.search))
+    if query.markets:
+        conditions.append(feed.c.market.in_([m.value for m in query.markets]))
+    if query.directions:
+        conditions.append(_directions_condition(feed, query.directions))
+    if query.transaction_date_from is not None:
+        conditions.append(feed.c.transaction_date >= query.transaction_date_from)
+    if query.transaction_date_to is not None:
+        conditions.append(feed.c.transaction_date <= query.transaction_date_to)
+    if query.value_min is not None:
+        conditions.append(feed.c.value_sort >= query.value_min)
+    if query.value_max is not None:
+        conditions.append(feed.c.value_sort <= query.value_max)
+    return conditions
+
+
 def _sort_expression(feed, field: FeedSortField):
     return {
         FeedSortField.TRANSACTION_DATE: feed.c.transaction_date,
@@ -222,25 +402,37 @@ class FeedRepository:
         *,
         now: datetime | None = None,
     ) -> FeedPage:
+        """Return a paged FeedPage for the given FeedQuery.
+
+        Filter fields are applied via AND logic. Range filters on
+        transaction_date and value_sort exclude rows where those columns are NULL.
+        """
         if not isinstance(query, FeedQuery):
             raise TypeError("query must be a FeedQuery")
         current_time = _aware_utc(now or datetime.now(UTC))
         feed = _projection()
-        condition = _search_condition(feed, query.search) if query.search else None
+        conditions = _filter_conditions(feed, query)
         sort_expression = _sort_expression(feed, query.sort_field)
-        direction = sort_expression.desc() if query.descending else sort_expression.asc()
+        direction = (
+            sort_expression.desc() if query.descending else sort_expression.asc()
+        )
         statement = select(feed)
         count_statement = select(func.count()).select_from(feed)
-        if condition is not None:
-            statement = statement.where(condition)
-            count_statement = count_statement.where(condition)
-        statement = statement.order_by(
-            sort_expression.is_(None),
-            direction,
-            feed.c.filing_date.is_(None),
-            feed.c.filing_date.desc(),
-            feed.c.key.asc(),
-        ).limit(query.limit).offset(query.offset)
+        if conditions:
+            combined = and_(*conditions)
+            statement = statement.where(combined)
+            count_statement = count_statement.where(combined)
+        statement = (
+            statement.order_by(
+                sort_expression.is_(None),
+                direction,
+                feed.c.filing_date.is_(None),
+                feed.c.filing_date.desc(),
+                feed.c.key.asc(),
+            )
+            .limit(query.limit)
+            .offset(query.offset)
+        )
 
         try:
             with self._engine.connect() as connection:
