@@ -35,7 +35,9 @@ except ImportError:  # pragma: no cover
         return True
 
 
+from insider_scanner.gui.entity_pages import CompanyPage, InsiderPage
 from insider_scanner.gui.feed_page import FeedPageWidget
+from insider_scanner.gui.global_search import GlobalSearchController
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.persistence.feed import FeedCriteria, FeedRepository
@@ -149,12 +151,6 @@ class MainWindow(QMainWindow):
         self.global_search.setMinimumWidth(280)
         layout.addWidget(self.global_search, stretch=1)
 
-        self.search_timer = QTimer(self)
-        self.search_timer.setSingleShot(True)
-        self.search_timer.setInterval(250)
-        self.global_search.textChanged.connect(lambda: self.search_timer.start())
-        self.search_timer.timeout.connect(self._apply_global_search)
-
         self.result_count_label = QLabel("0 transactions")
         self.result_count_label.setObjectName("resultCount")
         layout.addWidget(self.result_count_label)
@@ -200,6 +196,7 @@ class MainWindow(QMainWindow):
             )
             engine = None if persistence is None else persistence.engine
             repository = FeedRepository(engine) if engine is not None else None
+            self._repository = repository
             self.feed_page = FeedPageWidget(
                 repository,
                 thread_pool=self._thread_pool,
@@ -210,6 +207,8 @@ class MainWindow(QMainWindow):
             self.feed_page.restore_column_layout(self._feed_state.column_layout)
             self.feed_page.criteriaChanged.connect(self._on_criteria_changed)
             self.feed_page.resetRequested.connect(self._on_feed_reset)
+            self.feed_page.openCompanyRequested.connect(self._open_company)
+            self.feed_page.openInsiderRequested.connect(self._open_insider)
             self.global_search.blockSignals(True)
             self.global_search.setText(self._feed_state.criteria.search)
             self.global_search.blockSignals(False)
@@ -220,12 +219,16 @@ class MainWindow(QMainWindow):
                 "Could not initialize application window."
             ) from exc
 
+        self._init_research_pages()
+
         self._add_section_label("Tools")
         self._initialize_tool_page("Scan", self._init_scan_page)
         self._initialize_tool_page("Congress", self._init_congress_page)
         self._initialize_tool_page("European", self._init_european_page)
         self._init_analysis_page()
         self.sidebar_layout.addStretch(1)
+
+        self._init_global_search()
 
     @staticmethod
     def _tool_initialization_error() -> MainWindowInitializationError:
@@ -256,6 +259,46 @@ class MainWindow(QMainWindow):
         self.navigation_buttons[name] = button
         self.sidebar_layout.addWidget(button)
         self.page_stack.addWidget(widget)
+
+    def _init_research_pages(self) -> None:
+        try:
+            self._add_section_label("Research")
+            self.company_page = CompanyPage(
+                self._repository, thread_pool=self._thread_pool
+            )
+            self.insider_page = InsiderPage(
+                self._repository, thread_pool=self._thread_pool
+            )
+            self._add_page("Companies", self.company_page)
+            self._add_page("Insiders", self.insider_page)
+        except Exception as exc:
+            log.exception("Research pages initialization failed")
+            raise self._tool_initialization_error() from exc
+
+    def _init_global_search(self) -> None:
+        self.global_search_controller = GlobalSearchController(
+            self.global_search,
+            self._repository,
+            parent=self,
+            thread_pool=self._thread_pool,
+        )
+        self.global_search_controller.companyChosen.connect(self._open_company)
+        self.global_search_controller.insiderChosen.connect(self._open_insider)
+        self.global_search_controller.feedSearchRequested.connect(
+            self._on_global_feed_search
+        )
+
+    def _open_company(self, identifier, market) -> None:
+        self.company_page.load(identifier, market)
+        self._select_page("Companies")
+
+    def _open_insider(self, person, market) -> None:
+        self.insider_page.load(person, market)
+        self._select_page("Insiders")
+
+    def _on_global_feed_search(self, text) -> None:
+        self.feed_page.set_search(text)
+        self._select_page("Feed")
 
     def _init_scan_page(self) -> None:
         from insider_scanner.gui.scan_tab import ScanTab
@@ -295,7 +338,7 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentIndex(index)
         self.page_title.setText(name)
         is_feed = name == "Feed"
-        self.global_search.setVisible(is_feed)
+        self.global_search.setVisible(True)
         self.result_count_label.setVisible(is_feed)
         self.freshness_label.setVisible(is_feed)
         self.reload_button.setVisible(is_feed)
@@ -484,6 +527,9 @@ class MainWindow(QMainWindow):
     def request_cancellation(self) -> None:
         for name in (
             "feed_page",
+            "company_page",
+            "insider_page",
+            "global_search_controller",
             "scan_tab",
             "congress_tab",
             "european_tab",

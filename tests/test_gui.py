@@ -178,7 +178,7 @@ class TestMainWindow:
 
         win = MainWindow()
         qtbot.addWidget(win)
-        assert win.page_stack.count() == 5
+        assert win.page_stack.count() == 7
         assert win.page_stack.currentWidget() is win.feed_page
 
     def test_navigation_names(self, qtbot):
@@ -189,6 +189,8 @@ class TestMainWindow:
         qtbot.addWidget(win)
         assert list(win.navigation_buttons) == [
             "Feed",
+            "Companies",
+            "Insiders",
             "Insider Scan",
             "Congress Scan",
             "European Scan",

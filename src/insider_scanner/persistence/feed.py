@@ -247,6 +247,45 @@ class FeedPage:
     has_more: bool
 
 
+@dataclass(frozen=True)
+class FeedDetail:
+    """Market-specific detail enriching a base FeedRecord."""
+
+    record: FeedRecord
+    shares_owned_after: float | None
+    footnotes: str
+    reference: str
+    metadata: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class EntityHit:
+    """One entity (company or insider) matched by a search."""
+
+    kind: str
+    label: str
+    identifier: str
+    person: str
+    market: FeedMarket
+
+
+@dataclass(frozen=True)
+class EntitySearchResults:
+    """Combined entity search results split by kind."""
+
+    companies: tuple[EntityHit, ...]
+    insiders: tuple[EntityHit, ...]
+
+
+@dataclass(frozen=True)
+class InvestigationBundle:
+    """Aggregated context for investigating a single FeedRecord."""
+
+    detail: FeedDetail | None
+    by_person: tuple[FeedRecord, ...]
+    by_issuer: tuple[FeedRecord, ...]
+
+
 def _projection():
     us = select(
         (literal("us:") + cast(us_trades.c.id, String)).label("key"),
@@ -480,3 +519,312 @@ class FeedRepository:
             source=row["source"] or "",
             source_url=row["source_url"] or "",
         )
+
+    def detail(self, key: str) -> FeedDetail | None:
+        """Return a FeedDetail for the given record key, or None if not found.
+
+        Malformed keys, unknown prefixes, and non-integer ids all return None.
+        """
+        # Parse "<prefix>:<int-id>"
+        if ":" not in key:
+            return None
+        prefix, _, raw_id = key.partition(":")
+        # Reject any extra colons (e.g. "us:1:2")
+        if ":" in raw_id:
+            return None
+        if not raw_id:
+            return None
+        try:
+            row_id = int(raw_id)
+        except ValueError:
+            return None
+
+        prefix_to_market = {
+            "us": FeedMarket.US,
+            "congress": FeedMarket.CONGRESS,
+            "europe": FeedMarket.EUROPE,
+        }
+        if prefix not in prefix_to_market:
+            return None
+
+        feed = _projection()
+        stmt = select(feed).where(feed.c.key == key)
+
+        try:
+            with self._engine.connect() as connection:
+                row = connection.execute(stmt).mappings().first()
+                if row is None:
+                    return None
+                record = self._record_from_row(row)
+
+                if prefix == "us":
+                    extra = (
+                        connection.execute(
+                            select(us_trades).where(us_trades.c.id == row_id)
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if extra is None:
+                        return None
+                    return FeedDetail(
+                        record=record,
+                        shares_owned_after=extra["shares_owned_after"],
+                        footnotes="",
+                        reference=extra["edgar_url"] or "",
+                        metadata=(),
+                    )
+
+                if prefix == "congress":
+                    extra = (
+                        connection.execute(
+                            select(congress_trades).where(
+                                congress_trades.c.id == row_id
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if extra is None:
+                        return None
+                    meta: list[tuple[str, str]] = []
+                    if extra["owner"]:
+                        meta.append(("Owner", extra["owner"]))
+                    if extra["party"]:
+                        meta.append(("Party", extra["party"]))
+                    return FeedDetail(
+                        record=record,
+                        shares_owned_after=None,
+                        footnotes=extra["comment"] or "",
+                        reference=extra["doc_id"] or "",
+                        metadata=tuple(meta),
+                    )
+
+                # prefix == "europe"
+                extra = (
+                    connection.execute(
+                        select(european_trades).where(european_trades.c.id == row_id)
+                    )
+                    .mappings()
+                    .first()
+                )
+                if extra is None:
+                    return None
+                eu_meta: list[tuple[str, str]] = []
+                if extra["instrument_type"]:
+                    eu_meta.append(("Instrument", extra["instrument_type"]))
+                if extra["regulatory_body"]:
+                    eu_meta.append(("Regulator", extra["regulatory_body"]))
+                if extra["country"]:
+                    eu_meta.append(("Country", extra["country"]))
+                return FeedDetail(
+                    record=record,
+                    shares_owned_after=None,
+                    footnotes="",
+                    reference=extra["source_url"] or "",
+                    metadata=tuple(eu_meta),
+                )
+
+        except SQLAlchemyError as exc:
+            raise PersistenceError("Failed to load feed detail") from exc
+
+    def recent_by_person(
+        self,
+        person: str,
+        *,
+        markets: tuple[FeedMarket, ...] = (),
+        limit: int = 8,
+        exclude_key: str | None = None,
+    ) -> tuple[FeedRecord, ...]:
+        """Return the most recent FeedRecords for the given person name.
+
+        Case-insensitive match. Empty person string returns () without querying.
+        """
+        normalized = person.strip().casefold()
+        if not normalized:
+            return ()
+        if not 1 <= limit <= MAX_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
+
+        feed = _projection()
+        conditions = [func.lower(func.coalesce(feed.c.person, "")) == normalized]
+        if markets:
+            conditions.append(feed.c.market.in_([m.value for m in markets]))
+        if exclude_key is not None:
+            conditions.append(feed.c.key != exclude_key)
+
+        stmt = (
+            select(feed)
+            .where(and_(*conditions))
+            .order_by(
+                feed.c.transaction_date.is_(None),
+                feed.c.transaction_date.desc(),
+                feed.c.filing_date.is_(None),
+                feed.c.filing_date.desc(),
+                feed.c.key.asc(),
+            )
+            .limit(limit)
+        )
+
+        try:
+            with self._engine.connect() as connection:
+                rows = connection.execute(stmt).mappings().all()
+        except SQLAlchemyError as exc:
+            raise PersistenceError("Failed to query recent records by person") from exc
+
+        return tuple(self._record_from_row(r) for r in rows)
+
+    def recent_by_issuer(
+        self,
+        identifier: str,
+        *,
+        markets: tuple[FeedMarket, ...] = (),
+        limit: int = 8,
+        exclude_key: str | None = None,
+    ) -> tuple[FeedRecord, ...]:
+        """Return the most recent FeedRecords for the given identifier.
+
+        Case-insensitive exact match on identifier. Empty string returns ().
+        """
+        normalized = identifier.strip().casefold()
+        if not normalized:
+            return ()
+        if not 1 <= limit <= MAX_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
+
+        feed = _projection()
+        conditions = [func.lower(func.coalesce(feed.c.identifier, "")) == normalized]
+        if markets:
+            conditions.append(feed.c.market.in_([m.value for m in markets]))
+        if exclude_key is not None:
+            conditions.append(feed.c.key != exclude_key)
+
+        stmt = (
+            select(feed)
+            .where(and_(*conditions))
+            .order_by(
+                feed.c.transaction_date.is_(None),
+                feed.c.transaction_date.desc(),
+                feed.c.filing_date.is_(None),
+                feed.c.filing_date.desc(),
+                feed.c.key.asc(),
+            )
+            .limit(limit)
+        )
+
+        try:
+            with self._engine.connect() as connection:
+                rows = connection.execute(stmt).mappings().all()
+        except SQLAlchemyError as exc:
+            raise PersistenceError("Failed to query recent records by issuer") from exc
+
+        return tuple(self._record_from_row(r) for r in rows)
+
+    def search_entities(
+        self,
+        text: str,
+        *,
+        limit: int = 8,
+    ) -> EntitySearchResults:
+        """Return companies and insiders whose names/identifiers match text.
+
+        Empty text returns empty results without querying.
+        """
+        normalized = text.strip()
+        if not normalized:
+            return EntitySearchResults((), ())
+
+        pattern = f"%{_escape_like(normalized.casefold())}%"
+
+        feed = _projection()
+
+        # Companies: distinct (identifier, issuer, market) where identifier != ""
+        # and lower(identifier) LIKE pattern OR lower(issuer) LIKE pattern
+        company_cond = and_(
+            feed.c.identifier != "",
+            or_(
+                func.lower(func.coalesce(feed.c.identifier, "")).like(
+                    pattern, escape="\\"
+                ),
+                func.lower(func.coalesce(feed.c.issuer, "")).like(pattern, escape="\\"),
+            ),
+        )
+        company_stmt = (
+            select(feed.c.identifier, feed.c.issuer, feed.c.market)
+            .where(company_cond)
+            .distinct()
+            .order_by(
+                func.lower(func.coalesce(feed.c.issuer, "")),
+                func.lower(func.coalesce(feed.c.identifier, "")),
+            )
+            .limit(limit)
+        )
+
+        # Insiders: distinct (person, market) where person != ""
+        # and lower(person) LIKE pattern
+        insider_cond = and_(
+            feed.c.person != "",
+            func.lower(func.coalesce(feed.c.person, "")).like(pattern, escape="\\"),
+        )
+        insider_stmt = (
+            select(feed.c.person, feed.c.market)
+            .where(insider_cond)
+            .distinct()
+            .order_by(func.lower(func.coalesce(feed.c.person, "")))
+            .limit(limit)
+        )
+
+        try:
+            with self._engine.connect() as connection:
+                company_rows = connection.execute(company_stmt).mappings().all()
+                insider_rows = connection.execute(insider_stmt).mappings().all()
+        except SQLAlchemyError as exc:
+            raise PersistenceError("Failed to search entities") from exc
+
+        companies = tuple(
+            EntityHit(
+                kind="company",
+                label=row["issuer"] or row["identifier"],
+                identifier=row["identifier"] or "",
+                person="",
+                market=FeedMarket(row["market"]),
+            )
+            for row in company_rows
+        )
+        insiders = tuple(
+            EntityHit(
+                kind="insider",
+                label=row["person"] or "",
+                identifier="",
+                person=row["person"] or "",
+                market=FeedMarket(row["market"]),
+            )
+            for row in insider_rows
+        )
+        return EntitySearchResults(companies=companies, insiders=insiders)
+
+
+def load_investigation(
+    repository: FeedRepository,
+    record: FeedRecord,
+    *,
+    limit: int = 8,
+) -> InvestigationBundle:
+    """Return an InvestigationBundle for the given record.
+
+    Fetches detail, records by the same person, and records for the same
+    issuer identifier — all excluding the anchor record itself.
+    """
+    return InvestigationBundle(
+        detail=repository.detail(record.key),
+        by_person=repository.recent_by_person(
+            record.person,
+            exclude_key=record.key,
+            limit=limit,
+        ),
+        by_issuer=repository.recent_by_issuer(
+            record.identifier,
+            exclude_key=record.key,
+            limit=limit,
+        ),
+    )

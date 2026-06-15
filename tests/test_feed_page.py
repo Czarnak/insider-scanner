@@ -374,3 +374,88 @@ def test_restore_column_layout_with_corrupt_blob_does_not_raise(qtbot):
     page.restore_column_layout("not-valid-base64!!")
     page.restore_column_layout(None)
     page.restore_column_layout("")
+
+
+# ---------------------------------------------------------------------------
+# Investigation drawer integration
+# ---------------------------------------------------------------------------
+
+
+def test_drawer_hidden_until_a_row_is_selected(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    assert page.drawer.isHidden()
+
+
+def test_selecting_row_shows_drawer_with_that_record(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    shown: list = []
+    page.drawer.show_record = lambda record: shown.append(record)
+
+    page.table.selectRow(0)
+
+    assert len(shown) == 1
+    assert shown[0].identifier == "AAPL"
+    assert not page.drawer.isHidden()
+
+
+def test_closing_drawer_hides_it(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+    page.drawer.show_record = lambda record: None
+    page.table.selectRow(0)
+    assert not page.drawer.isHidden()
+
+    page.drawer.closeRequested.emit()
+
+    assert page.drawer.isHidden()
+
+
+def test_clearing_selection_hides_drawer(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+    page.drawer.show_record = lambda record: None
+    page.table.selectRow(0)
+    assert not page.drawer.isHidden()
+
+    page.table.clearSelection()
+
+    assert page.drawer.isHidden()
+
+
+def test_drawer_deep_link_signals_are_forwarded(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    company: list = []
+    insider: list = []
+    page.openCompanyRequested.connect(
+        lambda ident, market: company.append((ident, market))
+    )
+    page.openInsiderRequested.connect(
+        lambda person, market: insider.append((person, market))
+    )
+
+    page.drawer.openCompanyRequested.emit("AAPL", FeedMarket.US)
+    page.drawer.openInsiderRequested.emit("Jane Director", FeedMarket.US)
+
+    assert company == [("AAPL", FeedMarket.US)]
+    assert insider == [("Jane Director", FeedMarket.US)]

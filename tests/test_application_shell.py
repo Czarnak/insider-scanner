@@ -54,6 +54,8 @@ def test_shell_starts_on_feed_and_exposes_only_functional_destinations(qtbot, tm
         assert window.page_stack.currentWidget() is window.feed_page
         assert list(window.navigation_buttons) == [
             "Feed",
+            "Companies",
+            "Insiders",
             "Insider Scan",
             "Congress Scan",
             "European Scan",
@@ -67,7 +69,7 @@ def test_shell_starts_on_feed_and_exposes_only_functional_destinations(qtbot, tm
         services.persistence.close()
 
 
-def test_navigation_switches_workspace_and_hides_feed_search(qtbot, tmp_path):
+def test_navigation_switches_workspace_keeps_global_search_visible(qtbot, tmp_path):
     from insider_scanner.gui.main_window import MainWindow
 
     services = _services(tmp_path)
@@ -82,7 +84,10 @@ def test_navigation_switches_workspace_and_hides_feed_search(qtbot, tmp_path):
 
         assert window.page_stack.currentWidget() is window.congress_tab
         assert window.page_title.text() == "Congress Scan"
-        assert window.global_search.isHidden()
+        # Global search is now a global navigator: visible on every page.
+        assert window.global_search.isVisible()
+        # Feed-only controls hide off the Feed page.
+        assert window.reload_button.isHidden()
 
         qtbot.mouseClick(
             window.navigation_buttons["Feed"],
@@ -90,6 +95,7 @@ def test_navigation_switches_workspace_and_hides_feed_search(qtbot, tmp_path):
         )
         assert window.page_stack.currentWidget() is window.feed_page
         assert window.global_search.isVisible()
+        assert window.reload_button.isVisible()
     finally:
         window.shutdown_workers()
         services.persistence.close()
@@ -356,6 +362,72 @@ def test_buttons_feed_only_visibility(qtbot, tmp_path):
         window._select_page("Feed")
         assert window.filters_button.isVisible()
         assert window.screens_button.isVisible()
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_feed_deep_link_opens_company_and_insider_pages(qtbot, tmp_path):
+    """Drawer deep-link signals navigate to and load the entity pages."""
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        company_calls: list = []
+        insider_calls: list = []
+        window.company_page.load = lambda ident, market: company_calls.append(
+            (ident, market)
+        )
+        window.insider_page.load = lambda person, market: insider_calls.append(
+            (person, market)
+        )
+
+        window.feed_page.openCompanyRequested.emit("AAPL", FeedMarket.US)
+        assert company_calls == [("AAPL", FeedMarket.US)]
+        assert window.page_stack.currentWidget() is window.company_page
+
+        window.feed_page.openInsiderRequested.emit("Tim Cook", FeedMarket.US)
+        assert insider_calls == [("Tim Cook", FeedMarket.US)]
+        assert window.page_stack.currentWidget() is window.insider_page
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_global_search_routes_to_entities_and_feed(qtbot, tmp_path):
+    """Global search emits navigate to entity pages; feed search still delegates."""
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        company_calls: list = []
+        insider_calls: list = []
+        search_calls: list = []
+        window.company_page.load = lambda ident, market: company_calls.append(
+            (ident, market)
+        )
+        window.insider_page.load = lambda person, market: insider_calls.append(
+            (person, market)
+        )
+        window.feed_page.set_search = lambda text: search_calls.append(text)
+
+        window.global_search_controller.companyChosen.emit("MSFT", FeedMarket.US)
+        assert company_calls == [("MSFT", FeedMarket.US)]
+        assert window.page_stack.currentWidget() is window.company_page
+
+        window.global_search_controller.insiderChosen.emit(
+            "Jane Doe", FeedMarket.CONGRESS
+        )
+        assert insider_calls == [("Jane Doe", FeedMarket.CONGRESS)]
+        assert window.page_stack.currentWidget() is window.insider_page
+
+        window.global_search_controller.feedSearchRequested.emit("tesla")
+        assert search_calls == ["tesla"]
+        assert window.page_stack.currentWidget() is window.feed_page
     finally:
         window.shutdown_workers()
         services.persistence.close()

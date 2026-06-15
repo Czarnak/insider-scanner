@@ -15,12 +15,14 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
 from insider_scanner.gui.feed_filters import FeedFilterChips, FeedFilterPanel
+from insider_scanner.gui.investigation_drawer import InvestigationDrawer
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.persistence.feed import (
     DEFAULT_PAGE_SIZE,
@@ -187,6 +189,8 @@ class FeedPageWidget(QWidget):
     freshnessChanged = Signal(str)
     criteriaChanged = Signal(object)
     resetRequested = Signal()
+    openCompanyRequested = Signal(object, object)
+    openInsiderRequested = Signal(object, object)
 
     def __init__(
         self,
@@ -269,7 +273,25 @@ class FeedPageWidget(QWidget):
             Qt.SortOrder.DescendingOrder,
         )
         self.table.doubleClicked.connect(self._open_selected_source)
-        layout.addWidget(self.table, stretch=1)
+        self.table.clicked.connect(self._on_row_clicked)
+        self.table.selectionModel().selectionChanged.connect(self._on_row_selected)
+
+        self.drawer = InvestigationDrawer(
+            self._repository, thread_pool=self._thread_pool
+        )
+        self.drawer.hide()
+        self.drawer.openCompanyRequested.connect(self.openCompanyRequested)
+        self.drawer.openInsiderRequested.connect(self.openInsiderRequested)
+        self.drawer.closeRequested.connect(self._close_drawer)
+        self._drawer_origin_row = -1
+
+        self._content_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._content_splitter.addWidget(self.table)
+        self._content_splitter.addWidget(self.drawer)
+        self._content_splitter.setStretchFactor(0, 1)
+        self._content_splitter.setStretchFactor(1, 0)
+        self._content_splitter.setCollapsible(0, False)
+        layout.addWidget(self._content_splitter, stretch=1)
 
         self.load_more_button = QPushButton("Load More")
         self.load_more_button.setAccessibleName("Load more transactions")
@@ -320,6 +342,7 @@ class FeedPageWidget(QWidget):
 
     def request_cancellation(self) -> None:
         self._request_id += 1
+        self.drawer.request_cancellation()
 
     def column_layout(self) -> str | None:
         """Return the current column layout as a base64-encoded string."""
@@ -483,6 +506,38 @@ class FeedPageWidget(QWidget):
         record = self.model.record_at(index.row())
         if record.source_url.startswith(("https://", "http://")):
             webbrowser.open(record.source_url)
+
+    def _on_row_clicked(self, index) -> None:
+        # Reopen-only affordance: after the drawer is dismissed the row stays
+        # selected, so selectionChanged will not re-fire. A click then reopens
+        # it. Normal selection changes are handled by _on_row_selected, so this
+        # guard removes any dependency on click/selection signal ordering.
+        if index.isValid() and self.drawer.isHidden():
+            self._show_drawer_for_row(index.row())
+
+    def _on_row_selected(self, selected, deselected) -> None:
+        selection = self.table.selectionModel()
+        if selection is None:
+            return
+        indexes = selection.selectedRows()
+        if not indexes:
+            self.drawer.hide()
+            self._drawer_origin_row = -1
+            return
+        self._show_drawer_for_row(indexes[0].row())
+
+    def _show_drawer_for_row(self, row: int) -> None:
+        if not 0 <= row < self.model.rowCount():
+            return
+        if row == self._drawer_origin_row and not self.drawer.isHidden():
+            return
+        self._drawer_origin_row = row
+        self.drawer.show_record(self.model.record_at(row))
+        self.drawer.show()
+
+    def _close_drawer(self) -> None:
+        self.drawer.hide()
+        self.table.setFocus()
 
     @staticmethod
     def _format_timestamp(value: datetime) -> str:
