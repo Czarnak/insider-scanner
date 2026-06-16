@@ -8,13 +8,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMessageBox
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
-from insider_scanner.persistence.feed import FeedCriteria, FeedMarket
+from insider_scanner.persistence.alerts import load_alerts
+from insider_scanner.persistence.feed import FeedCriteria, FeedMarket, FeedRecord
 from insider_scanner.persistence.feed_state import (
     FeedState,
     SavedScreen,
     load_feed_state,
     save_feed_state,
 )
+from insider_scanner.persistence.watchlists import load_watchlists
+from insider_scanner.services.alerts import AlertHit
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.persistence.coverage import CoverageRepository
 from insider_scanner.persistence.refresh import RefreshStateRepository
@@ -54,6 +57,8 @@ def test_shell_starts_on_feed_and_exposes_only_functional_destinations(qtbot, tm
         assert window.page_stack.currentWidget() is window.feed_page
         assert list(window.navigation_buttons) == [
             "Feed",
+            "Watchlists",
+            "Alerts",
             "Companies",
             "Insiders",
             "Insider Scan",
@@ -445,6 +450,141 @@ def test_corrupt_state_file_does_not_break_launch(qtbot, tmp_path):
     qtbot.addWidget(window)
     try:
         assert window.feed_page.criteria() == FeedCriteria()
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+# ---------------------------------------------------------------------------
+# Watchlists & alerts integration
+# ---------------------------------------------------------------------------
+
+
+def _feed_record(identifier="AAPL", person="Jane Director") -> FeedRecord:
+    return FeedRecord(
+        key="us:1",
+        market=FeedMarket.US,
+        transaction_type="Buy",
+        issuer="Example Corp",
+        identifier=identifier,
+        person=person,
+        role="CEO",
+        transaction_date=None,
+        filing_date=None,
+        quantity=None,
+        price=None,
+        value_display="",
+        value_sort=200_000.0,
+        currency="USD",
+        source="test",
+        source_url="",
+    )
+
+
+def test_watchlists_and_alerts_destinations_present(qtbot, tmp_path):
+    from insider_scanner.gui.alerts_page import AlertsPage
+    from insider_scanner.gui.main_window import MainWindow
+    from insider_scanner.gui.watchlist_page import WatchlistPage
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        assert "Watchlists" in window.navigation_buttons
+        assert "Alerts" in window.navigation_buttons
+        assert isinstance(window.watchlist_page, WatchlistPage)
+        assert isinstance(window.alerts_page, AlertsPage)
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_alerts_button_visible_on_all_pages(qtbot, tmp_path):
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    window.show()
+    try:
+        assert window.alerts_button.isVisible()
+        window._select_page("Insider Scan")
+        assert window.alerts_button.isVisible()  # stays visible off-Feed
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_drawer_watch_adds_to_watchlist_and_persists(qtbot, tmp_path):
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        window.feed_page.watchRequested.emit(_feed_record())
+
+        store = window.watchlist_page.store()
+        all_entries = [e for w in store.watchlists for e in w.entries]
+        assert any(e.identifier == "AAPL" for e in all_entries)
+        assert any(e.person == "Jane Director" for e in all_entries)
+
+        on_disk = load_watchlists(tmp_path / "watchlists.json")
+        disk_entries = [e for w in on_disk.watchlists for e in w.entries]
+        assert any(e.identifier == "AAPL" for e in disk_entries)
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_alert_rule_created_from_filters_persists(qtbot, tmp_path, monkeypatch):
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        window.feed_page.set_criteria(FeedCriteria(search="AAPL"))
+        monkeypatch.setattr(
+            "PySide6.QtWidgets.QInputDialog.getText",
+            lambda *a, **kw: ("Apple watch", True),
+        )
+        window.alerts_page._create_from_filters()
+
+        on_disk = load_alerts(tmp_path / "alerts.json")
+        rule = on_disk.get("Apple watch")
+        assert rule is not None
+        assert rule.criteria.search == "AAPL"
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_alert_badge_updates_on_evaluation(qtbot, tmp_path):
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        hits = (AlertHit(rule_name="A", records=(_feed_record(),), match_count=1),)
+        window._on_alerts_evaluated(window._alert_request_id, hits)
+        assert window.alerts_button.text() == "Alerts (1)"
+        assert window.alerts_page.new_match_count() == 1
+    finally:
+        window.shutdown_workers()
+        services.persistence.close()
+
+
+def test_check_alerts_with_no_rules_keeps_badge_clear(qtbot, tmp_path):
+    from insider_scanner.gui.main_window import MainWindow
+
+    services = _services(tmp_path)
+    window = MainWindow(services, state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+    try:
+        window._check_alerts()
+        assert window.alerts_button.text() == "Alerts"
     finally:
         window.shutdown_workers()
         services.persistence.close()

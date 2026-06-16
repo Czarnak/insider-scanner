@@ -191,6 +191,7 @@ class FeedPageWidget(QWidget):
     resetRequested = Signal()
     openCompanyRequested = Signal(object, object)
     openInsiderRequested = Signal(object, object)
+    watchRequested = Signal(object)
 
     def __init__(
         self,
@@ -282,6 +283,7 @@ class FeedPageWidget(QWidget):
         self.drawer.hide()
         self.drawer.openCompanyRequested.connect(self.openCompanyRequested)
         self.drawer.openInsiderRequested.connect(self.openInsiderRequested)
+        self.drawer.watchRequested.connect(self.watchRequested)
         self.drawer.closeRequested.connect(self._close_drawer)
         self._drawer_origin_row = -1
 

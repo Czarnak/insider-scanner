@@ -35,11 +35,18 @@ except ImportError:  # pragma: no cover
         return True
 
 
+from insider_scanner.gui.alerts_page import AlertsPage
 from insider_scanner.gui.entity_pages import CompanyPage, InsiderPage
 from insider_scanner.gui.feed_page import FeedPageWidget
 from insider_scanner.gui.global_search import GlobalSearchController
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
+from insider_scanner.gui.watchlist_page import WatchlistPage
+from insider_scanner.persistence.alerts import (
+    alerts_path,
+    load_alerts,
+    save_alerts,
+)
 from insider_scanner.persistence.feed import FeedCriteria, FeedRepository
 from insider_scanner.persistence.feed_state import (
     SCHEMA_VERSION,
@@ -49,8 +56,16 @@ from insider_scanner.persistence.feed_state import (
     load_feed_state,
     save_feed_state,
 )
+from insider_scanner.persistence.watchlists import (
+    WatchEntry,
+    load_watchlists,
+    save_watchlists,
+    watchlists_path,
+)
+from insider_scanner.services.alerts import evaluate_alerts
 from insider_scanner.utils.config import DEFAULT_PATHS
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.threading import Worker
 
 log = get_logger("gui.main_window")
 
@@ -77,6 +92,13 @@ class MainWindow(QMainWindow):
         self._shutdown_timeout_ms = shutdown_timeout_ms
         self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
         self._feed_state: FeedState = load_feed_state(self._state_path)
+        # Watchlists and alerts live alongside the feed-state file.
+        self._data_dir: Path = self._state_path.parent
+        self._watchlists_path: Path = watchlists_path(self._data_dir)
+        self._alerts_path: Path = alerts_path(self._data_dir)
+        self._watchlists = load_watchlists(self._watchlists_path)
+        self._alerts = load_alerts(self._alerts_path)
+        self._alert_request_id = 0
         self.setWindowTitle("Insider Scanner")
         self.setMinimumSize(900, 550)
         self.resize(1200, 720)
@@ -178,6 +200,14 @@ class MainWindow(QMainWindow):
         self.screens_menu.aboutToShow.connect(self._rebuild_screens_menu)
         layout.addWidget(self.screens_button)
 
+        # Notification indicator — visible on every page, shows unseen alert count.
+        self.alerts_button = QToolButton()
+        self.alerts_button.setText("Alerts")
+        self.alerts_button.setObjectName("alertsButton")
+        self.alerts_button.setAccessibleName("Alerts and notifications")
+        self.alerts_button.clicked.connect(partial(self._select_page, "Alerts"))
+        layout.addWidget(self.alerts_button)
+
         self.theme_selector = QComboBox()
         self.theme_selector.setAccessibleName("Application theme")
         self.theme_selector.addItems(["System", "Light", "Dark"])
@@ -219,6 +249,7 @@ class MainWindow(QMainWindow):
                 "Could not initialize application window."
             ) from exc
 
+        self._init_monitor_pages()
         self._init_research_pages()
 
         self._add_section_label("Tools")
@@ -229,6 +260,7 @@ class MainWindow(QMainWindow):
         self.sidebar_layout.addStretch(1)
 
         self._init_global_search()
+        self._check_alerts()
 
     @staticmethod
     def _tool_initialization_error() -> MainWindowInitializationError:
@@ -274,6 +306,115 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             log.exception("Research pages initialization failed")
             raise self._tool_initialization_error() from exc
+
+    def _init_monitor_pages(self) -> None:
+        try:
+            self._add_section_label("Monitor")
+            self.watchlist_page = WatchlistPage(self._watchlists)
+            self.watchlist_page.watchlistsChanged.connect(self._on_watchlists_changed)
+            self.watchlist_page.openCompanyRequested.connect(self._open_company)
+            self.watchlist_page.openInsiderRequested.connect(self._open_insider)
+            self.watchlist_page.feedSearchRequested.connect(self._on_global_feed_search)
+            self._add_page("Watchlists", self.watchlist_page)
+
+            self.alerts_page = AlertsPage(
+                self._alerts, criteria_provider=self.feed_page.criteria
+            )
+            self.alerts_page.rulesChanged.connect(self._on_alerts_changed)
+            self.alerts_page.checkRequested.connect(self._check_alerts)
+            self.alerts_page.openCompanyRequested.connect(self._open_company)
+            self.alerts_page.openInsiderRequested.connect(self._open_insider)
+            self._add_page("Alerts", self.alerts_page)
+
+            self.feed_page.watchRequested.connect(self._on_watch_requested)
+        except Exception as exc:
+            log.exception("Monitor pages initialization failed")
+            raise self._tool_initialization_error() from exc
+
+    # ------------------------------------------------------------------
+    # Watchlists & alerts wiring
+    # ------------------------------------------------------------------
+
+    def _on_watch_requested(self, record) -> None:
+        """Add the record's company and insider to the active watchlist."""
+        added = False
+        if record.identifier:
+            self.watchlist_page.add_entry(
+                WatchEntry(
+                    kind="company",
+                    market=record.market,
+                    identifier=record.identifier,
+                    label=record.issuer or record.identifier,
+                )
+            )
+            added = True
+        if record.person:
+            self.watchlist_page.add_entry(
+                WatchEntry(
+                    kind="insider",
+                    market=record.market,
+                    person=record.person,
+                    label=record.person,
+                )
+            )
+            added = True
+        if added:
+            self.log_status("Added to watchlist", timeout_ms=3_000)
+
+    def _on_watchlists_changed(self, store) -> None:
+        self._watchlists = store
+        self._persist_watchlists()
+
+    def _on_alerts_changed(self, store) -> None:
+        self._alerts = store
+        self._persist_alerts()
+
+    def _persist_watchlists(self) -> None:
+        try:
+            save_watchlists(self._watchlists_path, self._watchlists)
+        except Exception:
+            log.exception("Failed to persist watchlists")
+
+    def _persist_alerts(self) -> None:
+        try:
+            save_alerts(self._alerts_path, self._alerts)
+        except Exception:
+            log.exception("Failed to persist alerts")
+
+    def _check_alerts(self) -> None:
+        """Evaluate enabled alert rules against the local feed off the UI thread."""
+        if self._repository is None:
+            return
+        store = self.alerts_page.store()
+        if not any(rule.enabled for rule in store.rules):
+            self.alerts_page.display_hits(())
+            self._update_alert_badge(0)
+            return
+        self._alert_request_id += 1
+        request_id = self._alert_request_id
+        watchlists = self.watchlist_page.store()
+        worker = Worker(evaluate_alerts, self._repository, store, watchlists)
+        worker.signals.result.connect(
+            lambda hits: self._on_alerts_evaluated(request_id, hits)
+        )
+        worker.signals.error.connect(
+            lambda error_info: self._on_alerts_error(request_id, error_info)
+        )
+        self._thread_pool.start(worker)
+
+    def _on_alerts_evaluated(self, request_id: int, hits) -> None:
+        if request_id != self._alert_request_id:
+            return
+        self.alerts_page.display_hits(hits)
+        self._update_alert_badge(self.alerts_page.new_match_count())
+
+    def _on_alerts_error(self, request_id: int, error_info: tuple) -> None:
+        if request_id != self._alert_request_id:
+            return
+        log.error("Alert evaluation failed: %s", error_info[1])
+
+    def _update_alert_badge(self, count: int) -> None:
+        self.alerts_button.setText("Alerts" if count <= 0 else f"Alerts ({count})")
 
     def _init_global_search(self) -> None:
         self.global_search_controller = GlobalSearchController(
@@ -353,6 +494,7 @@ class MainWindow(QMainWindow):
 
     def _reload_feed(self) -> None:
         self.feed_page.reload()
+        self._check_alerts()
 
     def _set_result_count(self, count: int) -> None:
         noun = "transaction" if count == 1 else "transactions"
@@ -525,6 +667,7 @@ class MainWindow(QMainWindow):
         self._sync_theme_selector()
 
     def request_cancellation(self) -> None:
+        self._alert_request_id += 1
         for name in (
             "feed_page",
             "company_page",
@@ -554,8 +697,10 @@ class MainWindow(QMainWindow):
             try:
                 self.persist_timer.stop()
                 self._persist_feed_state()
+                self._persist_watchlists()
+                self._persist_alerts()
             except Exception:
-                log.exception("Failed to persist feed state on close")
+                log.exception("Failed to persist GUI state on close")
             self._disconnect_theme()
             event.accept()
         else:

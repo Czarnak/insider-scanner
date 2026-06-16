@@ -51,6 +51,7 @@ class InvestigationDrawer(QWidget):
         object, object
     )  # (identifier: str, market: FeedMarket)
     openInsiderRequested = Signal(object, object)  # (person: str, market: FeedMarket)
+    watchRequested = Signal(object)  # (record: FeedRecord)
     closeRequested = Signal()
 
     def __init__(
@@ -392,9 +393,16 @@ class InvestigationDrawer(QWidget):
         )
         layout.addWidget(insider_btn)
 
+        # Watch — adds the record's entity to a watchlist via the host window.
+        watch_btn = QPushButton("Watch")
+        watch_btn.setAccessibleName("Add to watchlist")
+        watch_btn.setToolTip("Add this company and insider to a watchlist")
+        watch_btn.clicked.connect(partial(self._emit_watch, record))
+        layout.addWidget(watch_btn)
+
         # Placeholder buttons — not yet implemented
-        _placeholder_tooltip = "Available after watchlists and alerts ship"
-        for name in ("Watch", "Alert", "Compare"):
+        _placeholder_tooltip = "Available in a future update"
+        for name in ("Alert", "Compare"):
             btn = QPushButton(name)
             btn.setAccessibleName(name)
             btn.setEnabled(False)
@@ -469,6 +477,9 @@ class InvestigationDrawer(QWidget):
 
     def _emit_insider(self, person: str, market: FeedMarket) -> None:
         self.openInsiderRequested.emit(person, market)
+
+    def _emit_watch(self, record: FeedRecord) -> None:
+        self.watchRequested.emit(record)
 
     # ------------------------------------------------------------------
     # Event overrides

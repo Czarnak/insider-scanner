@@ -234,6 +234,7 @@ class FeedRecord:
     currency: str
     source: str
     source_url: str
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -518,6 +519,7 @@ class FeedRepository:
             currency=row["currency"] or "",
             source=row["source"] or "",
             source_url=row["source_url"] or "",
+            created_at=_aware_utc(row["created_at"]),
         )
 
     def detail(self, key: str) -> FeedDetail | None:

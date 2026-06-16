@@ -574,18 +574,38 @@ class TestKeyboardAndSignals:
         assert len(emitted) == 1
         assert emitted[0] == ("Jane Director", FeedMarket.US)
 
-    def test_watch_alert_compare_buttons_disabled(self, qtbot):
+    def test_alert_compare_buttons_disabled(self, qtbot):
         # Arrange
         repo = FakeRepository(detail_return=_detail())
         drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
         qtbot.addWidget(drawer)
         drawer.show_record(_record())
 
-        # Assert
-        for name in ("Watch", "Alert", "Compare"):
+        # Assert — Alert/Compare remain placeholders
+        for name in ("Alert", "Compare"):
             btn = _find_button(drawer, name)
             assert btn is not None, f"Could not find '{name}' button"
             assert btn.isEnabled() is False, f"'{name}' button should be disabled"
+
+    def test_watch_button_enabled_and_emits_record(self, qtbot):
+        # Arrange
+        repo = FakeRepository(detail_return=_detail())
+        drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
+        qtbot.addWidget(drawer)
+        rec = _record(key="us:7", identifier="MSFT", person="Bob Smith")
+        drawer.show_record(rec)
+
+        emitted: list = []
+        drawer.watchRequested.connect(emitted.append)
+
+        # Act
+        watch_btn = _find_button(drawer, "Watch")
+        assert watch_btn is not None
+        assert watch_btn.isEnabled() is True
+        watch_btn.click()
+
+        # Assert
+        assert emitted == [rec]
 
 
 class TestErrorPath:
