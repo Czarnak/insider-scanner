@@ -11,6 +11,8 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThreadPool, Si
 from PySide6.QtGui import QBrush, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QProgressBar,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
 from insider_scanner.gui.feed_filters import FeedFilterChips, FeedFilterPanel
 from insider_scanner.gui.investigation_drawer import InvestigationDrawer
 from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.persistence.errors import is_access_denied
 from insider_scanner.persistence.feed import (
     DEFAULT_PAGE_SIZE,
     FeedCriteria,
@@ -233,13 +236,40 @@ class FeedPageWidget(QWidget):
         self.progress.hide()
         layout.addWidget(self.progress)
 
+        # Status surface: a panel with an optional heading, a message, and an
+        # optional retry action. Used for loading / empty / error / permission.
+        self.state_panel = QFrame()
+        self.state_panel.setObjectName("feedState")
+        self.state_panel.setAccessibleName("Feed status")
+        state_layout = QVBoxLayout(self.state_panel)
+        state_layout.setContentsMargins(16, 16, 16, 16)
+        state_layout.setSpacing(8)
+
+        self.state_heading = QLabel()
+        self.state_heading.setObjectName("feedStateHeading")
+        self.state_heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.state_heading.setWordWrap(True)
+        self.state_heading.hide()
+        state_layout.addWidget(self.state_heading)
+
         self.state_label = QLabel()
-        self.state_label.setObjectName("feedState")
+        self.state_label.setObjectName("feedStateMessage")
         self.state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.state_label.setWordWrap(True)
         self.state_label.setAccessibleName("Feed status")
+        state_layout.addWidget(self.state_label)
+
+        self.retry_button = QPushButton("Retry")
+        self.retry_button.setAccessibleName("Retry loading transactions")
+        self.retry_button.clicked.connect(self.reload)
+        self.retry_button.hide()
+        state_layout.addWidget(
+            self.retry_button, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+
+        self.state_panel.hide()
         self.state_label.hide()
-        layout.addWidget(self.state_label)
+        layout.addWidget(self.state_panel)
 
         self.filter_panel = FeedFilterPanel()
         self.filter_panel.hide()
@@ -251,6 +281,25 @@ class FeedPageWidget(QWidget):
         self.chips.chipRemoved.connect(self._on_chip_removed)
         self.chips.resetRequested.connect(self._on_reset)
         layout.addWidget(self.chips)
+
+        # Stale-data banner: shown above the table when results are usable but
+        # known to be out of date. Color is paired with text (never color-only).
+        self.stale_banner = QFrame()
+        self.stale_banner.setObjectName("feedStaleBanner")
+        self.stale_banner.setAccessibleName("Stale data warning")
+        banner_layout = QHBoxLayout(self.stale_banner)
+        banner_layout.setContentsMargins(12, 8, 12, 8)
+        banner_layout.setSpacing(8)
+        self.stale_banner_label = QLabel()
+        self.stale_banner_label.setObjectName("feedStaleBannerText")
+        self.stale_banner_label.setWordWrap(True)
+        banner_layout.addWidget(self.stale_banner_label, stretch=1)
+        self.stale_reload_button = QPushButton("Reload")
+        self.stale_reload_button.setAccessibleName("Reload to refresh stale data")
+        self.stale_reload_button.clicked.connect(self.reload)
+        banner_layout.addWidget(self.stale_reload_button)
+        self.stale_banner.hide()
+        layout.addWidget(self.stale_banner)
 
         self.model = FeedTableModel(self)
         self.table = QTableView()
@@ -444,6 +493,7 @@ class FeedPageWidget(QWidget):
         self.progress.show()
         self.load_more_button.setEnabled(False)
         if not append:
+            self._hide_stale_banner()
             self._show_state("Loading transactions...")
         worker = Worker(self._repository.query, query)
         worker.signals.result.connect(
@@ -476,18 +526,37 @@ class FeedPageWidget(QWidget):
                 if self._criteria.search
                 else "No local transactions yet. Run a scan from Tools."
             )
+            self._hide_stale_banner()
             self._show_state(message)
         else:
-            self.state_label.hide()
+            self._hide_state()
+            if page.is_stale and page.freshness_at is not None:
+                self._show_stale_banner(page.freshness_at)
+            else:
+                self._hide_stale_banner()
 
     def _on_error(self, request_id: int, error_info) -> None:
         if request_id != self._request_id:
             return
-        log.error("Unified feed query failed: %s", error_info[1])
+        exc = error_info[1] if len(error_info) > 1 else None
+        log.error("Unified feed query failed: %s", exc)
         self.progress.hide()
         self.load_more_button.setEnabled(True)
         self.load_more_button.hide()
-        self._show_state("Could not load local transactions.")
+        self._hide_stale_banner()
+        if is_access_denied(exc):
+            self._show_state(
+                "Insider Scanner doesn't have permission to read the local "
+                "database. Check that the data folder is accessible, then retry.",
+                heading="Can't access local data",
+                show_retry=True,
+            )
+        else:
+            self._show_state(
+                "Could not load local transactions.",
+                heading="Couldn't load transactions",
+                show_retry=True,
+            )
 
     def _set_freshness(self, page: FeedPage) -> None:
         if page.freshness_at is None:
@@ -498,9 +567,44 @@ class FeedPageWidget(QWidget):
         self._freshness_text = text
         self.freshnessChanged.emit(text)
 
-    def _show_state(self, message: str) -> None:
+    def _show_state(
+        self,
+        message: str,
+        *,
+        heading: str = "",
+        show_retry: bool = False,
+    ) -> None:
+        """Show the status panel with an optional heading and retry action."""
+        self.state_heading.setText(heading)
+        self.state_heading.setVisible(bool(heading))
         self.state_label.setText(message)
+        self.retry_button.setVisible(show_retry)
+        # Screen readers announce the most useful single phrase.
+        self.state_panel.setAccessibleDescription(
+            f"{heading}. {message}" if heading else message
+        )
         self.state_label.show()
+        self.state_panel.show()
+
+    def _hide_state(self) -> None:
+        """Hide the status panel and all of its parts."""
+        self.state_heading.hide()
+        self.retry_button.hide()
+        self.state_label.hide()
+        self.state_panel.hide()
+
+    def _show_stale_banner(self, freshness_at: datetime) -> None:
+        """Show the amber stale-data banner above the (still usable) table."""
+        timestamp = freshness_at.astimezone().strftime("%Y-%m-%d %H:%M")
+        self.stale_banner_label.setText(
+            f"Showing saved results from {timestamp}. "
+            "Local data may be out of date — reload to refresh."
+        )
+        self.stale_banner.setAccessibleDescription(self.stale_banner_label.text())
+        self.stale_banner.show()
+
+    def _hide_stale_banner(self) -> None:
+        self.stale_banner.hide()
 
     def _open_selected_source(self, index) -> None:
         if not index.isValid():

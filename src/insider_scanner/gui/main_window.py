@@ -47,6 +47,7 @@ from insider_scanner.persistence.alerts import (
     load_alerts,
     save_alerts,
 )
+from insider_scanner.persistence.errors import is_access_denied
 from insider_scanner.persistence.feed import FeedCriteria, FeedRepository
 from insider_scanner.persistence.feed_state import (
     SCHEMA_VERSION,
@@ -372,14 +373,30 @@ class MainWindow(QMainWindow):
     def _persist_watchlists(self) -> None:
         try:
             save_watchlists(self._watchlists_path, self._watchlists)
-        except Exception:
+        except Exception as exc:
             log.exception("Failed to persist watchlists")
+            self._handle_save_failure("watchlists", exc)
 
     def _persist_alerts(self) -> None:
         try:
             save_alerts(self._alerts_path, self._alerts)
-        except Exception:
+        except Exception as exc:
             log.exception("Failed to persist alerts")
+            self._handle_save_failure("alerts", exc)
+
+    def _handle_save_failure(self, what: str, exc: BaseException) -> None:
+        """Surface a save failure without leaking technical detail.
+
+        Access/permission failures get an actionable hint; everything else gets
+        a generic message. The full exception is already in the logs.
+        """
+        if is_access_denied(exc):
+            self.log_status(
+                f"Couldn't save {what} — the data folder isn't writable.",
+                timeout_ms=6_000,
+            )
+        else:
+            self.log_status(f"Couldn't save {what}.", timeout_ms=6_000)
 
     def _check_alerts(self) -> None:
         """Evaluate enabled alert rules against the local feed off the UI thread."""
@@ -593,8 +610,9 @@ class MainWindow(QMainWindow):
             )
             self._feed_state = state
             save_feed_state(self._state_path, state)
-        except Exception:
+        except Exception as exc:
             log.exception("Failed to persist feed state")
+            self._handle_save_failure("filters", exc)
 
     def log_status(self, message: str, timeout_ms: int = 0) -> None:
         """Show a concise user-facing status message."""

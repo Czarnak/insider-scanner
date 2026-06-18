@@ -377,6 +377,142 @@ def test_restore_column_layout_with_corrupt_blob_does_not_raise(qtbot):
 
 
 # ---------------------------------------------------------------------------
+# Stale / error / permission state presentation
+# ---------------------------------------------------------------------------
+
+
+def test_permission_error_shows_permission_state_with_retry(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    page._on_error(
+        page._request_id,
+        (PermissionError, PermissionError("denied"), None),
+    )
+
+    assert page.state_heading.text() == "Can't access local data"
+    assert not page.state_heading.isHidden()
+    assert not page.retry_button.isHidden()
+    assert "permission" in page.state_label.text().lower()
+
+
+def test_transient_error_shows_message_and_retry(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    page._on_error(
+        page._request_id,
+        (RuntimeError, RuntimeError("database offline"), None),
+    )
+
+    assert page.state_label.text() == "Could not load local transactions."
+    assert not page.retry_button.isHidden()
+
+
+def test_retry_button_requeries_and_recovers(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository(
+        [
+            _page([_record("us:1", "AAPL")]),
+            _page([_record("us:2", "MSFT")]),
+        ]
+    )
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    page._on_error(
+        page._request_id,
+        (RuntimeError, RuntimeError("boom"), None),
+    )
+    assert not page.retry_button.isHidden()
+
+    qtbot.mouseClick(page.retry_button, Qt.MouseButton.LeftButton)
+    assert len(pool.workers) == 2  # retry issued a fresh query
+    _complete(pool, 1)
+
+    assert page.model.record_at(0).identifier == "MSFT"
+    assert page.retry_button.isHidden()
+    assert page.state_label.isHidden()
+
+
+def test_stale_results_with_data_show_banner(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")], stale=True)])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    assert not page.stale_banner.isHidden()
+    assert "out of date" in page.stale_banner_label.text().lower()
+
+
+def test_fresh_results_hide_stale_banner(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")], stale=False)])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    assert page.stale_banner.isHidden()
+
+
+def test_empty_results_hide_stale_banner_even_when_stale(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([], stale=True)])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+
+    assert page.stale_banner.isHidden()
+    assert (
+        page.state_label.text() == "No local transactions yet. Run a scan from Tools."
+    )
+
+
+def test_error_hides_stale_banner(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")], stale=True)])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+    assert not page.stale_banner.isHidden()
+
+    page._on_error(
+        page._request_id,
+        (RuntimeError, RuntimeError("boom"), None),
+    )
+
+    assert page.stale_banner.isHidden()
+
+
+def test_stale_reload_button_requeries(qtbot):
+    pool = CapturingPool()
+    repository = FakeFeedRepository(
+        [
+            _page([_record("us:1", "AAPL")], stale=True),
+            _page([_record("us:2", "MSFT")], stale=False),
+        ]
+    )
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    _complete(pool, 0)
+    assert not page.stale_banner.isHidden()
+
+    qtbot.mouseClick(page.stale_reload_button, Qt.MouseButton.LeftButton)
+    _complete(pool, 1)
+
+    assert page.model.record_at(0).identifier == "MSFT"
+    assert page.stale_banner.isHidden()
+
+
+# ---------------------------------------------------------------------------
 # Investigation drawer integration
 # ---------------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 from insider_scanner.gui.theme.fonts import SANS_STACK
 from insider_scanner.gui.theme.tokens import (
     FONT_SIZE_BASE,
+    FONT_SIZE_LG,
     FONT_SIZE_SM,
     RADIUS_INPUT,
     RADIUS_PANEL,
@@ -104,12 +105,37 @@ QToolButton#navigationButton:focus {{
     border: 2px solid {p.focus_ring};
 }}
 
-QLabel#feedState {{
+QFrame#feedState {{
     background-color: {p.surface_elevated};
-    color: {p.text_secondary};
     border: 1px solid {p.border};
     border-radius: {RADIUS_PANEL}px;
     padding: {_S4}px;
+}}
+
+QLabel#feedStateHeading {{
+    color: {p.error};
+    font-size: {FONT_SIZE_LG}px;
+    font-weight: 700;
+    background-color: transparent;
+}}
+
+QLabel#feedStateMessage {{
+    color: {p.text_secondary};
+    background-color: transparent;
+}}
+
+/* Stale-data banner — amber, paired with text (never color-only). */
+QFrame#feedStaleBanner {{
+    background-color: {p.surface_elevated};
+    border: 1px solid {p.warning};
+    border-left: 3px solid {p.warning};
+    border-radius: {RADIUS_INPUT}px;
+}}
+
+QLabel#feedStaleBannerText {{
+    color: {p.warning};
+    background-color: transparent;
+    font-weight: 600;
 }}
 
 /* ===== Tab Widget ===== */
