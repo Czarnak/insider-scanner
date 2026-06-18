@@ -8,6 +8,7 @@ from __future__ import annotations
 from insider_scanner.gui.theme.fonts import SANS_STACK
 from insider_scanner.gui.theme.tokens import (
     FONT_SIZE_BASE,
+    FONT_SIZE_LG,
     FONT_SIZE_SM,
     RADIUS_INPUT,
     RADIUS_PANEL,
@@ -46,6 +47,95 @@ QWidget {{
 
 QMainWindow {{
     background-color: {p.bg_page};
+}}
+
+/* ===== Application shell ===== */
+QFrame#sidebar {{
+    background-color: {p.surface_elevated};
+    border-right: 1px solid {p.border};
+}}
+
+QFrame#topBar {{
+    background-color: {p.surface};
+    border-bottom: 1px solid {p.border};
+}}
+
+QLabel#sidebarBrand {{
+    color: {p.text_primary};
+    font-size: 16px;
+    font-weight: 700;
+}}
+
+QLabel#navigationSection,
+QLabel#resultCount,
+QLabel#freshnessLabel {{
+    color: {p.text_secondary};
+    font-size: {FONT_SIZE_SM}px;
+}}
+
+QLabel#pageTitle {{
+    color: {p.text_primary};
+    font-size: 18px;
+    font-weight: 700;
+}}
+
+QToolButton#navigationButton {{
+    background-color: transparent;
+    color: {p.text_secondary};
+    border: 1px solid transparent;
+    border-radius: {RADIUS_INPUT}px;
+    padding: {_S2}px {_S3}px;
+    text-align: left;
+    min-height: 28px;
+}}
+
+QToolButton#navigationButton:hover {{
+    background-color: {p.surface_hover};
+    color: {p.text_primary};
+}}
+
+QToolButton#navigationButton:checked {{
+    background-color: {p.selection_bg};
+    color: {p.selection_fg};
+    border-color: {p.accent};
+    font-weight: 600;
+}}
+
+QToolButton#navigationButton:focus {{
+    border: 2px solid {p.focus_ring};
+}}
+
+QFrame#feedState {{
+    background-color: {p.surface_elevated};
+    border: 1px solid {p.border};
+    border-radius: {RADIUS_PANEL}px;
+    padding: {_S4}px;
+}}
+
+QLabel#feedStateHeading {{
+    color: {p.error};
+    font-size: {FONT_SIZE_LG}px;
+    font-weight: 700;
+    background-color: transparent;
+}}
+
+QLabel#feedStateMessage {{
+    color: {p.text_secondary};
+    background-color: transparent;
+}}
+
+/* Stale-data banner — amber, paired with text (never color-only). */
+QFrame#feedStaleBanner {{
+    background-color: {p.surface_elevated};
+    border: 1px solid {p.warning};
+    border-left: 3px solid {p.warning};
+    border-radius: {RADIUS_INPUT}px;
+}}
+
+QLabel#feedStaleBannerText {{
+    color: {p.warning};
+    background-color: transparent;
+    font-weight: 600;
 }}
 
 /* ===== Tab Widget ===== */

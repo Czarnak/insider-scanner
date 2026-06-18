@@ -56,9 +56,24 @@ insider-scanner
 python -m insider_scanner.main
 ```
 
-The GUI tabs cover the core use cases:
+The GUI opens on a unified, read-only **Feed** built from transactions already
+stored in the local SQLite database. Left navigation keeps the acquisition and
+analysis workflows available under **Tools**.
 
-#### Insider Scan tab
+#### Unified Feed
+
+- Combines US corporate, US Congress, and European transactions into one
+  date-ordered timeline without copying or migrating persisted records.
+- Searches ticker/ISIN, company or issuer, insider or official, role,
+  transaction type, market, and source.
+- Uses backend sorting and 200-row paging so large local datasets do not need
+  to be loaded into memory.
+- Shows local-data freshness, empty and error states, semantic transaction
+  labels, and direct filing/source links.
+
+![Unified Feed](img/feed.png)
+
+#### Insider Scan tool
 
 - Search a ticker and run both secform4.com and openinsider.com scrapers in one click.
 - Fetch the latest trades (configurable count) and run watchlist scans backed by the user data directory's `tickers_watchlist.txt`.
@@ -68,7 +83,7 @@ The GUI tabs cover the core use cases:
 
 ![insider_scanners](img/insiderTab.png)
 
-#### Congress Scan tab
+#### Congress Scan tool
 
 - Pick a legislator (House/Senate dropdown) or the whole committee list, select sources (House/Senate), and preview results in a threaded worker with progress + cancel.
 - Use filters such as trade type, sector, and minimum value, then double-click any row to open the original PDF/PTR.
@@ -76,7 +91,7 @@ The GUI tabs cover the core use cases:
 
 ![insider_scanners](img/congressTab.png)
 
-#### European Insiders tab
+#### European Scan tool
 
 - Choose All/UK/DE/FR/NL, type an ISIN, or scan the user data directory's `eu_watchlist.txt`.
 - Enable optional date bounds, filter by trade type and minimum value, and watch the progress bar while each ISIN is processed.
@@ -85,7 +100,7 @@ The GUI tabs cover the core use cases:
 
 ![insider_scanners](img/europeanTab.png)
 
-#### Analysis tab
+#### Analysis tool
 
 - Select a US ticker from the dropdown list and click "Load Chart".
 - Visualizes the past 2 years of daily price history using an interactive line graph with crosshairs.
@@ -98,7 +113,9 @@ The GUI tabs cover the core use cases:
 #### Appearance & themes
 
 - A single semantic design-token system drives both **light** and **dark** themes (WCAG AA contrast).
-- Switch via **View ▸ Theme** (System / Light / Dark); the choice is remembered between sessions, and **System** follows the OS color scheme.
+- Switch from the top bar or **View ▸ Theme** (System / Light / Dark); the
+  choice is remembered between sessions, and **System** follows the OS color
+  scheme.
 - Transaction colors are semantic and always paired with text/sign (green = purchase, red = sale, amber = flagged/congress); tickers, dates, and monetary values use a monospace face for tabular alignment.
 - The UI bundles the open-source **Inter** (sans) and **JetBrains Mono** (monospace) fonts, falling back to system fonts (Segoe UI / Consolas) when unavailable.
 

@@ -178,18 +178,24 @@ class TestMainWindow:
 
         win = MainWindow()
         qtbot.addWidget(win)
-        assert win.tabs.count() == 4
+        assert win.page_stack.count() == 9
+        assert win.page_stack.currentWidget() is win.feed_page
 
-    def test_tab_name(self, qtbot):
+    def test_navigation_names(self, qtbot):
         from insider_scanner.gui.main_window import MainWindow
         from insider_scanner.gui.european_tab import EuropeanTab
 
         win = MainWindow()
         qtbot.addWidget(win)
-        assert [win.tabs.tabText(i) for i in range(win.tabs.count())] == [
+        assert list(win.navigation_buttons) == [
+            "Feed",
+            "Watchlists",
+            "Alerts",
+            "Companies",
+            "Insiders",
             "Insider Scan",
             "Congress Scan",
-            "European Insiders",
+            "European Scan",
             "Analysis",
         ]
         assert isinstance(win.european_tab, EuropeanTab)
@@ -207,8 +213,7 @@ class TestMainWindow:
 
         win = MainWindow()
         qtbot.addWidget(win)
-        tab_titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-        assert "Analysis" in tab_titles
+        assert "Analysis" in win.navigation_buttons
         assert win.analysis_tab._thread_pool is win._thread_pool
 
 
