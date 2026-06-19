@@ -47,7 +47,7 @@ class NonOwnershipDocumentError(SecOwnershipDocumentError):
 # Patterns
 # ---------------------------------------------------------------------------
 
-_ACCESSION_RE = re.compile(r"ACCESSION NUMBER:\s*([0-9\-]+)", re.IGNORECASE)
+_ACCESSION_RE = re.compile(r"ACCESSION NUMBER:\s*([0-9-]+)", re.IGNORECASE)
 _DOCUMENT_BLOCK_RE = re.compile(
     r"<DOCUMENT>(.*?)</DOCUMENT>", re.DOTALL | re.IGNORECASE
 )
@@ -170,7 +170,9 @@ def _extract_xml_from_block(block_body: str) -> str:
     """Pull the raw XML string from a <DOCUMENT> body."""
     text_match = _TEXT_BLOCK_RE.search(block_body)
     if text_match is None:
-        return ""
+        raise SecOwnershipDocumentError(
+            "Ownership document block has no <TEXT> section."
+        )
 
     text_content = text_match.group(1)
 

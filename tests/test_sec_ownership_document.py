@@ -249,6 +249,120 @@ def test_bytes_with_bom_are_decoded_correctly() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 14. Ownership block with <TEXT> but no <XML> wrapper → fallback succeeds
+# ---------------------------------------------------------------------------
+
+
+def test_ownership_block_with_text_but_no_xml_wrapper_succeeds() -> None:
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    inner_xml = (
+        "<ownershipDocument>"
+        "<documentType>4</documentType>"
+        "<issuer><issuerName>ACME Corp</issuerName></issuer>"
+        "</ownershipDocument>"
+    )
+    content = f"""\
+<SEC-DOCUMENT>
+<SEC-HEADER>
+ACCESSION NUMBER:\t\t0001234567-26-000010
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>form4.xml
+<DESCRIPTION>PRIMARY DOCUMENT
+<TEXT>
+{inner_xml}
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+"""
+
+    result = extract_ownership_document(content)
+
+    assert "<ownershipDocument" in result.xml_text
+    assert result.document_type == "4"
+
+
+# ---------------------------------------------------------------------------
+# 15. Ownership block with no <TEXT> section at all → SecOwnershipDocumentError,
+#     raw block body not in error message
+# ---------------------------------------------------------------------------
+
+
+def test_ownership_block_with_no_text_section_raises() -> None:
+    from insider_scanner.core.sec_ownership_document import SecOwnershipDocumentError, extract_ownership_document
+
+    block_body_sentinel = "SENSITIVE_BLOCK_CONTENT"
+    content = f"""\
+<SEC-DOCUMENT>
+<SEC-HEADER>
+ACCESSION NUMBER:\t\t0001234567-26-000011
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>1
+<FILENAME>form4.xml
+<DESCRIPTION>PRIMARY DOCUMENT
+{block_body_sentinel}
+</DOCUMENT>
+</SEC-DOCUMENT>
+"""
+
+    with pytest.raises(SecOwnershipDocumentError) as exc_info:
+        extract_ownership_document(content)
+
+    assert block_body_sentinel not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# 16. Typeless <DOCUMENT> block followed by valid ownership block → typeless
+#     block is skipped, ownership block selected
+# ---------------------------------------------------------------------------
+
+
+def test_typeless_block_skipped_and_ownership_block_selected() -> None:
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    valid_xml = (
+        "<ownershipDocument>"
+        "<documentType>4</documentType>"
+        "<issuer><issuerName>ACME Corp</issuerName></issuer>"
+        "</ownershipDocument>"
+    )
+    content = f"""\
+<SEC-DOCUMENT>
+<SEC-HEADER>
+ACCESSION NUMBER:\t\t0001234567-26-000012
+</SEC-HEADER>
+<DOCUMENT>
+<SEQUENCE>1
+<FILENAME>readme.txt
+<TEXT>
+This block has no TYPE line.
+</TEXT>
+</DOCUMENT>
+<DOCUMENT>
+<TYPE>4
+<SEQUENCE>2
+<FILENAME>form4.xml
+<TEXT>
+<XML>
+{valid_xml}
+</XML>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+"""
+
+    result = extract_ownership_document(content)
+
+    assert result.document_type == "4"
+    assert "<ownershipDocument" in result.xml_text
+
+
+# ---------------------------------------------------------------------------
 # 13. bytes that are not valid UTF-8 → SecOwnershipDocumentError (no raw bytes
 #     in message)
 # ---------------------------------------------------------------------------
