@@ -65,6 +65,7 @@ dev = [
     "wheel",
     "setuptools>=68.0",
     "pip-audit>=2.0",
+    "lxml-stubs>=0.5,<1",
 ]
 release = ["build>=1.2", "twine>=5.1"]
 
