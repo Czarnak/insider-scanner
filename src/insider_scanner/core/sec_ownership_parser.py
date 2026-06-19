@@ -20,6 +20,22 @@ from insider_scanner.core.sec_ownership_document import OwnershipDocument
 if TYPE_CHECKING:
     from lxml.etree import _Element  # noqa: PLC2701
 
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _TransactionCommon:
+    """Shared fields extracted from both derivative and non-derivative rows."""
+
+    shares: Decimal | None
+    price_per_share: Decimal | None
+    acquired_disposed: str | None
+    shares_owned_following: Decimal | None
+    direct_or_indirect: str | None
+
 # ---------------------------------------------------------------------------
 # Category mapping
 # ---------------------------------------------------------------------------
@@ -274,6 +290,61 @@ def _parse_footnotes(root: _Element, accession: str | None) -> tuple[Footnote, .
     return tuple(result)
 
 
+def _parse_transaction_common(
+    el: _Element, accession: str | None
+) -> _TransactionCommon:
+    """Extract fields shared by both non-derivative and derivative rows.
+
+    Returns None for each field when the element or its <value> child is absent.
+    Raises SecOwnershipParseError when a value is present but unparseable.
+    """
+    amounts = el.find("transactionAmounts")
+    if amounts is not None:
+        shares = _value_decimal(
+            el.find("transactionAmounts/transactionShares"),
+            accession,
+            "transactionShares",
+        )
+        price_per_share = _value_decimal(
+            el.find("transactionAmounts/transactionPricePerShare"),
+            accession,
+            "transactionPricePerShare",
+        )
+        acquired_disposed = _value_text(
+            el.find("transactionAmounts/transactionAcquiredDisposedCode")
+        )
+    else:
+        shares = None
+        price_per_share = None
+        acquired_disposed = None
+
+    post = el.find("postTransactionAmounts")
+    shares_owned_following = (
+        _value_decimal(
+            el.find("postTransactionAmounts/sharesOwnedFollowingTransaction"),
+            accession,
+            "sharesOwnedFollowingTransaction",
+        )
+        if post is not None
+        else None
+    )
+
+    nature = el.find("ownershipNature")
+    direct_or_indirect = (
+        _value_text(el.find("ownershipNature/directOrIndirectOwnership"))
+        if nature is not None
+        else None
+    )
+
+    return _TransactionCommon(
+        shares=shares,
+        price_per_share=price_per_share,
+        acquired_disposed=acquired_disposed,
+        shares_owned_following=shares_owned_following,
+        direct_or_indirect=direct_or_indirect,
+    )
+
+
 def _parse_non_derivative_table(
     root: _Element, base: str, accession: str | None
 ) -> tuple[NonDerivativeTransaction, ...]:
@@ -309,17 +380,7 @@ def _parse_non_derivative_txn(
     coding = el.find("transactionCoding")
     transaction_code = _text(coding, "transactionCode") if coding is not None else None
 
-    amounts = el.find("transactionAmounts")
-    shares = _value_decimal(el.find("transactionAmounts/transactionShares"), accession, "transactionShares") if amounts is not None else None
-    price = _value_decimal(el.find("transactionAmounts/transactionPricePerShare"), accession, "transactionPricePerShare") if amounts is not None else None
-    acquired_disposed = _value_text(el.find("transactionAmounts/transactionAcquiredDisposedCode")) if amounts is not None else None
-
-    post = el.find("postTransactionAmounts")
-    shares_following = _value_decimal(el.find("postTransactionAmounts/sharesOwnedFollowingTransaction"), accession, "sharesOwnedFollowingTransaction") if post is not None else None
-
-    nature = el.find("ownershipNature")
-    direct_or_indirect = _value_text(el.find("ownershipNature/directOrIndirectOwnership")) if nature is not None else None
-
+    common = _parse_transaction_common(el, accession)
     footnote_ids = _collect_footnote_ids(el)
 
     return NonDerivativeTransaction(
@@ -328,11 +389,11 @@ def _parse_non_derivative_txn(
         transaction_date=transaction_date,
         transaction_code=transaction_code,
         category=category_for_code(transaction_code),
-        acquired_disposed=acquired_disposed,
-        shares=shares,
-        price_per_share=price,
-        shares_owned_following=shares_following,
-        direct_or_indirect=direct_or_indirect,
+        acquired_disposed=common.acquired_disposed,
+        shares=common.shares,
+        price_per_share=common.price_per_share,
+        shares_owned_following=common.shares_owned_following,
+        direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
     )
 
@@ -346,26 +407,33 @@ def _parse_derivative_txn(
     coding = el.find("transactionCoding")
     transaction_code = _text(coding, "transactionCode") if coding is not None else None
 
-    amounts = el.find("transactionAmounts")
-    shares = _value_decimal(el.find("transactionAmounts/transactionShares"), accession, "transactionShares") if amounts is not None else None
-    price = _value_decimal(el.find("transactionAmounts/transactionPricePerShare"), accession, "transactionPricePerShare") if amounts is not None else None
-    acquired_disposed = _value_text(el.find("transactionAmounts/transactionAcquiredDisposedCode")) if amounts is not None else None
+    common = _parse_transaction_common(el, accession)
 
     conv_el = el.find("conversionOrExercisePrice")
-    conv_price = _value_decimal(conv_el, accession, "conversionOrExercisePrice") if conv_el is not None else None
+    conv_price = (
+        _value_decimal(conv_el, accession, "conversionOrExercisePrice")
+        if conv_el is not None
+        else None
+    )
 
     exercise_date = _value_date(el, "exerciseDate", accession, "exerciseDate")
     expiration_date = _value_date(el, "expirationDate", accession, "expirationDate")
 
     underlying = el.find("underlyingSecurity")
-    underlying_title = _value_text(underlying.find("underlyingSecurityTitle")) if underlying is not None else None
-    underlying_shares = _value_decimal(underlying.find("underlyingSecurityShares") if underlying is not None else None, accession, "underlyingSecurityShares")
-
-    post = el.find("postTransactionAmounts")
-    shares_following = _value_decimal(el.find("postTransactionAmounts/sharesOwnedFollowingTransaction"), accession, "sharesOwnedFollowingTransaction") if post is not None else None
-
-    nature = el.find("ownershipNature")
-    direct_or_indirect = _value_text(el.find("ownershipNature/directOrIndirectOwnership")) if nature is not None else None
+    underlying_title = (
+        _value_text(underlying.find("underlyingSecurityTitle"))
+        if underlying is not None
+        else None
+    )
+    underlying_shares = (
+        _value_decimal(
+            underlying.find("underlyingSecurityShares"),
+            accession,
+            "underlyingSecurityShares",
+        )
+        if underlying is not None
+        else None
+    )
 
     footnote_ids = _collect_footnote_ids(el)
 
@@ -375,16 +443,16 @@ def _parse_derivative_txn(
         transaction_date=transaction_date,
         transaction_code=transaction_code,
         category=category_for_code(transaction_code),
-        acquired_disposed=acquired_disposed,
-        shares=shares,
-        price_per_share=price,
+        acquired_disposed=common.acquired_disposed,
+        shares=common.shares,
+        price_per_share=common.price_per_share,
         conversion_or_exercise_price=conv_price,
         exercise_date=exercise_date,
         expiration_date=expiration_date,
         underlying_security_title=underlying_title,
         underlying_security_shares=underlying_shares,
-        shares_owned_following=shares_following,
-        direct_or_indirect=direct_or_indirect,
+        shares_owned_following=common.shares_owned_following,
+        direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
     )
 

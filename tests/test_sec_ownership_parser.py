@@ -24,9 +24,12 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 # ---------------------------------------------------------------------------
 
 
-def _load_doc(filename: str, accession_number: str | None = "0000320193-26-000061") -> OwnershipDocument:
+def _load_doc(
+    filename: str,
+    accession_number: str | None = "0000320193-26-000061",
+    document_type: str = "4",
+) -> OwnershipDocument:
     xml_text = (FIXTURE_DIR / filename).read_text(encoding="utf-8")
-    document_type = "4/A" if "amendment" in filename else "4"
     return OwnershipDocument(
         accession_number=accession_number,
         document_type=document_type,
@@ -269,7 +272,7 @@ def test_category_for_code(code: str | None, expected: str) -> None:
 def test_amendment_fixture_metadata() -> None:
     from insider_scanner.core.sec_ownership_parser import parse_ownership_document
 
-    doc = _load_doc("sec_form4_amendment.xml")
+    doc = _load_doc("sec_form4_amendment.xml", document_type="4/A")
     filing = parse_ownership_document(doc)
 
     assert filing.is_amendment is True
@@ -417,7 +420,10 @@ def test_malformed_shares_raises_parse_error() -> None:
 
 
 def test_malformed_date_raises_parse_error() -> None:
-    from insider_scanner.core.sec_ownership_parser import SecOwnershipParseError, parse_ownership_document
+    from insider_scanner.core.sec_ownership_parser import (
+        SecOwnershipParseError,
+        parse_ownership_document,
+    )
 
     doc = OwnershipDocument(
         accession_number="0000000001-26-000001",
@@ -428,6 +434,21 @@ def test_malformed_date_raises_parse_error() -> None:
         parse_ownership_document(doc)
 
     assert _MALFORMED_DATE_XML not in str(exc_info.value)
+
+
+def test_missing_document_type_raises() -> None:
+    from insider_scanner.core.sec_ownership_parser import (
+        SecOwnershipParseError,
+        parse_ownership_document,
+    )
+
+    doc = OwnershipDocument(
+        accession_number="x",
+        document_type="",
+        xml_text="<ownershipDocument/>",
+    )
+    with pytest.raises(SecOwnershipParseError):
+        parse_ownership_document(doc)
 
 
 # ---------------------------------------------------------------------------
