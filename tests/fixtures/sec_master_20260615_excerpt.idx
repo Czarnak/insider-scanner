@@ -1,0 +1,20 @@
+Description:           Master Index of EDGAR Dissemination Feed
+Last Data Received:    June 15, 2026
+Comments:              webmaster@sec.gov
+Anonymous FTP:         ftp://ftp.sec.gov/edgar/
+
+CIK|Company Name|Form Type|Date Filed|Filename
+--------------------------------------------------------------------------------
+320193|APPLE INC|3|2026-06-15|edgar/data/320193/0000320193-26-000061.txt
+1652044|ALPHABET INC.|3/A|2026-06-15|edgar/data/1652044/0001652044-26-000072.txt
+ 789019 | MICROSOFT CORP | 4 | 2026-06-15 | edgar/data/789019/0001062993-26-009876.txt
+1018724|AMAZON COM INC|4/A|2026-06-15|edgar/data/1018724/0001018724-26-000088.txt
+1326801|META PLATFORMS INC|5|2026-06-15|edgar/data/1326801/0001326801-26-000044.txt
+1067983|BERKSHIRE HATHAWAY INC|5/A|2026-06-15|edgar/data/1067983/0001193125-26-141414.txt
+320193|APPLE INC|10-K|not-a-date|not/a/valid/archive/path
+123456|MISSING PATH|4|2026-06-15
+123456|TOO|MANY|4|2026-06-15|edgar/data/123456/extra.txt
+not-a-cik|BAD CIK OWNERSHIP ROW|4|2026-06-15|edgar/data/123456/0000123456-26-000001.txt
+123456|BAD DATE OWNERSHIP ROW|4|2026-02-30|edgar/data/123456/0000123456-26-000002.txt
+123456|BAD PATH OWNERSHIP ROW|4|2026-06-15|https://evil.example/filing.txt
+999999|DUPLICATE SHOULD NOT WIN|5/A|2026-06-16|edgar/data/320193/0000320193-26-000061.txt
