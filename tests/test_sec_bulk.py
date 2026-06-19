@@ -274,3 +274,54 @@ def test_unparseable_filing_date_yields_none_and_row_survives(
     assert len(results) == 1
     assert results[0].filing_date is None
     assert results[0].accession_number == "0000000002-26-000001"
+
+
+# ---------------------------------------------------------------------------
+# 10. Generator early-close releases the ZIP handle cleanly (Fix 1)
+# ---------------------------------------------------------------------------
+
+
+def test_early_generator_close_raises_no_exception_and_stops() -> None:
+    """Abandon iteration early, call gen.close(), and verify clean finalization.
+
+    Confirms the ZIP handle is released without error and that the generator
+    is properly exhausted after close().
+    """
+    gen = iter_ownership_filings(FIXTURE_ZIP)
+    # Consume exactly one record to advance into the with-zf block
+    first = next(gen)
+    assert isinstance(first, BulkFilingMetadata)
+    # Abandon early — close() must not raise
+    gen.close()
+    # Generator must now be exhausted
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+# ---------------------------------------------------------------------------
+# 11. Non-list accessionNumber is silently skipped (Fix 3)
+# ---------------------------------------------------------------------------
+
+
+def test_non_list_accession_number_is_silently_skipped(tmp_path: Path) -> None:
+    """A member whose accessionNumber is a string (not a list) yields no rows.
+
+    Exercises the isinstance guard in _filter_ownership_rows.
+    """
+    data = {
+        "cik": "3",
+        "filings": {
+            "recent": {
+                "accessionNumber": "not-a-list",
+                "filingDate": ["2026-01-01"],
+                "form": ["4"],
+                "primaryDocument": ["form4.xml"],
+            },
+            "files": [],
+        },
+    }
+    zip_path = _make_zip(
+        tmp_path, {"CIK0000000003.json": json.dumps(data).encode()}
+    )
+    results = list(iter_ownership_filings(zip_path))
+    assert results == []

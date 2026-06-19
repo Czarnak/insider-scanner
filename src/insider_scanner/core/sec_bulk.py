@@ -81,6 +81,19 @@ def iter_ownership_filings(zip_path: Path) -> Iterator[BulkFilingMetadata]:
     SecBulkError
         If *zip_path* is not a valid ZIP file, or if a recognized member
         contains malformed JSON.
+
+    Notes
+    -----
+    **ZIP resource lifetime**: the underlying :class:`zipfile.ZipFile` handle
+    stays open for the entire lifetime of the generator — it is released when
+    the generator is exhausted, garbage-collected, or explicitly closed.
+    Callers who abandon iteration early (e.g. ``break`` out of a loop or stop
+    calling :func:`next`) should call ``.close()`` on the generator object to
+    release the file handle promptly::
+
+        gen = iter_ownership_filings(path)
+        first = next(gen)
+        gen.close()   # releases the ZIP handle immediately
     """
     if not isinstance(zip_path, Path):
         raise TypeError(
@@ -117,7 +130,7 @@ def iter_ownership_filings(zip_path: Path) -> Iterator[BulkFilingMetadata]:
             if m_main:
                 rows = _extract_recent_rows(data)
             else:
-                rows = _extract_top_level_rows(data)
+                rows = _coerce_to_arrays_dict(data)
 
             yield from _filter_ownership_rows(cik, rows)
 
@@ -140,7 +153,7 @@ def _extract_recent_rows(data: object) -> dict[str, list[object]]:
     return recent
 
 
-def _extract_top_level_rows(data: object) -> dict[str, list[object]]:
+def _coerce_to_arrays_dict(data: object) -> dict[str, list[object]]:
     """Return the parallel-array dict from a continuation file's top level."""
     if not isinstance(data, dict):
         return {}
@@ -153,6 +166,8 @@ def _filter_ownership_rows(
     """Iterate over parallel arrays and yield ownership-form records."""
     accessions: list[object] = rows.get("accessionNumber") or []
     if not isinstance(accessions, list):
+        return
+    if not accessions:
         return
 
     forms: list[object] = rows.get("form") or []
