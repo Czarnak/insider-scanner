@@ -34,6 +34,10 @@ def download_filing(
     max_age_seconds: float | None = None,
 ) -> DownloadedSecFiling:
     """Download one SEC filing to a deterministic local cache path."""
+    # Exact-type checks (not isinstance): the cache key and archive URL are
+    # derived from these inputs, so a subclass overriding ``archive_path`` or
+    # the client's fetch could redirect writes or downloads. Extension is meant
+    # to happen through the injected ``SecTransport`` Protocol, not subclassing.
     if type(row) is not SecMasterIndexRow:
         raise TypeError("row must be exactly SecMasterIndexRow")
     if type(client) is not SecClient:

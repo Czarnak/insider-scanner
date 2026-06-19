@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 from lxml import etree
 
+from insider_scanner.core._sec_xml import hardened_xml_parser
+
 OWNERSHIP_FORM_TYPES: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 
 # ---------------------------------------------------------------------------
@@ -209,13 +211,7 @@ def _build_document(
 
 def _validate_ownership_xml(xml_text: str, accession_number: str | None) -> None:
     """Parse xml_text with a hardened lxml parser; raise on failure."""
-    parser = etree.XMLParser(
-        resolve_entities=False,
-        no_network=True,
-        load_dtd=False,
-        dtd_validation=False,
-        huge_tree=False,
-    )
+    parser = hardened_xml_parser()
     try:
         root = etree.fromstring(xml_text.encode("utf-8"), parser)
     except etree.XMLSyntaxError as exc:

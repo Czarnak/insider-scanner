@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from lxml import etree
 
+from insider_scanner.core._sec_xml import hardened_xml_parser
 from insider_scanner.core.sec_ownership_document import OwnershipDocument
 
 if TYPE_CHECKING:
@@ -53,18 +54,6 @@ _CATEGORY_MAP: dict[str, str] = {
     "W": "gift",
     "Z": "gift",
 }
-
-# ---------------------------------------------------------------------------
-# Hardened XML parser (same config as sec_ownership_document)
-# ---------------------------------------------------------------------------
-
-_XML_PARSER = etree.XMLParser(
-    resolve_entities=False,
-    no_network=True,
-    load_dtd=False,
-    dtd_validation=False,
-    huge_tree=False,
-)
 
 # ---------------------------------------------------------------------------
 # Error
@@ -178,7 +167,7 @@ def parse_ownership_document(document: OwnershipDocument) -> OwnershipFiling:
     sha256 = hashlib.sha256(xml_bytes).hexdigest()
 
     try:
-        root = etree.fromstring(xml_bytes, _XML_PARSER)
+        root = etree.fromstring(xml_bytes, hardened_xml_parser())
     except etree.XMLSyntaxError as exc:
         acc = document.accession_number
         raise SecOwnershipParseError(
