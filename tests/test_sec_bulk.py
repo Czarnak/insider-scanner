@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import stat
 import types
 import zipfile
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from pathlib import Path
 
@@ -16,11 +17,20 @@ from insider_scanner.core.sec_bulk import (
     BulkFilingMetadata,
     OWNERSHIP_FORMS,
     SecBulkError,
+    SecBulkSecurityError,
     iter_ownership_filings,
+)
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityReason,
 )
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FIXTURE_ZIP = FIXTURE_DIR / "sec_submissions_bulk_small.zip"
+
+
+def _small_policy(**overrides: object):
+    return replace(DEFAULT_SEC_SECURITY_POLICY, **overrides)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +113,7 @@ def test_bulk_filing_metadata_is_frozen_and_slotted() -> None:
 
 
 def test_fixture_yields_exactly_four_ownership_records() -> None:
-    results = list(iter_ownership_filings(FIXTURE_ZIP))
+    results = list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
     assert len(results) == 4
     for r in results:
         assert r.form_type in OWNERSHIP_FORMS
@@ -120,7 +130,7 @@ def _by_accession(results: list[BulkFilingMetadata]) -> dict[str, BulkFilingMeta
 
 
 def test_fixture_record_form4_apple_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP)))
+    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
     r = by_acc["0000320193-26-000061"]
     assert r.cik == "0000320193"
     assert r.form_type == "4"
@@ -129,7 +139,7 @@ def test_fixture_record_form4_apple_main() -> None:
 
 
 def test_fixture_record_form4a_apple_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP)))
+    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
     r = by_acc["0000320193-26-000035"]
     assert r.cik == "0000320193"
     assert r.form_type == "4/A"
@@ -138,7 +148,7 @@ def test_fixture_record_form4a_apple_main() -> None:
 
 
 def test_fixture_record_form4_tesla_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP)))
+    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
     r = by_acc["0001318605-26-000012"]
     assert r.cik == "0001318605"
     assert r.form_type == "4"
@@ -154,7 +164,7 @@ def test_fixture_record_form4_tesla_main() -> None:
 def test_fixture_record_form3_apple_continuation() -> None:
     """Continuation file (CIK0000320193-submissions-001.json) is parsed; CIK
     comes from the filename, not from the JSON body."""
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP)))
+    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
     r = by_acc["0000320193-24-000010"]
     assert r.cik == "0000320193"
     assert r.form_type == "3"
@@ -168,7 +178,7 @@ def test_fixture_record_form3_apple_continuation() -> None:
 
 
 def test_iter_ownership_filings_is_lazy_generator() -> None:
-    result = iter_ownership_filings(FIXTURE_ZIP)
+    result = iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)
     assert isinstance(result, types.GeneratorType) or inspect.isgenerator(result)
     # Confirm it actually produces a record (doesn't require full consume)
     first = next(result)
@@ -181,7 +191,7 @@ def test_iter_ownership_filings_is_lazy_generator() -> None:
 
 
 def test_all_cik_values_are_ten_digits() -> None:
-    for r in iter_ownership_filings(FIXTURE_ZIP):
+    for r in iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR):
         assert len(r.cik) == 10, f"CIK {r.cik!r} is not 10 digits"
         assert r.cik.isdigit(), f"CIK {r.cik!r} is not all digits"
 
@@ -196,7 +206,7 @@ def test_malformed_json_raises_sec_bulk_error(tmp_path: Path) -> None:
     zip_path = _make_zip(tmp_path, {"CIK0000000001.json": bad_body})
 
     with pytest.raises(SecBulkError) as exc_info:
-        list(iter_ownership_filings(zip_path))
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
 
     exc_msg = str(exc_info.value)
     assert bad_body.decode() not in exc_msg
@@ -207,10 +217,10 @@ def test_malformed_json_raises_sec_bulk_error(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_non_path_argument_raises_type_error() -> None:
+def test_non_path_argument_raises_type_error(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         # deliberately pass a string instead of Path
-        list(iter_ownership_filings("not_a_path"))  # type: ignore[arg-type]
+        list(iter_ownership_filings("not_a_path", cache_root=tmp_path))  # type: ignore[arg-type]
 
 
 def test_non_zip_file_raises_sec_bulk_error(tmp_path: Path) -> None:
@@ -218,7 +228,7 @@ def test_non_zip_file_raises_sec_bulk_error(tmp_path: Path) -> None:
     not_a_zip.write_bytes(b"this is not a zip file at all")
 
     with pytest.raises(SecBulkError):
-        list(iter_ownership_filings(not_a_zip))
+        list(iter_ownership_filings(not_a_zip, cache_root=tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +252,7 @@ def test_missing_primary_document_array_yields_none(tmp_path: Path) -> None:
     zip_path = _make_zip(
         tmp_path, {"CIK0000000001.json": json.dumps(data).encode()}
     )
-    results = list(iter_ownership_filings(zip_path))
+    results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert len(results) == 1
     assert results[0].primary_document is None
 
@@ -270,7 +280,7 @@ def test_unparseable_filing_date_yields_none_and_row_survives(
     zip_path = _make_zip(
         tmp_path, {"CIK0000000002.json": json.dumps(data).encode()}
     )
-    results = list(iter_ownership_filings(zip_path))
+    results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert len(results) == 1
     assert results[0].filing_date is None
     assert results[0].accession_number == "0000000002-26-000001"
@@ -287,7 +297,8 @@ def test_early_generator_close_raises_no_exception_and_stops() -> None:
     Confirms the ZIP handle is released without error and that the generator
     is properly exhausted after close().
     """
-    gen = iter_ownership_filings(FIXTURE_ZIP)
+    gen = iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)
+    assert isinstance(gen, types.GeneratorType)
     # Consume exactly one record to advance into the with-zf block
     first = next(gen)
     assert isinstance(first, BulkFilingMetadata)
@@ -323,5 +334,212 @@ def test_non_list_accession_number_is_silently_skipped(tmp_path: Path) -> None:
     zip_path = _make_zip(
         tmp_path, {"CIK0000000003.json": json.dumps(data).encode()}
     )
-    results = list(iter_ownership_filings(zip_path))
+    results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# 12. Cache-root containment
+# ---------------------------------------------------------------------------
+
+
+def test_zip_outside_cache_root_is_rejected(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    outside = _make_zip(tmp_path, {"CIK0000000001.json": b"{}"})
+
+    with pytest.raises(SecBulkSecurityError) as exc_info:
+        list(iter_ownership_filings(outside, cache_root=cache_root))
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH
+
+
+def test_zip_symlink_is_rejected(tmp_path: Path) -> None:
+    cache_root = tmp_path
+    real = _make_zip(tmp_path, {"CIK0000000001.json": b"{}"})
+    link = tmp_path / "link.zip"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform")
+
+    with pytest.raises(SecBulkSecurityError) as exc_info:
+        list(iter_ownership_filings(link, cache_root=cache_root))
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH
+
+
+# ---------------------------------------------------------------------------
+# 13. Member preflight: counts, sizes, ratios, totals
+# ---------------------------------------------------------------------------
+
+
+def test_too_many_entries_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": b"{}",
+            "CIK0000000002.json": b"{}",
+            "CIK0000000003.json": b"{}",
+        },
+    )
+    with pytest.raises(SecBulkSecurityError) as exc_info:
+        list(
+            iter_ownership_filings(
+                zip_path, cache_root=tmp_path, policy=_small_policy(zip_max_entries=2)
+            )
+        )
+    assert exc_info.value.reason is SecSecurityReason.ZIP
+
+
+def test_oversized_member_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(tmp_path, {"CIK0000000001.json": b"X" * 50})
+    with pytest.raises(SecBulkSecurityError):
+        list(
+            iter_ownership_filings(
+                zip_path,
+                cache_root=tmp_path,
+                policy=_small_policy(zip_max_member_bytes=10),
+            )
+        )
+
+
+def test_compression_ratio_bomb_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(tmp_path, {"CIK0000000001.json": b"A" * 100_000})
+    with pytest.raises(SecBulkSecurityError):
+        list(
+            iter_ownership_filings(
+                zip_path,
+                cache_root=tmp_path,
+                policy=_small_policy(zip_max_compression_ratio=2.0),
+            )
+        )
+
+
+def test_total_bytes_exceeded_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": b"X" * 50,
+            "CIK0000000002.json": b"Y" * 50,
+        },
+    )
+    with pytest.raises(SecBulkSecurityError):
+        list(
+            iter_ownership_filings(
+                zip_path,
+                cache_root=tmp_path,
+                policy=_small_policy(zip_max_total_bytes=80),
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. Unsafe member names and entry types
+# ---------------------------------------------------------------------------
+
+
+def test_overlong_member_name_is_rejected(tmp_path: Path) -> None:
+    long_name = "CIK" + "0" * 600 + ".json"
+    zip_path = _make_zip(tmp_path, {long_name: b"{}"})
+    with pytest.raises(SecBulkSecurityError):
+        list(
+            iter_ownership_filings(
+                zip_path,
+                cache_root=tmp_path,
+                policy=_small_policy(zip_max_member_name_chars=16),
+            )
+        )
+
+
+def test_directory_entry_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(tmp_path, {"somedir/": b""})
+    with pytest.raises(SecBulkSecurityError):
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+
+
+def test_symlink_entry_is_rejected(tmp_path: Path) -> None:
+    zip_path = tmp_path / "sym.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        info = zipfile.ZipInfo("link.json")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "/etc/passwd")
+
+    with pytest.raises(SecBulkSecurityError):
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+
+
+def test_path_traversal_entry_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(tmp_path, {"../evil.json": b"{}"})
+    with pytest.raises(SecBulkSecurityError):
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+
+
+def test_absolute_member_name_is_rejected(tmp_path: Path) -> None:
+    zip_path = _make_zip(tmp_path, {"/abs.json": b"{}"})
+    with pytest.raises(SecBulkSecurityError):
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# 15. Payload never leaks; explicit policy still parses a valid archive
+# ---------------------------------------------------------------------------
+
+
+def test_payload_not_in_security_error_message(tmp_path: Path) -> None:
+    secret = "SECRET" * 100
+    zip_path = _make_zip(tmp_path, {"CIK0000000001.json": secret.encode()})
+    with pytest.raises(SecBulkSecurityError) as exc_info:
+        list(
+            iter_ownership_filings(
+                zip_path,
+                cache_root=tmp_path,
+                policy=_small_policy(zip_max_member_bytes=8),
+            )
+        )
+    assert secret not in str(exc_info.value)
+
+
+def test_valid_archive_parses_with_explicit_default_policy(tmp_path: Path) -> None:
+    zip_path = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": _cik_json_main(
+                "0000000001",
+                ["0000000001-26-000001"],
+                ["2026-01-01"],
+                ["4"],
+                ["form4.xml"],
+            ),
+        },
+    )
+    results = list(
+        iter_ownership_filings(
+            zip_path, cache_root=tmp_path, policy=DEFAULT_SEC_SECURITY_POLICY
+        )
+    )
+    assert len(results) == 1
+    assert results[0].accession_number == "0000000001-26-000001"
+
+
+@pytest.mark.filterwarnings("ignore:Duplicate name:UserWarning")
+def test_duplicate_member_name_reads_each_preflighted_entry(tmp_path: Path) -> None:
+    """Each entry is read by its own ZipInfo, not by a name that aliases the last.
+
+    The first entry has no filings (0 rows); the second has one ownership row.
+    Reading by name would resolve both iterations to the last entry (2 rows).
+    """
+    zip_path = tmp_path / "dup.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("CIK0000000001.json", b"{}")
+        zf.writestr(
+            "CIK0000000001.json",
+            _cik_json_main(
+                "0000000001",
+                ["0000000001-26-000001"],
+                ["2026-01-01"],
+                ["4"],
+                ["form4.xml"],
+            ),
+        )
+
+    results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+    assert len(results) == 1

@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from insider_scanner.core import edgar
+from insider_scanner.core._sec_paths import resolves_within
 from insider_scanner.core.sec_client import SecClient
 from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_security import (
@@ -163,9 +164,7 @@ def _content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
 
 
 def _validate_content_path(content_path: Path, cache_root: Path) -> None:
-    resolved_root = cache_root.resolve(strict=False)
-    resolved_path = content_path.resolve(strict=False)
-    if not resolved_path.is_relative_to(resolved_root):
+    if not resolves_within(content_path, cache_root):
         raise SecDownloadSecurityError()
     namespace = cache_root / _CACHE_NAMESPACE
     if namespace.is_symlink() or content_path.is_symlink():
