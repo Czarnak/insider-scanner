@@ -130,3 +130,77 @@ before Session 3 changes. Completion requires all targeted and full tests to
 pass, repository coverage of at least 80%, clean Ruff and mypy results, a clean
 dependency audit, refreshed Graphify output, and no unresolved security-review
 findings.
+
+## Implementation Status — 2026-06-20
+
+Work intentionally stopped after Task 3 at the user's requested checkpoint.
+Tasks 4-6 remain planned and must start with fresh failing tests in a later
+session.
+
+Completed:
+
+- Threat model and this implementation plan persisted in commit `eb84a78`.
+- Task 1 security policy and malicious-limit test foundation completed in
+  commit `2ef509d` (`62` policy tests passed; Ruff and mypy clean).
+- Task 2 HTTP boundary completed in commit `a5c46f1`. The client now validates
+  exact hosts before transport, manually validates bounded redirects, streams
+  and closes responses, enforces profile media types and declared/actual byte
+  limits, and emits sanitized typed failures.
+- Task 3 completed in commit `a142885`, replacing direct-to-cache writes with
+  `fetch_filing()` and `promote_validated_filing()`. Pending objects carry their
+  originating byte limit, cache filenames are locally generated SHA-256 names
+  with a fixed `.filing` suffix, parser rejection leaves no cache directory,
+  and atomic I/O errors are sanitized.
+
+Review corrections incorporated:
+
+- Rejected redirect targets no longer appear in public diagnostics.
+- Response-close warnings include stable stage and reason fields.
+- Downloader tests use a filing-only media type, proving the explicit resource
+  profile is selected.
+- Cache promotion preserves the originating policy bound, revalidates forged
+  rows/paths, removes remote-controlled suffixes, and wraps filesystem errors.
+- Offline integration now executes the real fetch → extract → parse → promote
+  order and explicitly proves parser rejection cannot create validated cache.
+
+Current Task 3 verification:
+
+```text
+tests/test_sec_downloader.py + tests/test_sec_offline_integration.py:
+35 passed, 1 skipped
+Ruff: clean
+mypy: clean
+```
+
+Checkpoint-wide verification after Graphify refresh and dependency remediation:
+
+```text
+Full pytest: 1757 passed, 2 skipped
+Coverage: 87.34% (required: 80%)
+Ruff: clean
+Targeted mypy for all Session 3 files: clean
+pip-audit: clean
+```
+
+The initial audit found `msgpack 1.2.0` through the development-only
+`pip-audit[filecache] -> cachecontrol` chain. `uv.lock` and the environment were
+updated to `msgpack 1.2.1`, then the audit and full verification were rerun.
+The lock refresh also reconciled existing `pyproject.toml` constraints,
+including `cryptography 48.0.1` and previously missing development typing-tool
+entries.
+Repository-wide mypy still reports 192 pre-existing errors across 51 files;
+none are in the Session 3 modules or tests, whose targeted mypy gate passes.
+
+Remaining work:
+
+1. Task 4: XML declaration/tree/text/numeric limits and plain-text footnotes.
+2. Task 5: full ZIP central-directory preflight and bounded JSON member reads.
+3. Task 6: additional cross-boundary malicious fixtures and final Session 3
+   integration coverage.
+4. Final repository coverage, dependency audit, full spec/code/security review,
+   and Session 3 completion declaration after Tasks 4-6.
+
+Known residual risk accepted for this checkpoint: cache reads have a same-user
+TOCTOU window between metadata validation and file reading. The threat model
+places an attacker who already controls the user's local account out of scope;
+this remains a defense-in-depth candidate rather than a release blocker.
