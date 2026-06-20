@@ -1,14 +1,23 @@
-"""Typed, injectable HTTP client for SEC resources."""
+"""Bounded, injectable HTTP client for approved SEC resources."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-import math
+import logging
 import re
-from typing import Mapping, Protocol
-from urllib.parse import urlsplit
+from typing import Protocol
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
+
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecResourceLimits,
+    SecResourceProfile,
+    SecSecurityPolicy,
+    SecSecurityReason,
+)
 
 
 _EMAIL_PATTERN = re.compile(
@@ -20,6 +29,8 @@ _EMAIL_PATTERN = re.compile(
     r"(?![A-Za-z0-9.!#$%&'*+/=?^_`{|}~-])"
 )
 _PLACEHOLDER_EMAIL = "contact@example.com"
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_LOGGER = logging.getLogger(__name__)
 
 
 class _SecResponse(Protocol):
@@ -27,33 +38,47 @@ class _SecResponse(Protocol):
     def status_code(self) -> int: ...
 
     @property
-    def content(self) -> bytes: ...
+    def headers(self) -> Mapping[str, str]: ...
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]: ...
+
+    def close(self) -> None: ...
 
 
 class SecTransport(Protocol):
-    """Structural interface for an SEC HTTP transport."""
+    """Structural interface for an SEC streaming HTTP transport."""
 
     def get(
         self,
         url: str,
         *,
         headers: Mapping[str, str],
-        timeout: float,
+        timeout: tuple[float, float],
+        allow_redirects: bool,
+        stream: bool,
     ) -> _SecResponse: ...
 
 
 @dataclass(frozen=True, slots=True)
 class RequestsSecTransport:
-    """Stateless ``requests.get`` transport adapter."""
+    """Stateless ``requests.get`` streaming transport adapter."""
 
     def get(
         self,
         url: str,
         *,
         headers: Mapping[str, str],
-        timeout: float,
+        timeout: tuple[float, float],
+        allow_redirects: bool,
+        stream: bool,
     ) -> requests.Response:
-        return requests.get(url, headers=headers, timeout=timeout)
+        return requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=allow_redirects,
+            stream=stream,
+        )
 
 
 class SecClientError(Exception):
@@ -61,72 +86,211 @@ class SecClientError(Exception):
 
 
 class SecConfigurationError(SecClientError):
-    """Raised when client configuration or a request URL is invalid."""
+    """Raised when client configuration is invalid."""
+
+
+class SecClientSecurityError(SecClientError):
+    """Raised when an SEC request violates the immutable security policy."""
+
+    def __init__(self, reason: SecSecurityReason, url: str) -> None:
+        self.reason = reason
+        self.url = (
+            "<rejected-sec-url>"
+            if reason in {SecSecurityReason.HOST, SecSecurityReason.REDIRECT}
+            else _safe_url_label(url)
+        )
+        super().__init__(f"SEC request rejected ({reason.value}) for {self.url}")
 
 
 class SecHttpError(SecClientError):
-    """Raised when the SEC returns a non-success status."""
+    """Raised when an approved SEC host returns a non-success status."""
 
     def __init__(self, status_code: int, url: str) -> None:
         self.status_code = status_code
-        self.url = url
-        super().__init__(f"SEC request returned HTTP {status_code} for {url}")
+        self.url = _safe_url_label(url)
+        super().__init__(f"SEC request returned HTTP {status_code} for {self.url}")
 
 
 class SecTransportError(SecClientError):
     """Raised when the underlying transport cannot complete a request."""
 
     def __init__(self, url: str) -> None:
-        self.url = url
-        super().__init__(f"SEC transport failed for {url}")
+        self.url = _safe_url_label(url)
+        super().__init__(f"SEC transport failed for {self.url}")
 
 
 class SecDecodeError(SecClientError):
-    """Raised when an SEC response is not valid UTF-8 text."""
+    """Raised when an SEC text response is not valid UTF-8."""
 
     def __init__(self, url: str) -> None:
-        self.url = url
-        super().__init__(f"SEC response was not valid UTF-8 for {url}")
+        self.url = _safe_url_label(url)
+        super().__init__(f"SEC response was not valid UTF-8 for {self.url}")
 
 
 @dataclass(frozen=True, slots=True)
 class SecClient:
-    """Fetch SEC resources with validated configuration and typed failures."""
+    """Fetch approved SEC resources with bounded, typed failures."""
 
     user_agent: str
     transport: SecTransport = field(default_factory=RequestsSecTransport)
-    timeout_seconds: float = 15.0
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY
 
     def __post_init__(self) -> None:
         _validate_user_agent(self.user_agent)
-        _validate_timeout(self.timeout_seconds)
+        if not isinstance(self.policy, SecSecurityPolicy):
+            raise SecConfigurationError("SEC security policy is invalid")
 
-    def fetch_text(self, url: str) -> str:
-        """Fetch and decode UTF-8 text, accepting an optional BOM."""
-        content = self.fetch_bytes(url)
+    def fetch_text(self, url: str, *, profile: SecResourceProfile) -> str:
+        content = self.fetch_bytes(url, profile=profile)
         try:
             return content.decode("utf-8-sig")
         except UnicodeDecodeError:
-            pass
+            raise SecDecodeError(url) from None
 
-        # Raise outside the handler so raw response bytes are not retained.
-        raise SecDecodeError(url)
+    def fetch_bytes(self, url: str, *, profile: SecResourceProfile) -> bytes:
+        limits = self.policy.limits_for(profile)
+        current_url = _validate_url(url, self.policy)
+        redirects = 0
+        while True:
+            response = self._send(current_url)
+            try:
+                if response.status_code in _REDIRECT_STATUSES:
+                    current_url = _redirect_target(
+                        response, current_url, redirects, self.policy
+                    )
+                    redirects += 1
+                    continue
+                if not 200 <= response.status_code < 300:
+                    raise SecHttpError(response.status_code, current_url)
+                _validate_response_headers(response.headers, limits, current_url)
+                return _read_bounded(response, limits, self.policy, current_url)
+            finally:
+                _close_response(response, current_url)
 
-    def fetch_bytes(self, url: str) -> bytes:
-        """Fetch raw bytes from a validated HTTPS URL."""
-        _validate_url(url)
+    def _send(self, url: str) -> _SecResponse:
         try:
-            response = self.transport.get(
+            return self.transport.get(
                 url,
                 headers={"User-Agent": self.user_agent},
-                timeout=self.timeout_seconds,
+                timeout=self.policy.request_timeout_seconds,
+                allow_redirects=False,
+                stream=True,
             )
         except Exception as exc:
             raise SecTransportError(url) from exc
 
-        if not 200 <= response.status_code < 300:
-            raise SecHttpError(response.status_code, url)
-        return response.content
+
+def _redirect_target(
+    response: _SecResponse,
+    current_url: str,
+    redirects: int,
+    policy: SecSecurityPolicy,
+) -> str:
+    if redirects >= policy.max_redirects:
+        raise SecClientSecurityError(SecSecurityReason.REDIRECT, current_url)
+    location = _header(response.headers, "Location")
+    if location is None or not location.strip():
+        raise SecClientSecurityError(SecSecurityReason.REDIRECT, current_url)
+    candidate = urljoin(current_url, location)
+    try:
+        return _validate_url(candidate, policy)
+    except SecClientSecurityError:
+        raise SecClientSecurityError(SecSecurityReason.REDIRECT, candidate) from None
+
+
+def _validate_response_headers(
+    headers: Mapping[str, str], limits: SecResourceLimits, url: str
+) -> None:
+    content_type = _header(headers, "Content-Type")
+    if content_type is None:
+        raise SecClientSecurityError(SecSecurityReason.CONTENT_TYPE, url)
+    normalized = content_type.split(";", 1)[0].strip().casefold()
+    if normalized not in limits.allowed_media_types:
+        raise SecClientSecurityError(SecSecurityReason.CONTENT_TYPE, url)
+    content_length = _header(headers, "Content-Length")
+    if content_length is None:
+        return
+    if not content_length.isascii() or not content_length.isdigit():
+        raise SecClientSecurityError(SecSecurityReason.RESPONSE_SIZE, url)
+    if int(content_length) > limits.max_bytes:
+        raise SecClientSecurityError(SecSecurityReason.RESPONSE_SIZE, url)
+
+
+def _read_bounded(
+    response: _SecResponse,
+    limits: SecResourceLimits,
+    policy: SecSecurityPolicy,
+    url: str,
+) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        for chunk in response.iter_content(policy.response_chunk_bytes):
+            if not chunk:
+                continue
+            if not isinstance(chunk, bytes):
+                raise SecTransportError(url)
+            total += len(chunk)
+            if total > limits.max_bytes:
+                raise SecClientSecurityError(SecSecurityReason.RESPONSE_SIZE, url)
+            chunks.append(chunk)
+    except SecClientError:
+        raise
+    except Exception as exc:
+        raise SecTransportError(url) from exc
+    return b"".join(chunks)
+
+
+def _validate_url(url: str, policy: SecSecurityPolicy) -> str:
+    if not isinstance(url, str) or not url or any(char.isspace() for char in url):
+        raise SecClientSecurityError(SecSecurityReason.HOST, str(url))
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise SecClientSecurityError(SecSecurityReason.HOST, url) from exc
+    if (
+        parsed.scheme.casefold() != "https"
+        or host not in policy.allowed_hosts
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        raise SecClientSecurityError(SecSecurityReason.HOST, url)
+    return url
+
+
+def _safe_url_label(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return "<invalid-sec-url>"
+    if parsed.scheme.casefold() != "https" or host is None:
+        return "<invalid-sec-url>"
+    netloc = host if port in (None, 443) else f"{host}:{port}"
+    return urlunsplit(("https", netloc, parsed.path or "/", "", ""))
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    wanted = name.casefold()
+    for key, value in headers.items():
+        if key.casefold() == wanted:
+            return value if isinstance(value, str) else None
+    return None
+
+
+def _close_response(response: _SecResponse, url: str) -> None:
+    try:
+        response.close()
+    except Exception:
+        _LOGGER.warning(
+            "SEC diagnostic stage=response_close reason=close_failed url=%s",
+            _safe_url_label(url),
+        )
 
 
 def _validate_user_agent(user_agent: str) -> None:
@@ -134,38 +298,11 @@ def _validate_user_agent(user_agent: str) -> None:
         raise SecConfigurationError("SEC User-Agent must be a non-empty string")
     if any(ord(character) < 32 or ord(character) == 127 for character in user_agent):
         raise SecConfigurationError("SEC User-Agent contains invalid characters")
-
     email_match = _EMAIL_PATTERN.search(user_agent)
     if email_match is None:
         raise SecConfigurationError("SEC User-Agent must contain a valid contact email")
     if email_match.group("email").casefold() == _PLACEHOLDER_EMAIL:
         raise SecConfigurationError("SEC User-Agent must not use a placeholder email")
-
     identity = user_agent[: email_match.start()] + user_agent[email_match.end() :]
     if not any(character.isalnum() for character in identity):
         raise SecConfigurationError("SEC User-Agent must contain an app or company identity")
-
-
-def _validate_timeout(timeout_seconds: float) -> None:
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, (int, float))
-        or not math.isfinite(timeout_seconds)
-        or timeout_seconds <= 0
-    ):
-        raise SecConfigurationError("SEC timeout must be finite and greater than zero")
-
-
-def _validate_url(url: str) -> None:
-    if not isinstance(url, str) or not url or any(char.isspace() for char in url):
-        raise SecConfigurationError("SEC URL must be a non-empty HTTPS URL")
-
-    try:
-        parsed = urlsplit(url)
-        host = parsed.hostname
-        parsed.port
-    except ValueError as exc:
-        raise SecConfigurationError("SEC URL is invalid") from exc
-
-    if parsed.scheme.casefold() != "https" or not host:
-        raise SecConfigurationError("SEC URL must use HTTPS and include a host")

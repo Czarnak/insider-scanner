@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import FrozenInstanceError, dataclass, field
 from datetime import date
 import hashlib
 import math
@@ -20,10 +21,21 @@ from insider_scanner.core.sec_client import SecClient, SecTransport
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class StubResponse:
     status_code: int
-    content: bytes
+    chunks: tuple[bytes, ...]
+    headers: Mapping[str, str] = field(
+        default_factory=lambda: {"Content-Type": "application/octet-stream"}
+    )
+    close_calls: int = 0
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+        del chunk_size
+        yield from self.chunks
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def make_row(
@@ -40,7 +52,7 @@ def make_row(
 
 def make_client(content: bytes = b"filing payload") -> tuple[SecClient, Mock]:
     transport = Mock(spec=SecTransport)
-    transport.get.return_value = StubResponse(status_code=200, content=content)
+    transport.get.return_value = StubResponse(status_code=200, chunks=(content,))
     client = SecClient(
         user_agent=VALID_USER_AGENT,
         transport=cast(SecTransport, transport),
@@ -99,7 +111,9 @@ def test_download_fetches_exact_archive_url_to_stable_injected_cache_path(
     transport.get.assert_called_once_with(
         expected_url,
         headers={"User-Agent": VALID_USER_AGENT},
-        timeout=15.0,
+        timeout=(15.0, 15.0),
+        allow_redirects=False,
+        stream=True,
     )
 
 

@@ -14,6 +14,7 @@ import time
 from insider_scanner.core import edgar
 from insider_scanner.core.sec_client import SecClient
 from insider_scanner.core.sec_index import SecMasterIndexRow
+from insider_scanner.core.sec_security import SecResourceProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,9 @@ def download_filing(
         content_path, max_age_seconds
     ):
         return DownloadedSecFiling(row, archive_url, content_path, True)
-    content = client.fetch_bytes(archive_url)
+    content = client.fetch_bytes(
+        archive_url, profile=SecResourceProfile.FILING_DOCUMENT
+    )
     _write_atomically(content_path, content)
     return DownloadedSecFiling(row, archive_url, content_path, False)
 

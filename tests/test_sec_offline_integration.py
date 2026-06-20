@@ -7,7 +7,8 @@ parse_ownership_document and asserts the normalised OwnershipFiling.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -28,12 +29,23 @@ VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class StubResponse:
     """Minimal HTTP response stub — mirrors the _SecResponse Protocol."""
 
     status_code: int
-    content: bytes
+    chunks: tuple[bytes, ...]
+    headers: Mapping[str, str] = field(
+        default_factory=lambda: {"Content-Type": "application/octet-stream"}
+    )
+    close_calls: int = 0
+
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+        del chunk_size
+        yield from self.chunks
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def _make_apple_row() -> SecMasterIndexRow:
@@ -49,7 +61,7 @@ def _make_apple_row() -> SecMasterIndexRow:
 def _make_stub_client(content: bytes) -> tuple[SecClient, Mock]:
     """Return a SecClient backed by a Mock transport that returns *content*."""
     transport = Mock(spec=SecTransport)
-    transport.get.return_value = StubResponse(status_code=200, content=content)
+    transport.get.return_value = StubResponse(status_code=200, chunks=(content,))
     client = SecClient(
         user_agent=VALID_USER_AGENT,
         transport=cast(SecTransport, transport),
@@ -100,7 +112,9 @@ class TestFullChainFromExplicitRow:
         transport.get.assert_called_once_with(
             expected_url,
             headers={"User-Agent": VALID_USER_AGENT},
-            timeout=15.0,
+            timeout=(15.0, 15.0),
+            allow_redirects=False,
+            stream=True,
         )
 
     def test_download_is_not_from_cache_on_first_call(self, tmp_path: Path) -> None:
