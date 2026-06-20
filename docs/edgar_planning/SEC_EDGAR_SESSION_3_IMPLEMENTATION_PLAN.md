@@ -193,14 +193,52 @@ none are in the Session 3 modules or tests, whose targeted mypy gate passes.
 
 Remaining work:
 
-1. Task 4: XML declaration/tree/text/numeric limits and plain-text footnotes.
-2. Task 5: full ZIP central-directory preflight and bounded JSON member reads.
-3. Task 6: additional cross-boundary malicious fixtures and final Session 3
+1. Task 6: additional cross-boundary malicious fixtures and final Session 3
    integration coverage.
-4. Final repository coverage, dependency audit, full spec/code/security review,
-   and Session 3 completion declaration after Tasks 4-6.
+2. Final spec/code/security review across the full session and Session 3
+   completion declaration after Task 6.
 
 Known residual risk accepted for this checkpoint: cache reads have a same-user
 TOCTOU window between metadata validation and file reading. The threat model
 places an attacker who already controls the user's local account out of scope;
 this remains a defense-in-depth candidate rather than a release blocker.
+
+## Implementation Status — 2026-06-21 (Tasks 4-5)
+
+Tasks 4 and 5 are implemented with RED-GREEN-REFACTOR and reviewed
+(security-reviewer + python-reviewer; all critical/high findings resolved).
+
+- A shared path-containment predicate `resolves_within()` was added in
+  `core/_sec_paths.py`; `sec_downloader._validate_content_path` now consumes it
+  with no behavior change.
+- Task 4 enforces the XML resource and field limits. `core/_sec_xml.py` gained a
+  reason-coded `SecXmlSecurityError`, `guard_xml_pre_parse` (byte ceiling, plus
+  rejection of DTD/entity declarations and non-UTF-8 BOMs), and `guard_xml_tree`
+  (element/depth/total-text including attribute bytes). `extract_ownership_document`
+  and `parse_ownership_document` take an injected policy (defaulting to the secure
+  default) and enforce scalar, numeric (before conversion), and long-text limits;
+  footnotes are flattened to whitespace-normalized plain text. Extraction also
+  rejects payloads larger than the filing profile limit.
+- Task 5 requires an injected trusted `cache_root` for `iter_ownership_filings()`,
+  validates containment and rejects symlinks, preflights every member from the
+  central directory before any read (count, name length, directory/symlink
+  entries, unsafe names, per-member size, total, compression ratio), reads each
+  preflighted member by `ZipInfo` with a bounded stream, and never calls ZIP
+  extraction APIs. A reason-coded `SecBulkSecurityError` subclasses `SecBulkError`.
+- All errors and logs remain payload-free (reason-coded; accession kept as a
+  scoped attribute, never in messages).
+
+Verification:
+
+```text
+Targeted SEC suite: 261 passed, 2 skipped
+Full pytest: 1805 passed, 3 skipped
+Coverage: 87.49% (required: 80%)
+Ruff: clean (src tests)
+Targeted mypy (all changed Session 3 files + tests): clean
+pip-audit: no known vulnerabilities
+Graphify: refreshed (--no-viz)
+```
+
+Task 6 (static malicious fixtures, additional cross-boundary integration, and the
+final session-wide review/completion declaration) remains.
