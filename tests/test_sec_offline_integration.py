@@ -15,10 +15,19 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
 
+import pytest
+
 from insider_scanner.core.sec_client import SecClient, SecTransport
-from insider_scanner.core.sec_downloader import download_filing
+from insider_scanner.core.sec_downloader import (
+    DownloadedSecFiling,
+    fetch_filing,
+    promote_validated_filing,
+)
 from insider_scanner.core.sec_index import SecMasterIndexRow, parse_master_index
-from insider_scanner.core.sec_ownership_document import extract_ownership_document
+from insider_scanner.core.sec_ownership_document import (
+    SecOwnershipDocumentError,
+    extract_ownership_document,
+)
 from insider_scanner.core.sec_ownership_parser import OwnershipFiling, parse_ownership_document
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -73,20 +82,28 @@ def _fixture_bytes() -> bytes:
     return (FIXTURE_DIR / "sec_form4_submission.txt").read_bytes()
 
 
+def _fetch_parse_promote(
+    row: SecMasterIndexRow,
+    *,
+    client: SecClient,
+    cache_root: Path,
+) -> tuple[DownloadedSecFiling, OwnershipFiling]:
+    """Run the real fetch → parse → promote boundary in that order."""
+    pending = fetch_filing(row, client=client, cache_root=cache_root)
+    document = extract_ownership_document(pending.content)
+    filing = parse_ownership_document(document)
+    downloaded = promote_validated_filing(pending, cache_root=cache_root)
+    return downloaded, filing
+
+
 def _run_full_chain(
     row: SecMasterIndexRow,
     client: SecClient,
     tmp_path: Path,
-    *,
-    max_age_seconds: float | None = None,
 ) -> OwnershipFiling:
-    """download → extract → parse; returns the normalised OwnershipFiling."""
-    downloaded = download_filing(
-        row, client=client, cache_dir=tmp_path, max_age_seconds=max_age_seconds
-    )
-    content_bytes = downloaded.content_path.read_bytes()
-    doc = extract_ownership_document(content_bytes)
-    return parse_ownership_document(doc)
+    """Return the normalized result produced before cache promotion."""
+    _, filing = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
+    return filing
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +120,9 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, transport = _make_stub_client(_fixture_bytes())
 
-        downloaded = download_filing(row, client=client, cache_dir=tmp_path)
+        downloaded, _ = _fetch_parse_promote(
+            row, client=client, cache_root=tmp_path
+        )
 
         expected_url = (
             "https://www.sec.gov/Archives/edgar/data/320193/0000320193-26-000061.txt"
@@ -121,10 +140,21 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
-        downloaded = download_filing(row, client=client, cache_dir=tmp_path)
+        downloaded, _ = _fetch_parse_promote(
+            row, client=client, cache_root=tmp_path
+        )
 
         assert downloaded.from_cache is False
         assert downloaded.content_path.exists()
+
+    def test_parser_rejection_leaves_no_validated_cache(self, tmp_path: Path) -> None:
+        row = _make_apple_row()
+        client, _ = _make_stub_client(b"not an ownership filing")
+
+        with pytest.raises(SecOwnershipDocumentError):
+            _fetch_parse_promote(row, client=client, cache_root=tmp_path)
+
+        assert not (tmp_path / "validated-v1").exists()
 
     def test_ownership_document_extracts_correct_accession_and_type(
         self, tmp_path: Path
@@ -132,7 +162,9 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
-        downloaded = download_filing(row, client=client, cache_dir=tmp_path)
+        downloaded, _ = _fetch_parse_promote(
+            row, client=client, cache_root=tmp_path
+        )
         content_bytes = downloaded.content_path.read_bytes()
         doc = extract_ownership_document(content_bytes)
 
@@ -293,21 +325,21 @@ class TestIndexParserFeedsChain:
 
 
 class TestCacheReuseAcrossPipeline:
-    """Second download_filing call with max_age_seconds returns cached file."""
+    """Parser-approved cache entries are reused without another request."""
 
     def test_second_call_returns_from_cache(self, tmp_path: Path) -> None:
         row = _make_apple_row()
         client, transport = _make_stub_client(_fixture_bytes())
 
         # First call — cache miss.
-        first = download_filing(
-            row, client=client, cache_dir=tmp_path, max_age_seconds=60
+        first, _ = _fetch_parse_promote(
+            row, client=client, cache_root=tmp_path
         )
         assert first.from_cache is False
 
         # Second call — cache hit (same transport mock, same client).
-        second = download_filing(
-            row, client=client, cache_dir=tmp_path, max_age_seconds=60
+        second, _ = _fetch_parse_promote(
+            row, client=client, cache_root=tmp_path
         )
         assert second.from_cache is True
 
@@ -315,8 +347,8 @@ class TestCacheReuseAcrossPipeline:
         row = _make_apple_row()
         client, transport = _make_stub_client(_fixture_bytes())
 
-        download_filing(row, client=client, cache_dir=tmp_path, max_age_seconds=60)
-        download_filing(row, client=client, cache_dir=tmp_path, max_age_seconds=60)
+        _fetch_parse_promote(row, client=client, cache_root=tmp_path)
+        _fetch_parse_promote(row, client=client, cache_root=tmp_path)
 
         transport.get.assert_called_once()
 
@@ -324,14 +356,14 @@ class TestCacheReuseAcrossPipeline:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
-        filing_first = _run_full_chain(row, client, tmp_path, max_age_seconds=60)
+        filing_first = _run_full_chain(row, client, tmp_path)
 
         # Re-use the same client — transport is only hit once (already cached).
         client2, transport2 = _make_stub_client(_fixture_bytes())
         # Pre-seed: first download to populate cache.
-        download_filing(row, client=client2, cache_dir=tmp_path, max_age_seconds=60)
+        _fetch_parse_promote(row, client=client2, cache_root=tmp_path)
         # Now second call is a true cache hit.
-        filing_second = _run_full_chain(row, client2, tmp_path, max_age_seconds=60)
+        filing_second = _run_full_chain(row, client2, tmp_path)
 
         assert filing_first.accession_number == filing_second.accession_number
         assert filing_first.issuer == filing_second.issuer

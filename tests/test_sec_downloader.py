@@ -1,12 +1,11 @@
-"""Behavior tests for the SEC filing downloader."""
+"""Behavior tests for staged SEC filing download and cache promotion."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import FrozenInstanceError, dataclass, field
+from dataclasses import FrozenInstanceError, dataclass, field, replace
 from datetime import date
 import hashlib
-import math
 import os
 from pathlib import Path
 from typing import cast
@@ -14,8 +13,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_client import SecClient, SecTransport
+from insider_scanner.core.sec_index import SecMasterIndexRow
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecResourceLimits,
+    SecResourceProfile,
+    SecSecurityReason,
+)
 
 
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
@@ -23,8 +28,8 @@ VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 
 @dataclass(slots=True)
 class StubResponse:
-    status_code: int
-    chunks: tuple[bytes, ...]
+    status_code: int = 200
+    chunks: tuple[bytes, ...] = (b"filing payload",)
     headers: Mapping[str, str] = field(
         default_factory=lambda: {"Content-Type": "application/octet-stream"}
     )
@@ -50,260 +55,303 @@ def make_row(
     )
 
 
-def make_client(content: bytes = b"filing payload") -> tuple[SecClient, Mock]:
+def make_client(
+    content: bytes = b"filing payload", *, freshness: float | None = None
+) -> tuple[SecClient, Mock]:
     transport = Mock(spec=SecTransport)
-    transport.get.return_value = StubResponse(status_code=200, chunks=(content,))
-    client = SecClient(
-        user_agent=VALID_USER_AGENT,
-        transport=cast(SecTransport, transport),
+    transport.get.return_value = StubResponse(chunks=(content,))
+    policy = DEFAULT_SEC_SECURITY_POLICY
+    if freshness is not None:
+        policy = replace(policy, cache_freshness_seconds=freshness)
+    return (
+        SecClient(
+            user_agent=VALID_USER_AGENT,
+            transport=cast(SecTransport, transport),
+            policy=policy,
+        ),
+        transport,
     )
-    return client, transport
 
 
-def expected_cache_path(row: SecMasterIndexRow, cache_dir: Path) -> Path:
+def expected_cache_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
     digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
-    return cache_dir / f"{digest}{Path(row.archive_path).suffix.lower()}"
+    return cache_root / "validated-v1" / f"{digest}.filing"
 
 
-def test_downloaded_sec_filing_is_frozen_and_slotted(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import DownloadedSecFiling
+def test_pending_and_downloaded_filings_are_frozen_and_slotted(
+    tmp_path: Path,
+) -> None:
+    from insider_scanner.core.sec_downloader import (
+        DownloadedSecFiling,
+        PendingSecFiling,
+    )
 
     row = make_row()
-    downloaded = DownloadedSecFiling(
+    cache_path = expected_cache_path(row, tmp_path)
+    pending = PendingSecFiling(
         row=row,
         archive_url="https://www.sec.gov/Archives/example.txt",
-        content_path=tmp_path / "example.txt",
+        content=b"payload",
+        content_path=cache_path,
+        from_cache=False,
+        max_bytes=32 * 1024 * 1024,
+    )
+    downloaded = DownloadedSecFiling(
+        row=row,
+        archive_url=pending.archive_url,
+        content_path=cache_path,
         from_cache=False,
     )
 
-    assert downloaded.__slots__ == (
-        "row",
-        "archive_url",
-        "content_path",
-        "from_cache",
-    )
+    assert not hasattr(pending, "__dict__")
     assert not hasattr(downloaded, "__dict__")
     with pytest.raises(FrozenInstanceError):
-        downloaded.from_cache = True  # type: ignore[misc]
+        pending.content = b"changed"  # type: ignore[misc]
 
 
-def test_download_fetches_exact_archive_url_to_stable_injected_cache_path(
-    tmp_path: Path,
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
+def test_network_fetch_remains_memory_only_until_promotion(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
 
     row = make_row()
-    client, transport = make_client(content=b"private filing bytes")
-    expected_url = (
-        "https://www.sec.gov/Archives/"
-        "edgar/data/320193/0000320193-26-000061.TXT"
-    )
-    expected_name = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest() + ".txt"
+    client, transport = make_client(b"private filing bytes")
 
-    result = download_filing(row, client=client, cache_dir=tmp_path)
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
 
-    assert result.row is row
-    assert result.archive_url == expected_url
-    assert result.content_path == tmp_path / expected_name
-    assert result.content_path.read_bytes() == b"private filing bytes"
-    assert result.from_cache is False
-    assert tuple(tmp_path.iterdir()) == (result.content_path,)
-    transport.get.assert_called_once_with(
-        expected_url,
-        headers={"User-Agent": VALID_USER_AGENT},
-        timeout=(15.0, 15.0),
-        allow_redirects=False,
-        stream=True,
-    )
-
-
-class DerivedSecMasterIndexRow(SecMasterIndexRow):
-    pass
-
-
-class DerivedSecClient(SecClient):
-    pass
-
-
-@pytest.mark.parametrize("invalid_row", [None, object(), "row"])
-def test_invalid_row_type_fails_before_client_or_filesystem(
-    tmp_path: Path, invalid_row: object
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    client, transport = make_client()
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(TypeError, match="row must be exactly SecMasterIndexRow"):
-        download_filing(
-            cast(SecMasterIndexRow, invalid_row), client=client, cache_dir=cache_dir
-        )
-
-    transport.get.assert_not_called()
-    assert not cache_dir.exists()
-
-
-def test_row_subclass_is_rejected_before_io(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    base_row = make_row()
-    row = DerivedSecMasterIndexRow(
-        base_row.cik,
-        base_row.company_name,
-        base_row.form_type,
-        base_row.filing_date,
-        base_row.archive_path,
-    )
-    client, transport = make_client()
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(TypeError, match="row must be exactly SecMasterIndexRow"):
-        download_filing(row, client=client, cache_dir=cache_dir)
-
-    transport.get.assert_not_called()
-    assert not cache_dir.exists()
-
-
-@pytest.mark.parametrize("invalid_client", [None, object(), "client"])
-def test_invalid_client_type_fails_before_filesystem(
-    tmp_path: Path, invalid_client: object
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(TypeError, match="client must be exactly SecClient"):
-        download_filing(
-            make_row(), client=cast(SecClient, invalid_client), cache_dir=cache_dir
-        )
-
-    assert not cache_dir.exists()
-
-
-def test_client_subclass_is_rejected_before_io(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    client = DerivedSecClient(user_agent=VALID_USER_AGENT)
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(TypeError, match="client must be exactly SecClient"):
-        download_filing(make_row(), client=client, cache_dir=cache_dir)
-
-    assert not cache_dir.exists()
-
-
-@pytest.mark.parametrize("invalid_cache_dir", [None, "cache", object()])
-def test_cache_dir_must_be_a_path_before_client_call(
-    invalid_cache_dir: object,
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    client, transport = make_client()
-
-    with pytest.raises(TypeError, match="cache_dir must be a pathlib.Path"):
-        download_filing(
-            make_row(), client=client, cache_dir=cast(Path, invalid_cache_dir)
-        )
-
-    transport.get.assert_not_called()
-
-
-@pytest.mark.parametrize("invalid_ttl", [True, "1", object()])
-def test_invalid_ttl_type_fails_before_client_or_filesystem(
-    tmp_path: Path, invalid_ttl: object
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    client, transport = make_client()
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(TypeError, match="max_age_seconds"):
-        download_filing(
-            make_row(),
-            client=client,
-            cache_dir=cache_dir,
-            max_age_seconds=cast(float, invalid_ttl),
-        )
-
-    transport.get.assert_not_called()
-    assert not cache_dir.exists()
-
-
-@pytest.mark.parametrize(
-    "invalid_ttl", [0.0, -1.0, math.inf, -math.inf, math.nan]
-)
-def test_invalid_ttl_value_fails_before_client_or_filesystem(
-    tmp_path: Path, invalid_ttl: float
-) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    client, transport = make_client()
-    cache_dir = tmp_path / "must-not-exist"
-
-    with pytest.raises(ValueError, match="max_age_seconds"):
-        download_filing(
-            make_row(),
-            client=client,
-            cache_dir=cache_dir,
-            max_age_seconds=invalid_ttl,
-        )
-
-    transport.get.assert_not_called()
-    assert not cache_dir.exists()
-
-
-def test_positive_ttl_reuses_fresh_regular_cache_file(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    row = make_row()
-    cache_path = expected_cache_path(row, tmp_path)
-    cache_path.write_bytes(b"cached filing")
-    client, transport = make_client(content=b"network filing")
-
-    result = download_filing(
-        row, client=client, cache_dir=tmp_path, max_age_seconds=60.0
-    )
-
-    assert result.content_path == cache_path
-    assert result.content_path.read_bytes() == b"cached filing"
-    assert result.from_cache is True
-    transport.get.assert_not_called()
-
-
-def test_positive_ttl_refreshes_stale_cache_file(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
-
-    row = make_row()
-    cache_path = expected_cache_path(row, tmp_path)
-    cache_path.write_bytes(b"stale filing")
-    os.utime(cache_path, (100.0, 100.0))
-    client, transport = make_client(content=b"fresh filing")
-
-    result = download_filing(
-        row, client=client, cache_dir=tmp_path, max_age_seconds=10.0
-    )
-
-    assert result.content_path.read_bytes() == b"fresh filing"
-    assert result.from_cache is False
+    assert pending.row is row
+    assert pending.content == b"private filing bytes"
+    assert pending.content_path == expected_cache_path(row, tmp_path)
+    assert pending.from_cache is False
+    assert not (tmp_path / "validated-v1").exists()
     transport.get.assert_called_once()
 
 
-def test_cache_age_equal_to_ttl_is_fresh(tmp_path: Path) -> None:
-    from insider_scanner.core.sec_downloader import download_filing
+def test_validated_promotion_writes_versioned_cache_atomically(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    row = make_row()
+    client, _ = make_client(b"validated filing")
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+
+    downloaded = promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert downloaded.content_path == expected_cache_path(row, tmp_path)
+    assert downloaded.content_path.read_bytes() == b"validated filing"
+    assert downloaded.from_cache is False
+    assert tuple(downloaded.content_path.parent.iterdir()) == (
+        downloaded.content_path,
+    )
+
+
+def test_promotion_preserves_originating_policy_size_limit(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        SecDownloadSecurityError,
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    limits = dict(DEFAULT_SEC_SECURITY_POLICY.resource_limits)
+    limits[SecResourceProfile.FILING_DOCUMENT] = SecResourceLimits(
+        frozenset({"application/octet-stream"}), 4
+    )
+    client, _ = make_client(b"1234")
+    client = replace(
+        client,
+        policy=replace(DEFAULT_SEC_SECURITY_POLICY, resource_limits=limits),
+    )
+    pending = fetch_filing(make_row(), client=client, cache_root=tmp_path)
+    forged = replace(pending, content=b"12345")
+
+    with pytest.raises(SecDownloadSecurityError) as exc_info:
+        promote_validated_filing(forged, cache_root=tmp_path)
+
+    assert exc_info.value.reason is SecSecurityReason.RESPONSE_SIZE
+    assert not pending.content_path.exists()
+
+
+def test_fresh_validated_cache_is_reused_without_transport(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
 
     row = make_row()
     cache_path = expected_cache_path(row, tmp_path)
-    cache_path.write_bytes(b"boundary filing")
-    os.utime(cache_path, (990.0, 990.0))
-    client, transport = make_client(content=b"network filing")
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"validated cache")
+    client, transport = make_client(b"network filing")
 
-    with patch(
-        "insider_scanner.core.sec_downloader.time.time", return_value=1000.0
-    ):
-        result = download_filing(
-            row, client=client, cache_dir=tmp_path, max_age_seconds=10.0
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+
+    assert pending.content == b"validated cache"
+    assert pending.from_cache is True
+    transport.get.assert_not_called()
+
+
+def test_stale_entry_is_removed_and_network_bytes_remain_pending(
+    tmp_path: Path,
+) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
+
+    row = make_row()
+    cache_path = expected_cache_path(row, tmp_path)
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"stale cache")
+    os.utime(cache_path, (100.0, 100.0))
+    client, transport = make_client(b"fresh network filing", freshness=10.0)
+
+    with patch("insider_scanner.core.sec_downloader.time.time", return_value=1000.0):
+        pending = fetch_filing(row, client=client, cache_root=tmp_path)
+
+    assert pending.content == b"fresh network filing"
+    assert pending.from_cache is False
+    assert not cache_path.exists()
+    transport.get.assert_called_once()
+
+
+def test_promoting_cache_hit_is_noop(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    row = make_row()
+    cache_path = expected_cache_path(row, tmp_path)
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"validated cache")
+    client, _ = make_client()
+
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+    downloaded = promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert downloaded.from_cache is True
+    assert cache_path.read_bytes() == b"validated cache"
+
+
+@pytest.mark.parametrize("invalid_row", [None, object(), "row"])
+def test_invalid_row_fails_before_io(tmp_path: Path, invalid_row: object) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
+
+    client, transport = make_client()
+
+    with pytest.raises(TypeError, match="row must be exactly SecMasterIndexRow"):
+        fetch_filing(
+            cast(SecMasterIndexRow, invalid_row),
+            client=client,
+            cache_root=tmp_path,
         )
 
-    assert result.from_cache is True
-    assert cache_path.read_bytes() == b"boundary filing"
     transport.get.assert_not_called()
+    assert not (tmp_path / "validated-v1").exists()
+
+
+@pytest.mark.parametrize("invalid_root", [None, "cache", object()])
+def test_invalid_cache_root_fails_before_transport(invalid_root: object) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
+
+    client, transport = make_client()
+
+    with pytest.raises(TypeError, match="cache_root must be a pathlib.Path"):
+        fetch_filing(
+            make_row(), client=client, cache_root=cast(Path, invalid_root)
+        )
+
+    transport.get.assert_not_called()
+
+
+def test_cache_symlink_is_rejected(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        SecDownloadSecurityError,
+        fetch_filing,
+    )
+
+    target = tmp_path / "target"
+    target.mkdir()
+    root = tmp_path / "cache-link"
+    try:
+        root.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    client, transport = make_client()
+
+    with pytest.raises(SecDownloadSecurityError) as exc_info:
+        fetch_filing(make_row(), client=client, cache_root=root)
+
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH
+    transport.get.assert_not_called()
+
+
+def test_forged_pending_path_cannot_escape_cache_root(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        PendingSecFiling,
+        SecDownloadSecurityError,
+        promote_validated_filing,
+    )
+
+    row = make_row()
+    pending = PendingSecFiling(
+        row=row,
+        archive_url="https://www.sec.gov/Archives/example.txt",
+        content=b"payload",
+        content_path=tmp_path.parent / "escape.txt",
+        from_cache=False,
+        max_bytes=32 * 1024 * 1024,
+    )
+
+    with pytest.raises(SecDownloadSecurityError) as exc_info:
+        promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH
+    assert not (tmp_path.parent / "escape.txt").exists()
+
+
+def test_failed_atomic_promotion_is_sanitized_and_removes_temp(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        SecDownloadIoError,
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    client, _ = make_client(b"validated filing")
+    pending = fetch_filing(make_row(), client=client, cache_root=tmp_path)
+
+    with (
+        patch.object(Path, "replace", side_effect=OSError("disk failure")),
+        pytest.raises(SecDownloadIoError) as exc_info,
+    ):
+        promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert "disk failure" not in str(exc_info.value)
+    assert str(tmp_path) not in str(exc_info.value)
+    assert list((tmp_path / "validated-v1").glob(".sec-filing-*.tmp")) == []
+    assert not pending.content_path.exists()
+
+
+def test_forged_pending_row_subclass_is_rejected(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        PendingSecFiling,
+        promote_validated_filing,
+    )
+
+    class DerivedRow(SecMasterIndexRow):
+        pass
+
+    row = make_row()
+    derived = DerivedRow(
+        row.cik,
+        row.company_name,
+        row.form_type,
+        row.filing_date,
+        row.archive_path,
+    )
+    pending = PendingSecFiling(
+        row=derived,
+        archive_url="https://www.sec.gov/Archives/example.txt",
+        content=b"payload",
+        content_path=expected_cache_path(row, tmp_path),
+        from_cache=False,
+        max_bytes=32 * 1024 * 1024,
+    )
+
+    with pytest.raises(TypeError, match="pending.row"):
+        promote_validated_filing(pending, cache_root=tmp_path)
