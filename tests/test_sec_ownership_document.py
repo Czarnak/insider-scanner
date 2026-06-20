@@ -378,3 +378,94 @@ def test_invalid_utf8_bytes_raise_and_raw_not_in_message() -> None:
 
     # The raw byte sequence must not appear in the error message
     assert b"\xff\xfe" not in str(exc_info.value).encode("latin-1", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# Security policy: limits and entity rejection enforced during extraction
+# ---------------------------------------------------------------------------
+
+_MIN_OWNERSHIP_XML = (
+    "<ownershipDocument><documentType>4</documentType></ownershipDocument>"
+)
+
+
+def _small_policy(**overrides: object):
+    from dataclasses import replace
+
+    from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
+
+    return replace(DEFAULT_SEC_SECURITY_POLICY, **overrides)  # type: ignore[arg-type]
+
+
+def test_extract_accepts_default_policy_explicitly() -> None:
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+    from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
+
+    doc = extract_ownership_document(
+        _MIN_OWNERSHIP_XML, policy=DEFAULT_SEC_SECURITY_POLICY
+    )
+    assert doc.document_type == "4"
+
+
+def test_extract_rejects_dtd_declaration() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    xml = (
+        '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]>'
+        "<ownershipDocument><documentType>4</documentType></ownershipDocument>"
+    )
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(xml)
+
+
+def test_extract_rejects_oversized_xml() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(
+            _MIN_OWNERSHIP_XML, policy=_small_policy(xml_max_bytes=16)
+        )
+
+
+def test_extract_rejects_excess_elements() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(
+            _MIN_OWNERSHIP_XML, policy=_small_policy(xml_max_elements=1)
+        )
+
+
+def test_extract_rejects_excess_depth() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(
+            _MIN_OWNERSHIP_XML, policy=_small_policy(xml_max_depth=1)
+        )
+
+
+def test_extract_rejects_oversized_input_payload() -> None:
+    from insider_scanner.core.sec_ownership_document import (
+        SecOwnershipDocumentError,
+        extract_ownership_document,
+    )
+    from insider_scanner.core.sec_security import (
+        SecResourceLimits,
+        SecResourceProfile,
+    )
+
+    base = _small_policy()
+    limits = dict(base.resource_limits)
+    filing = limits[SecResourceProfile.FILING_DOCUMENT]
+    limits[SecResourceProfile.FILING_DOCUMENT] = SecResourceLimits(
+        filing.allowed_media_types, 16
+    )
+    tiny_input_policy = _small_policy(resource_limits=limits)
+
+    with pytest.raises(SecOwnershipDocumentError):
+        extract_ownership_document(_MIN_OWNERSHIP_XML, policy=tiny_input_policy)

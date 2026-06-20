@@ -14,7 +14,16 @@ from dataclasses import dataclass
 
 from lxml import etree
 
-from insider_scanner.core._sec_xml import hardened_xml_parser
+from insider_scanner.core._sec_xml import (
+    guard_xml_pre_parse,
+    guard_xml_tree,
+    hardened_xml_parser,
+)
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecResourceProfile,
+    SecSecurityPolicy,
+)
 
 OWNERSHIP_FORM_TYPES: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 
@@ -72,6 +81,7 @@ def extract_ownership_document(
     content: bytes | str,
     *,
     accession_number: str | None = None,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
 ) -> OwnershipDocument:
     """Extract the Form 3/4/5 ownership XML from an SEC filing payload.
 
@@ -103,14 +113,18 @@ def extract_ownership_document(
             f"content must be bytes or str, got {type(content).__name__!r}"
         )
 
+    max_input = policy.limits_for(SecResourceProfile.FILING_DOCUMENT).max_bytes
+    if len(content) > max_input:
+        raise SecOwnershipDocumentError("Filing payload exceeds the size limit.")
+
     text = _decode(content)
     stripped = text.lstrip()
 
     if _is_full_submission(stripped):
-        return _extract_from_full_submission(stripped, accession_number)
+        return _extract_from_full_submission(stripped, accession_number, policy)
 
     if "<ownershipDocument" in stripped:
-        return _extract_direct_xml(stripped, accession_number)
+        return _extract_direct_xml(stripped, accession_number, policy)
 
     raise NonOwnershipDocumentError(
         "Content does not appear to be an SEC submission or ownership XML document."
@@ -139,7 +153,7 @@ def _is_full_submission(text: str) -> bool:
 
 
 def _extract_from_full_submission(
-    text: str, fallback_accession: str | None
+    text: str, fallback_accession: str | None, policy: SecSecurityPolicy
 ) -> OwnershipDocument:
     """Parse a full SEC submission envelope and return the ownership block."""
     # Extract accession number from header (prefer header over parameter).
@@ -161,7 +175,7 @@ def _extract_from_full_submission(
 
         # Found an ownership-typed block — extract its XML text.
         xml_text = _extract_xml_from_block(block_body)
-        return _build_document(xml_text, accession_number, doc_type)
+        return _build_document(xml_text, accession_number, doc_type, policy)
 
     raise NonOwnershipDocumentError(
         "No Form 3/4/5 <DOCUMENT> block found in SEC submission."
@@ -185,23 +199,26 @@ def _extract_xml_from_block(block_body: str) -> str:
     return text_content.strip()
 
 
-def _extract_direct_xml(text: str, accession_number: str | None) -> OwnershipDocument:
+def _extract_direct_xml(
+    text: str, accession_number: str | None, policy: SecSecurityPolicy
+) -> OwnershipDocument:
     """Handle a payload that is itself the primary ownership XML."""
     xml_text = text.strip()
 
     doc_type_match = _DOCUMENT_TYPE_ELEMENT_RE.search(xml_text)
     document_type = doc_type_match.group(1) if doc_type_match else None
 
-    return _build_document(xml_text, accession_number, document_type)
+    return _build_document(xml_text, accession_number, document_type, policy)
 
 
 def _build_document(
     xml_text: str,
     accession_number: str | None,
     document_type: str | None,
+    policy: SecSecurityPolicy,
 ) -> OwnershipDocument:
     """Validate the XML and construct an immutable OwnershipDocument."""
-    _validate_ownership_xml(xml_text, accession_number)
+    _validate_ownership_xml(xml_text, accession_number, policy)
     return OwnershipDocument(
         accession_number=accession_number,
         document_type=document_type,
@@ -209,19 +226,25 @@ def _build_document(
     )
 
 
-def _validate_ownership_xml(xml_text: str, accession_number: str | None) -> None:
-    """Parse xml_text with a hardened lxml parser; raise on failure."""
+def _validate_ownership_xml(
+    xml_text: str, accession_number: str | None, policy: SecSecurityPolicy
+) -> None:
+    """Enforce XML resource limits, then parse with a hardened lxml parser."""
+    xml_bytes = xml_text.encode("utf-8")
+    guard_xml_pre_parse(xml_bytes, policy, accession_number)
     parser = hardened_xml_parser()
     try:
-        root = etree.fromstring(xml_text.encode("utf-8"), parser)
+        root = etree.fromstring(xml_bytes, parser)
     except etree.XMLSyntaxError as exc:
         acc_hint = f" (accession={accession_number})" if accession_number else ""
         raise SecOwnershipDocumentError(
             f"Ownership XML is not well-formed{acc_hint}."
         ) from exc
 
+    guard_xml_tree(root, policy, accession_number)
+
     local_name = etree.QName(root.tag).localname
     if local_name != "ownershipDocument":
         raise NonOwnershipDocumentError(
-            f"Root element is {local_name!r}, expected 'ownershipDocument'."
+            "Root element is not 'ownershipDocument'."
         )

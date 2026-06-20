@@ -522,3 +522,125 @@ def test_document_sha256_matches() -> None:
 
     expected = hashlib.sha256(xml_text.encode("utf-8")).hexdigest()
     assert filing.document_sha256 == expected
+
+
+# ---------------------------------------------------------------------------
+# Security policy: field-level limits, entity rejection, footnote flattening
+# ---------------------------------------------------------------------------
+
+
+def _doc(xml_text: str, accession: str = "0000000001-26-000001") -> OwnershipDocument:
+    return OwnershipDocument(
+        accession_number=accession, document_type="4", xml_text=xml_text
+    )
+
+
+def _small_policy(**overrides: object):
+    from dataclasses import replace
+
+    from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
+
+    return replace(DEFAULT_SEC_SECURITY_POLICY, **overrides)  # type: ignore[arg-type]
+
+
+def _non_derivative_with_security_title(value: str) -> str:
+    return (
+        "<ownershipDocument><documentType>4</documentType>"
+        "<nonDerivativeTable><nonDerivativeTransaction>"
+        f"<securityTitle><value>{value}</value></securityTitle>"
+        "</nonDerivativeTransaction></nonDerivativeTable></ownershipDocument>"
+    )
+
+
+def _non_derivative_with_shares(value: str) -> str:
+    return (
+        "<ownershipDocument><documentType>4</documentType>"
+        "<nonDerivativeTable><nonDerivativeTransaction>"
+        f"<transactionAmounts><transactionShares><value>{value}</value>"
+        "</transactionShares></transactionAmounts>"
+        "</nonDerivativeTransaction></nonDerivativeTable></ownershipDocument>"
+    )
+
+
+def test_parser_rejects_dtd_declaration() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = (
+        "<!DOCTYPE x>"
+        "<ownershipDocument><documentType>4</documentType></ownershipDocument>"
+    )
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(_doc(xml))
+
+
+def test_parser_rejects_oversized_scalar_field() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = _non_derivative_with_security_title("X" * 50)
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(_doc(xml), policy=_small_policy(xml_max_scalar_chars=8))
+
+
+def test_parser_rejects_oversized_numeric_lexeme() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = _non_derivative_with_shares("1" * 40)
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(
+            _doc(xml), policy=_small_policy(xml_max_numeric_chars=8)
+        )
+
+
+def test_parser_rejects_oversized_remarks() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = (
+        "<ownershipDocument><documentType>4</documentType>"
+        f"<remarks>{'z' * 50}</remarks></ownershipDocument>"
+    )
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(
+            _doc(xml), policy=_small_policy(xml_max_long_text_chars=8)
+        )
+
+
+def test_parser_rejects_oversized_footnote() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = (
+        "<ownershipDocument><documentType>4</documentType><footnotes>"
+        f'<footnote id="F1">{"z" * 50}</footnote>'
+        "</footnotes></ownershipDocument>"
+    )
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(
+            _doc(xml), policy=_small_policy(xml_max_long_text_chars=8)
+        )
+
+
+def test_parser_flattens_and_normalizes_footnote_markup() -> None:
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    xml = (
+        "<ownershipDocument><documentType>4</documentType><footnotes>"
+        '<footnote id="F1">Shares   sold\n  pursuant to <i>a</i>\tplan.</footnote>'
+        "</footnotes></ownershipDocument>"
+    )
+    filing = parse_ownership_document(_doc(xml))
+    assert filing.footnotes[0].text == "Shares sold pursuant to a plan."
+
+
+def test_security_rejection_message_has_no_field_value() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    secret = "S" * 50
+    xml = _non_derivative_with_security_title(secret)
+    with pytest.raises(SecXmlSecurityError) as exc_info:
+        parse_ownership_document(_doc(xml), policy=_small_policy(xml_max_scalar_chars=8))
+    assert secret not in str(exc_info.value)

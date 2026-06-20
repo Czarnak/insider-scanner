@@ -8,6 +8,7 @@ network access.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -15,8 +16,17 @@ from typing import TYPE_CHECKING
 
 from lxml import etree
 
-from insider_scanner.core._sec_xml import hardened_xml_parser
+from insider_scanner.core._sec_xml import (
+    SecXmlSecurityError,
+    guard_xml_pre_parse,
+    guard_xml_tree,
+    hardened_xml_parser,
+)
 from insider_scanner.core.sec_ownership_document import OwnershipDocument
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
+)
 
 if TYPE_CHECKING:
     from lxml.etree import _Element  # noqa: PLC2701
@@ -36,6 +46,18 @@ class _TransactionCommon:
     acquired_disposed: str | None
     shares_owned_following: Decimal | None
     direct_or_indirect: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ParseContext:
+    """Carries the active security policy and accession through field parsing."""
+
+    policy: SecSecurityPolicy
+    accession: str | None
+
+
+# Collapses runs of whitespace (incl. newlines/tabs from flattened markup).
+_WHITESPACE_RE = re.compile(r"\s+")
 
 # ---------------------------------------------------------------------------
 # Category mapping
@@ -155,17 +177,31 @@ def category_for_code(code: str | None) -> str:
     return _CATEGORY_MAP.get(code, "other")
 
 
-def parse_ownership_document(document: OwnershipDocument) -> OwnershipFiling:
+def parse_ownership_document(
+    document: OwnershipDocument,
+    *,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+) -> OwnershipFiling:
     """Convert an ``OwnershipDocument`` into a normalized ``OwnershipFiling``.
 
     Raises
     ------
     SecOwnershipParseError
         When required data is missing or a present value cannot be parsed.
+    SecXmlSecurityError
+        When the XML violates the security policy's resource or field limits.
+
+    Notes
+    -----
+    The pre-parse and tree guards are applied here independently of
+    ``extract_ownership_document``: this function is a self-contained untrusted
+    boundary that may be called with any policy, so it re-validates the XML
+    rather than trusting a prior extraction pass.
     """
     xml_bytes = document.xml_text.encode("utf-8")
     sha256 = hashlib.sha256(xml_bytes).hexdigest()
 
+    guard_xml_pre_parse(xml_bytes, policy, document.accession_number)
     try:
         root = etree.fromstring(xml_bytes, hardened_xml_parser())
     except etree.XMLSyntaxError as exc:
@@ -173,9 +209,12 @@ def parse_ownership_document(document: OwnershipDocument) -> OwnershipFiling:
         raise SecOwnershipParseError(
             f"XML parse failure (accession={acc})"
         ) from exc
+    guard_xml_tree(root, policy, document.accession_number)
+
+    ctx = _ParseContext(policy=policy, accession=document.accession_number)
 
     # document_type: prefer XML element, fall back to document.document_type
-    xml_doc_type = _text(root, "documentType")
+    xml_doc_type = _text(root, "documentType", ctx)
     document_type = xml_doc_type or document.document_type
     if not document_type:
         raise SecOwnershipParseError(
@@ -185,21 +224,15 @@ def parse_ownership_document(document: OwnershipDocument) -> OwnershipFiling:
     acc = document.accession_number
     base = acc if acc else f"sha256:{sha256}"
 
-    period_of_report = _parse_date_elem(
-        root, "periodOfReport", document.accession_number, "periodOfReport"
-    )
-    remarks = _text(root, "remarks")
+    period_of_report = _parse_date_elem(root, "periodOfReport", ctx, "periodOfReport")
+    remarks = _remarks(root, ctx)
 
-    issuer = _parse_issuer(root)
-    reporting_owner = _parse_reporting_owner(root)
-    footnotes = _parse_footnotes(root, document.accession_number)
+    issuer = _parse_issuer(root, ctx)
+    reporting_owner = _parse_reporting_owner(root, ctx)
+    footnotes = _parse_footnotes(root, ctx)
 
-    non_derivative_transactions = _parse_non_derivative_table(
-        root, base, document.accession_number
-    )
-    derivative_transactions = _parse_derivative_table(
-        root, base, document.accession_number
-    )
+    non_derivative_transactions = _parse_non_derivative_table(root, base, ctx)
+    derivative_transactions = _parse_derivative_table(root, base, ctx)
 
     return OwnershipFiling(
         accession_number=acc,
@@ -221,19 +254,19 @@ def parse_ownership_document(document: OwnershipDocument) -> OwnershipFiling:
 # ---------------------------------------------------------------------------
 
 
-def _parse_issuer(root: _Element) -> Issuer:
+def _parse_issuer(root: _Element, ctx: _ParseContext) -> Issuer:
     el = root.find("issuer")
     if el is None:
         return Issuer(cik=None, name=None, trading_symbol=None)
-    symbol = _text(el, "issuerTradingSymbol") or None
+    symbol = _text(el, "issuerTradingSymbol", ctx) or None
     return Issuer(
-        cik=_text(el, "issuerCik"),
-        name=_text(el, "issuerName"),
+        cik=_text(el, "issuerCik", ctx),
+        name=_text(el, "issuerName", ctx),
         trading_symbol=symbol,
     )
 
 
-def _parse_reporting_owner(root: _Element) -> ReportingOwner:
+def _parse_reporting_owner(root: _Element, ctx: _ParseContext) -> ReportingOwner:
     el = root.find("reportingOwner")
     if el is None:
         return ReportingOwner(
@@ -245,14 +278,14 @@ def _parse_reporting_owner(root: _Element) -> ReportingOwner:
     id_el = el.find("reportingOwnerId")
     rel_el = el.find("reportingOwnerRelationship")
 
-    cik = _text(id_el, "rptOwnerCik") if id_el is not None else None
-    name = _text(id_el, "rptOwnerName") if id_el is not None else None
+    cik = _text(id_el, "rptOwnerCik", ctx) if id_el is not None else None
+    name = _text(id_el, "rptOwnerName", ctx) if id_el is not None else None
 
     is_director = _bool_flag(rel_el, "isDirector")
     is_officer = _bool_flag(rel_el, "isOfficer")
     is_ten_pct = _bool_flag(rel_el, "isTenPercentOwner")
     is_other = _bool_flag(rel_el, "isOther")
-    officer_title = _text(rel_el, "officerTitle") if rel_el is not None else None
+    officer_title = _text(rel_el, "officerTitle", ctx) if rel_el is not None else None
 
     return ReportingOwner(
         cik=cik,
@@ -265,7 +298,7 @@ def _parse_reporting_owner(root: _Element) -> ReportingOwner:
     )
 
 
-def _parse_footnotes(root: _Element, accession: str | None) -> tuple[Footnote, ...]:
+def _parse_footnotes(root: _Element, ctx: _ParseContext) -> tuple[Footnote, ...]:
     result: list[Footnote] = []
     fn_el = root.find("footnotes")
     if fn_el is None:
@@ -274,13 +307,14 @@ def _parse_footnotes(root: _Element, accession: str | None) -> tuple[Footnote, .
         fid = fn.get("id")
         if fid is None:
             continue
-        text = "".join(str(t) for t in fn.itertext()).strip()
+        text = _WHITESPACE_RE.sub(" ", "".join(str(t) for t in fn.itertext())).strip()
+        _check_long_text(text, ctx)
         result.append(Footnote(footnote_id=fid, text=text))
     return tuple(result)
 
 
 def _parse_transaction_common(
-    el: _Element, accession: str | None
+    el: _Element, ctx: _ParseContext
 ) -> _TransactionCommon:
     """Extract fields shared by both non-derivative and derivative rows.
 
@@ -291,16 +325,16 @@ def _parse_transaction_common(
     if amounts is not None:
         shares = _value_decimal(
             el.find("transactionAmounts/transactionShares"),
-            accession,
+            ctx,
             "transactionShares",
         )
         price_per_share = _value_decimal(
             el.find("transactionAmounts/transactionPricePerShare"),
-            accession,
+            ctx,
             "transactionPricePerShare",
         )
         acquired_disposed = _value_text(
-            el.find("transactionAmounts/transactionAcquiredDisposedCode")
+            el.find("transactionAmounts/transactionAcquiredDisposedCode"), ctx
         )
     else:
         shares = None
@@ -311,7 +345,7 @@ def _parse_transaction_common(
     shares_owned_following = (
         _value_decimal(
             el.find("postTransactionAmounts/sharesOwnedFollowingTransaction"),
-            accession,
+            ctx,
             "sharesOwnedFollowingTransaction",
         )
         if post is not None
@@ -320,7 +354,7 @@ def _parse_transaction_common(
 
     nature = el.find("ownershipNature")
     direct_or_indirect = (
-        _value_text(el.find("ownershipNature/directOrIndirectOwnership"))
+        _value_text(el.find("ownershipNature/directOrIndirectOwnership"), ctx)
         if nature is not None
         else None
     )
@@ -335,7 +369,7 @@ def _parse_transaction_common(
 
 
 def _parse_non_derivative_table(
-    root: _Element, base: str, accession: str | None
+    root: _Element, base: str, ctx: _ParseContext
 ) -> tuple[NonDerivativeTransaction, ...]:
     table = root.find("nonDerivativeTable")
     if table is None:
@@ -343,12 +377,12 @@ def _parse_non_derivative_table(
     result: list[NonDerivativeTransaction] = []
     for idx, txn_el in enumerate(table.findall("nonDerivativeTransaction")):
         row_id = f"{base}:nonDerivative:{idx}"
-        result.append(_parse_non_derivative_txn(txn_el, row_id, accession))
+        result.append(_parse_non_derivative_txn(txn_el, row_id, ctx))
     return tuple(result)
 
 
 def _parse_derivative_table(
-    root: _Element, base: str, accession: str | None
+    root: _Element, base: str, ctx: _ParseContext
 ) -> tuple[DerivativeTransaction, ...]:
     table = root.find("derivativeTable")
     if table is None:
@@ -356,20 +390,22 @@ def _parse_derivative_table(
     result: list[DerivativeTransaction] = []
     for idx, txn_el in enumerate(table.findall("derivativeTransaction")):
         row_id = f"{base}:derivative:{idx}"
-        result.append(_parse_derivative_txn(txn_el, row_id, accession))
+        result.append(_parse_derivative_txn(txn_el, row_id, ctx))
     return tuple(result)
 
 
 def _parse_non_derivative_txn(
-    el: _Element, row_id: str, accession: str | None
+    el: _Element, row_id: str, ctx: _ParseContext
 ) -> NonDerivativeTransaction:
-    security_title = _value_text(el, "securityTitle")
-    transaction_date = _value_date(el, "transactionDate", accession, "transactionDate")
+    security_title = _value_text(el, ctx, tag="securityTitle")
+    transaction_date = _value_date(el, "transactionDate", ctx, "transactionDate")
 
     coding = el.find("transactionCoding")
-    transaction_code = _text(coding, "transactionCode") if coding is not None else None
+    transaction_code = (
+        _text(coding, "transactionCode", ctx) if coding is not None else None
+    )
 
-    common = _parse_transaction_common(el, accession)
+    common = _parse_transaction_common(el, ctx)
     footnote_ids = _collect_footnote_ids(el)
 
     return NonDerivativeTransaction(
@@ -388,36 +424,38 @@ def _parse_non_derivative_txn(
 
 
 def _parse_derivative_txn(
-    el: _Element, row_id: str, accession: str | None
+    el: _Element, row_id: str, ctx: _ParseContext
 ) -> DerivativeTransaction:
-    security_title = _value_text(el, "securityTitle")
-    transaction_date = _value_date(el, "transactionDate", accession, "transactionDate")
+    security_title = _value_text(el, ctx, tag="securityTitle")
+    transaction_date = _value_date(el, "transactionDate", ctx, "transactionDate")
 
     coding = el.find("transactionCoding")
-    transaction_code = _text(coding, "transactionCode") if coding is not None else None
+    transaction_code = (
+        _text(coding, "transactionCode", ctx) if coding is not None else None
+    )
 
-    common = _parse_transaction_common(el, accession)
+    common = _parse_transaction_common(el, ctx)
 
     conv_el = el.find("conversionOrExercisePrice")
     conv_price = (
-        _value_decimal(conv_el, accession, "conversionOrExercisePrice")
+        _value_decimal(conv_el, ctx, "conversionOrExercisePrice")
         if conv_el is not None
         else None
     )
 
-    exercise_date = _value_date(el, "exerciseDate", accession, "exerciseDate")
-    expiration_date = _value_date(el, "expirationDate", accession, "expirationDate")
+    exercise_date = _value_date(el, "exerciseDate", ctx, "exerciseDate")
+    expiration_date = _value_date(el, "expirationDate", ctx, "expirationDate")
 
     underlying = el.find("underlyingSecurity")
     underlying_title = (
-        _value_text(underlying.find("underlyingSecurityTitle"))
+        _value_text(underlying.find("underlyingSecurityTitle"), ctx)
         if underlying is not None
         else None
     )
     underlying_shares = (
         _value_decimal(
             underlying.find("underlyingSecurityShares"),
-            accession,
+            ctx,
             "underlyingSecurityShares",
         )
         if underlying is not None
@@ -451,19 +489,54 @@ def _parse_derivative_txn(
 # ---------------------------------------------------------------------------
 
 
-def _text(parent: _Element | None, tag: str) -> str | None:
-    """Return the stripped text of the first matching child, or None."""
+def _check_scalar(value: str, ctx: _ParseContext) -> None:
+    """Reject a scalar field value longer than the policy's scalar limit."""
+    if len(value) > ctx.policy.xml_max_scalar_chars:
+        raise SecXmlSecurityError(accession=ctx.accession)
+
+
+def _check_numeric(raw: str, ctx: _ParseContext) -> None:
+    """Reject a numeric lexeme longer than the policy's numeric limit."""
+    if len(raw) > ctx.policy.xml_max_numeric_chars:
+        raise SecXmlSecurityError(accession=ctx.accession)
+
+
+def _check_long_text(value: str, ctx: _ParseContext) -> None:
+    """Reject a long-text field (remarks/footnote) over the policy limit."""
+    if len(value) > ctx.policy.xml_max_long_text_chars:
+        raise SecXmlSecurityError(accession=ctx.accession)
+
+
+def _remarks(root: _Element, ctx: _ParseContext) -> str | None:
+    """Return the remarks element text, bounded by the long-text limit."""
+    el = root.find("remarks")
+    if el is None or el.text is None:
+        return None
+    stripped = el.text.strip()
+    if not stripped:
+        return None
+    _check_long_text(stripped, ctx)
+    return stripped
+
+
+def _text(parent: _Element | None, tag: str, ctx: _ParseContext) -> str | None:
+    """Return the stripped, scalar-bounded text of the first child, or None."""
     if parent is None:
         return None
     el = parent.find(tag)
     if el is None or el.text is None:
         return None
     stripped = el.text.strip()
-    return stripped if stripped else None
+    if not stripped:
+        return None
+    _check_scalar(stripped, ctx)
+    return stripped
 
 
-def _value_text(el: _Element | None, tag: str | None = None) -> str | None:
-    """Return the text of a <value> child within *el* (or within el[tag])."""
+def _value_text(
+    el: _Element | None, ctx: _ParseContext, *, tag: str | None = None
+) -> str | None:
+    """Return the scalar-bounded text of a <value> child within *el* (or el[tag])."""
     if tag is not None:
         if el is None:
             return None
@@ -474,16 +547,20 @@ def _value_text(el: _Element | None, tag: str | None = None) -> str | None:
     if val is None or val.text is None:
         return None
     stripped = val.text.strip()
-    return stripped if stripped else None
+    if not stripped:
+        return None
+    _check_scalar(stripped, ctx)
+    return stripped
 
 
 def _value_decimal(
-    el: _Element | None, accession: str | None, field: str
+    el: _Element | None, ctx: _ParseContext, field: str
 ) -> Decimal | None:
     """Parse a Decimal from the <value> child of *el*.
 
     Returns None when the element or its <value> child is absent.
-    Raises SecOwnershipParseError when the value is present but unparseable.
+    Raises SecXmlSecurityError when the lexeme exceeds the numeric limit, and
+    SecOwnershipParseError when the value is present but unparseable.
     """
     if el is None:
         return None
@@ -493,21 +570,23 @@ def _value_decimal(
     raw = val.text.strip()
     if not raw:
         return None
+    _check_numeric(raw, ctx)
     try:
         return Decimal(raw)
     except InvalidOperation as exc:
         raise SecOwnershipParseError(
-            f"Invalid decimal for field '{field}' (accession={accession})"
+            f"Invalid decimal for field '{field}' (accession={ctx.accession})"
         ) from exc
 
 
 def _value_date(
-    parent: _Element, tag: str, accession: str | None, field: str
+    parent: _Element, tag: str, ctx: _ParseContext, field: str
 ) -> date | None:
     """Parse a date from the <value> child of parent[tag].
 
     Returns None when the element or <value> is absent.
-    Raises SecOwnershipParseError when the value is present but unparseable.
+    Raises SecXmlSecurityError when the lexeme exceeds the numeric limit, and
+    SecOwnershipParseError when the value is present but unparseable.
     """
     el = parent.find(tag)
     if el is None:
@@ -518,16 +597,17 @@ def _value_date(
     raw = val.text.strip()
     if not raw:
         return None
+    _check_numeric(raw, ctx)
     try:
         return date.fromisoformat(raw)
     except ValueError as exc:
         raise SecOwnershipParseError(
-            f"Invalid date for field '{field}' (accession={accession})"
+            f"Invalid date for field '{field}' (accession={ctx.accession})"
         ) from exc
 
 
 def _parse_date_elem(
-    root: _Element, tag: str, accession: str | None, field: str
+    root: _Element, tag: str, ctx: _ParseContext, field: str
 ) -> date | None:
     """Parse a bare text date element (not wrapped in <value>) from root."""
     el = root.find(tag)
@@ -536,11 +616,12 @@ def _parse_date_elem(
     raw = el.text.strip()
     if not raw:
         return None
+    _check_numeric(raw, ctx)
     try:
         return date.fromisoformat(raw)
     except ValueError as exc:
         raise SecOwnershipParseError(
-            f"Invalid date for field '{field}' (accession={accession})"
+            f"Invalid date for field '{field}' (accession={ctx.accession})"
         ) from exc
 
 
