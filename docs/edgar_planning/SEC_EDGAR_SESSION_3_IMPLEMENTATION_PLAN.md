@@ -242,3 +242,87 @@ Graphify: refreshed (--no-viz)
 
 Task 6 (static malicious fixtures, additional cross-boundary integration, and the
 final session-wide review/completion declaration) remains.
+
+## Implementation Status — 2026-06-21 (Task 6 — Session 3 complete)
+
+Task 6 is implemented test-only with RED-GREEN and reviewed by four independent
+passes (code-reviewer, security-reviewer, spec-compliance, python-reviewer); the
+test change is commit `cb7e6fe`.
+
+New static malicious fixtures (`tests/fixtures/`):
+
+- `sec_form4_xxe_dtd.xml` — internal DTD/entity declaration, rejected before
+  entity expansion.
+- `sec_form4_deep.xml` — element nesting of depth 70 (> 64) below the byte and
+  element limits.
+- `sec_form4_markup_footnote.xml` — a valid Form 4 derived from
+  `sec_form4_primary.xml` with nested footnote markup.
+- `sec_submissions_malformed_metadata.json` — malformed metadata, zipped at test
+  time so archive-safety inputs stay runtime-generated.
+
+Cross-boundary proofs added:
+
+- Offline (`tests/test_sec_offline_integration.py`): a redirect to an unapproved
+  host fails with a typed security error after exactly one transport call, leaves
+  no validated-cache artifact, and keeps the rejected host out of the exception
+  and logs; extraction-stage XML rejection for the XXE/DTD and deep fixtures
+  (each fails before parse/promotion, no cache); a true parser-stage long-text
+  rejection (extraction succeeds, parsing fails, no cache, no sentinel in logs);
+  and markup-footnote flattening to whitespace-normalized plain text with no log
+  leakage.
+- Bulk (`tests/test_sec_bulk.py`): whole-archive preflight proven by
+  instrumenting `zipfile.ZipFile.open` with a delegating counter — every unsafe
+  archive (traversal, symlink, oversized member, compression ratio) raises
+  `SecBulkSecurityError` with the open-count at zero even when a valid recognized
+  member is written first; the malformed-metadata member raises `SecBulkError`
+  with the sentinel absent from the exception and logs.
+
+Corrected extraction-stage vs true parser-stage rejection coverage: DTD/entity
+and excessive-depth violations are **extraction-stage** rejections enforced by
+the `_sec_xml` guards inside `extract_ownership_document` (the DTD/entity regex
+fires before lxml parses; the depth guard fires after the tree is built but still
+before parsing/promotion). Scalar, numeric, and long-text field limits are
+**true parser-stage** rejections enforced in `parse_ownership_document`. The
+Task 6 tests assert each violation at its correct stage.
+
+Final verification:
+
+```text
+Targeted SEC suite (7 files): 249 passed, 2 skipped
+Full pytest: 1815 passed, 3 skipped
+Coverage: 87.49% (required: 80%)
+Ruff: clean (src tests)
+Changed-file mypy (df584e6..HEAD, src + tests together): clean
+Full mypy: 191 errors in 50 files — equal to the pre-Task-6 baseline; zero new
+  (file, error-code) tuples (no regression)
+pip-audit: no known vulnerabilities
+git diff --check: clean
+Graphify: refreshed (--no-viz)
+```
+
+Accepted mypy no-regression policy: the repository-wide 191 errors in 50 files
+are pre-existing and untouched (none in the Session 3 modules). The gate is
+relative — full mypy must add no new `(file, error-code)` tuple over
+`build/mypy-session3-before.txt`. Targeted mypy must include the `src` modules
+alongside the test files; running mypy on test files alone reports spurious
+`import-untyped` errors (no `py.typed` marker under an editable install), so the
+meaningful clean check is `src` + tests together.
+
+Review outcome: no critical or high findings. A double-close concern raised
+against `_write_atomically` was verified as a false positive — `os.close` is
+already guarded by `try/except OSError` and the original exception is preserved
+by a bare `raise`. Residual MEDIUM/LOW observations (oversized-cache eviction
+that calls `unlink` on an error path, a redundant directory-entry guard in bulk
+preflight, and the caller-forgeable `PendingSecFiling.max_bytes` field) are in
+pre-existing, previously reviewed Task 3/5 production code, all fail closed, and
+are recorded as non-blocking future hardening.
+
+Accepted residual risk (unchanged): the same-user cache-read TOCTOU window
+between metadata validation and file read remains a defense-in-depth candidate;
+an attacker who already controls the local account is out of scope.
+
+Deferred to future work: structured logging for the bulk, XML, and downloader
+boundaries (the current surface is intentionally minimal — a single payload-free
+response-close warning); a global cache sweep remains Session 4 work.
+
+Session 3 is complete.
