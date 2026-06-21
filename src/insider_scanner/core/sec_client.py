@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 import logging
 import re
+import time
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
+from insider_scanner.core.sec_fair_access import (
+    DEFAULT_SEC_RETRY_POLICY,
+    RateLimiter,
+    SecRetryPolicy,
+    backoff_delay,
+    default_rate_limiter,
+    no_jitter,
+)
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceLimits,
@@ -111,6 +120,15 @@ class SecHttpError(SecClientError):
         super().__init__(f"SEC request returned HTTP {status_code} for {self.url}")
 
 
+class SecFilingNotFoundError(SecHttpError):
+    """Raised for an HTTP 404 — a recoverable 'missing filing/index' signal.
+
+    A subclass of :class:`SecHttpError` so existing ``except SecHttpError``
+    handlers keep working; callers that want to treat a missing resource as a
+    skippable, non-fatal outcome catch this narrower type.
+    """
+
+
 class SecTransportError(SecClientError):
     """Raised when the underlying transport cannot complete a request."""
 
@@ -129,16 +147,28 @@ class SecDecodeError(SecClientError):
 
 @dataclass(frozen=True, slots=True)
 class SecClient:
-    """Fetch approved SEC resources with bounded, typed failures."""
+    """Fetch approved SEC resources with bounded, typed failures.
+
+    Fair-access behavior is injectable: ``rate_limiter`` throttles every network
+    hop below the SEC ceiling, ``retry_policy`` governs bounded retries of
+    transient throttling responses, and ``sleep``/``jitter`` are injected so
+    backoff is deterministic under test.
+    """
 
     user_agent: str
     transport: SecTransport = field(default_factory=RequestsSecTransport)
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY
+    rate_limiter: RateLimiter = field(default_factory=default_rate_limiter)
+    retry_policy: SecRetryPolicy = DEFAULT_SEC_RETRY_POLICY
+    sleep: Callable[[float], None] = time.sleep
+    jitter: Callable[[float], float] = no_jitter
 
     def __post_init__(self) -> None:
         _validate_user_agent(self.user_agent)
         if not isinstance(self.policy, SecSecurityPolicy):
             raise SecConfigurationError("SEC security policy is invalid")
+        if not isinstance(self.retry_policy, SecRetryPolicy):
+            raise SecConfigurationError("SEC retry policy is invalid")
 
     def fetch_text(self, url: str, *, profile: SecResourceProfile) -> str:
         content = self.fetch_bytes(url, profile=profile)
@@ -152,7 +182,7 @@ class SecClient:
         current_url = _validate_url(url, self.policy)
         redirects = 0
         while True:
-            response = self._send(current_url)
+            response = self._request_with_retry(current_url)
             try:
                 if response.status_code in _REDIRECT_STATUSES:
                     current_url = _redirect_target(
@@ -160,12 +190,49 @@ class SecClient:
                     )
                     redirects += 1
                     continue
-                if not 200 <= response.status_code < 300:
-                    raise SecHttpError(response.status_code, current_url)
                 _validate_response_headers(response.headers, limits, current_url)
                 return _read_bounded(response, limits, self.policy, current_url)
             finally:
                 _close_response(response, current_url)
+
+    def _request_with_retry(self, url: str) -> _SecResponse:
+        """Return a redirect or 2xx response, retrying transient throttling.
+
+        Error statuses are handled here: 404 raises the recoverable
+        :class:`SecFilingNotFoundError`; statuses in ``retry_policy`` are retried
+        with bounded backoff; all other non-success statuses raise
+        :class:`SecHttpError`. Transport failures are not retried.
+        """
+        attempt = 0
+        while True:
+            attempt += 1
+            self.rate_limiter.acquire()
+            response = self._send(url)
+            status = response.status_code
+            if status in _REDIRECT_STATUSES or 200 <= status < 300:
+                return response
+            retry_after = (
+                _parse_retry_after(_header(response.headers, "Retry-After"))
+                if status in self.retry_policy.retry_statuses
+                else None
+            )
+            _close_response(response, url)
+            if status == 404:
+                raise SecFilingNotFoundError(status, url)
+            if (
+                status in self.retry_policy.retry_statuses
+                and attempt < self.retry_policy.max_attempts
+            ):
+                self._sleep_backoff(attempt, retry_after)
+                continue
+            raise SecHttpError(status, url)
+
+    def _sleep_backoff(self, attempt: int, retry_after: float | None) -> None:
+        delay = backoff_delay(
+            self.retry_policy, attempt, retry_after=retry_after, jitter=self.jitter
+        )
+        if delay > 0:
+            self.sleep(delay)
 
     def _send(self, url: str) -> _SecResponse:
         try:
@@ -280,6 +347,21 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
     for key, value in headers.items():
         if key.casefold() == wanted:
             return value if isinstance(value, str) else None
+    return None
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a ``Retry-After`` delta-seconds value, else fall back to backoff.
+
+    Only non-negative ASCII integer seconds (RFC 7231 delta-seconds) are
+    accepted. The HTTP-date form and fractional values fall back to computed
+    exponential backoff rather than risking an unbounded or surprising wait.
+    """
+    if value is None:
+        return None
+    candidate = value.strip()
+    if candidate.isascii() and candidate.isdigit():
+        return float(candidate)
     return None
 
 

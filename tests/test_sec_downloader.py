@@ -355,3 +355,124 @@ def test_forged_pending_row_subclass_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="pending.row"):
         promote_validated_filing(pending, cache_root=tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Batch cache cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_purge_stale_cache_removes_old_keeps_fresh(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import purge_stale_cache
+
+    namespace = tmp_path / "validated-v1"
+    namespace.mkdir(parents=True)
+    stale = namespace / "old.filing"
+    fresh = namespace / "new.filing"
+    stale.write_bytes(b"old")
+    fresh.write_bytes(b"new")
+    os.utime(stale, (100.0, 100.0))
+
+    with patch("insider_scanner.core.sec_downloader.time.time", return_value=1000.0):
+        removed = purge_stale_cache(tmp_path, max_age_seconds=10.0)
+
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_purge_stale_cache_returns_zero_when_namespace_absent(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import purge_stale_cache
+
+    assert purge_stale_cache(tmp_path, max_age_seconds=0.0) == 0
+
+
+def test_purge_stale_cache_rejects_symlinked_namespace(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        SecDownloadSecurityError,
+        purge_stale_cache,
+    )
+
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    namespace = tmp_path / "validated-v1"
+    try:
+        namespace.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(SecDownloadSecurityError) as exc_info:
+        purge_stale_cache(tmp_path, max_age_seconds=0.0)
+
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH
+
+
+def test_purge_stale_cache_does_not_follow_or_remove_symlink_entries(
+    tmp_path: Path,
+) -> None:
+    from insider_scanner.core.sec_downloader import purge_stale_cache
+
+    outside = tmp_path / "secret.txt"
+    outside.write_bytes(b"keep me")
+    namespace = tmp_path / "validated-v1"
+    namespace.mkdir(parents=True)
+    link = namespace / "link.filing"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+    os.utime(outside, (100.0, 100.0))
+
+    with patch("insider_scanner.core.sec_downloader.time.time", return_value=1000.0):
+        removed = purge_stale_cache(tmp_path, max_age_seconds=10.0)
+
+    assert removed == 0
+    assert link.is_symlink()
+    assert outside.exists()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic quarantine (opt-in failed-only retention)
+# ---------------------------------------------------------------------------
+
+
+def test_quarantine_failed_download_writes_under_diagnostics(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        quarantine_failed_download,
+    )
+
+    row = make_row()
+    client, _ = make_client(b"corrupt filing bytes")
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+
+    target = quarantine_failed_download(pending, cache_root=tmp_path)
+
+    digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
+    assert target == tmp_path / "diagnostics" / f"{digest}.raw"
+    assert target.read_bytes() == b"corrupt filing bytes"
+    # Atomic write leaves no temp residue in the diagnostics directory.
+    assert tuple(target.parent.iterdir()) == (target,)
+
+
+def test_quarantine_rejects_symlinked_diagnostics_dir(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        SecDownloadSecurityError,
+        fetch_filing,
+        quarantine_failed_download,
+    )
+
+    row = make_row()
+    client, _ = make_client(b"bytes")
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        (tmp_path / "diagnostics").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    with pytest.raises(SecDownloadSecurityError) as exc_info:
+        quarantine_failed_download(pending, cache_root=tmp_path)
+
+    assert exc_info.value.reason is SecSecurityReason.CACHE_PATH

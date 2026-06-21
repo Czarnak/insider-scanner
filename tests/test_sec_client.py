@@ -16,14 +16,17 @@ from insider_scanner.core.sec_client import (
     SecClientSecurityError,
     SecConfigurationError,
     SecDecodeError,
+    SecFilingNotFoundError,
     SecHttpError,
     SecTransport,
     SecTransportError,
 )
+from insider_scanner.core.sec_fair_access import RateLimiter, SecRetryPolicy
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceLimits,
     SecResourceProfile,
+    SecSecurityPolicy,
     SecSecurityReason,
 )
 
@@ -273,7 +276,7 @@ def test_content_type_parameters_are_normalized() -> None:
     assert fetch_bytes(make_client(configured_transport(response))) == b"index"
 
 
-def small_text_policy(max_bytes: int):
+def small_text_policy(max_bytes: int) -> SecSecurityPolicy:
     limits = dict(DEFAULT_SEC_SECURITY_POLICY.resource_limits)
     limits[TEXT_PROFILE] = SecResourceLimits(frozenset({"text/plain"}), max_bytes)
     return replace(DEFAULT_SEC_SECURITY_POLICY, resource_limits=limits)
@@ -394,3 +397,144 @@ def test_client_error_types_share_base() -> None:
         SecDecodeError,
     ):
         assert issubclass(error_type, SecClientError)
+
+
+# ---------------------------------------------------------------------------
+# Fair access: rate limiting, retry/backoff, and recoverable 404
+# ---------------------------------------------------------------------------
+
+
+def recording_client(
+    transport: Mock,
+    *,
+    retry_policy: SecRetryPolicy | None = None,
+) -> tuple[SecClient, list[float]]:
+    """A client with a no-op limiter and a sleep recorder for deterministic retry."""
+    sleeps: list[float] = []
+    client = SecClient(
+        user_agent=VALID_USER_AGENT,
+        transport=cast(SecTransport, transport),
+        rate_limiter=cast(RateLimiter, Mock(spec=RateLimiter)),
+        retry_policy=retry_policy or SecRetryPolicy(),
+        sleep=sleeps.append,
+    )
+    return client, sleeps
+
+
+def test_rate_limiter_is_acquired_once_per_network_hop() -> None:
+    redirect = StubResponse(
+        status_code=302, chunks=(), headers={"Location": "/Archives/filing.txt"}
+    )
+    final = StubResponse(chunks=(b"filing",))
+    transport = configured_transport(redirect, final)
+    limiter = Mock(spec=RateLimiter)
+    client = SecClient(
+        user_agent=VALID_USER_AGENT,
+        transport=cast(SecTransport, transport),
+        rate_limiter=cast(RateLimiter, limiter),
+    )
+
+    assert fetch_bytes(client) == b"filing"
+    assert limiter.acquire.call_count == 2  # one per hop (redirect + final)
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+def test_transient_status_is_retried_with_bounded_backoff(status_code: int) -> None:
+    throttled = StubResponse(status_code=status_code, chunks=())
+    ok = StubResponse(chunks=(b"recovered",))
+    transport = configured_transport(throttled, ok)
+    client, sleeps = recording_client(transport)
+
+    assert fetch_bytes(client) == b"recovered"
+    assert sleeps == [1.0]  # base_delay * multiplier**0
+    assert transport.get.call_count == 2
+    assert throttled.close_calls == 1
+
+
+def test_retry_after_header_overrides_computed_backoff() -> None:
+    throttled = StubResponse(
+        status_code=503,
+        chunks=(),
+        headers={"Content-Type": "text/plain", "Retry-After": "7"},
+    )
+    ok = StubResponse(chunks=(b"ok",))
+    transport = configured_transport(throttled, ok)
+    client, sleeps = recording_client(transport)
+
+    assert fetch_bytes(client) == b"ok"
+    assert sleeps == [7.0]
+
+
+def test_retry_after_zero_retries_immediately_without_sleeping() -> None:
+    throttled = StubResponse(
+        status_code=503,
+        chunks=(),
+        headers={"Content-Type": "text/plain", "Retry-After": "0"},
+    )
+    ok = StubResponse(chunks=(b"ok",))
+    transport = configured_transport(throttled, ok)
+    client, sleeps = recording_client(transport)
+
+    assert fetch_bytes(client) == b"ok"
+    assert sleeps == []  # zero-second wait skips the sleep call
+    assert transport.get.call_count == 2
+
+
+def test_retries_are_exhausted_then_raise_typed_error() -> None:
+    responses = tuple(StubResponse(status_code=503, chunks=()) for _ in range(4))
+    transport = configured_transport(*responses)
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecHttpError) as exc_info:
+        fetch_bytes(client)
+
+    assert exc_info.value.status_code == 503
+    assert transport.get.call_count == 4  # max_attempts
+    assert sleeps == [1.0, 2.0, 4.0]  # three waits between four attempts
+    assert all(response.close_calls == 1 for response in responses)
+
+
+def test_404_raises_recoverable_not_found_and_is_not_retried() -> None:
+    response = StubResponse(status_code=404, chunks=(b"missing payload",))
+    transport = configured_transport(response)
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecFilingNotFoundError) as exc_info:
+        fetch_bytes(client)
+
+    assert isinstance(exc_info.value, SecHttpError)
+    assert exc_info.value.status_code == 404
+    assert "missing payload" not in str(exc_info.value)
+    assert transport.get.call_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("status_code", [400, 403, 500])
+def test_non_retryable_status_fails_on_first_attempt(status_code: int) -> None:
+    response = StubResponse(status_code=status_code, chunks=())
+    transport = configured_transport(response)
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecHttpError) as exc_info:
+        fetch_bytes(client)
+
+    assert exc_info.value.status_code == status_code
+    assert transport.get.call_count == 1
+    assert sleeps == []
+
+
+def test_transport_errors_are_not_retried() -> None:
+    transport = configured_transport()
+    transport.get.side_effect = RuntimeError("boom")
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecTransportError):
+        fetch_bytes(client)
+
+    assert transport.get.call_count == 1
+    assert sleeps == []
+
+
+def test_filing_not_found_shares_client_error_base() -> None:
+    assert issubclass(SecFilingNotFoundError, SecHttpError)
+    assert issubclass(SecFilingNotFoundError, SecClientError)

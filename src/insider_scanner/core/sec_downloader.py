@@ -17,12 +17,15 @@ from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
+    SecSecurityPolicy,
     SecSecurityReason,
 )
 
 
 _CACHE_NAMESPACE = "validated-v1"
 _CACHE_SUFFIX = ".filing"
+_DIAGNOSTICS_NAMESPACE = "diagnostics"
+_DIAGNOSTICS_SUFFIX = ".raw"
 _MAX_FILING_BYTES = DEFAULT_SEC_SECURITY_POLICY.limits_for(
     SecResourceProfile.FILING_DOCUMENT
 ).max_bytes
@@ -137,6 +140,90 @@ def promote_validated_filing(
     except OSError as exc:
         raise SecDownloadIoError() from exc
     return DownloadedSecFiling(pending.row, pending.archive_url, expected_path, False)
+
+
+def purge_stale_cache(
+    cache_root: Path,
+    *,
+    max_age_seconds: float | None = None,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+) -> int:
+    """Remove validated-cache files older than *max_age_seconds* and return count.
+
+    The age threshold defaults to ``policy.cache_freshness_seconds``. Only
+    regular files inside the ``validated-v1`` namespace are considered; symlinks
+    are never followed or removed, and a symlinked namespace is rejected.
+    """
+    if not isinstance(cache_root, Path):
+        raise TypeError("cache_root must be a pathlib.Path")
+    _validate_cache_root(cache_root)
+    threshold = (
+        policy.cache_freshness_seconds if max_age_seconds is None else max_age_seconds
+    )
+    if threshold < 0:
+        raise ValueError("max_age_seconds must not be negative")
+    namespace = cache_root / _CACHE_NAMESPACE
+    if namespace.is_symlink():
+        raise SecDownloadSecurityError()
+    if not namespace.is_dir():
+        return 0
+
+    now = time.time()
+    removed = 0
+    for entry in namespace.iterdir():
+        if entry.is_symlink() or not resolves_within(entry, cache_root):
+            continue
+        try:
+            metadata = entry.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            continue
+        if now - metadata.st_mtime <= threshold:
+            continue
+        try:
+            entry.unlink()
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
+def quarantine_failed_download(
+    pending: PendingSecFiling,
+    *,
+    cache_root: Path,
+) -> Path:
+    """Persist raw bytes of a failed filing under ``diagnostics`` for inspection.
+
+    Intended for opt-in debug/diagnostic mode only. Reuses the same path-safety
+    guards and atomic write as the validated cache so a hostile archive path can
+    never escape *cache_root*.
+    """
+    if type(pending) is not PendingSecFiling:
+        raise TypeError("pending must be exactly PendingSecFiling")
+    if type(pending.row) is not SecMasterIndexRow:
+        raise TypeError("pending.row must be exactly SecMasterIndexRow")
+    if not isinstance(cache_root, Path):
+        raise TypeError("cache_root must be a pathlib.Path")
+    if type(pending.content) is not bytes:
+        raise SecDownloadSecurityError(SecSecurityReason.RESPONSE_SIZE)
+    _validate_cache_root(cache_root)
+    digest = hashlib.sha256(pending.row.archive_path.encode("utf-8")).hexdigest()
+    diagnostics_dir = cache_root / _DIAGNOSTICS_NAMESPACE
+    target = diagnostics_dir / f"{digest}{_DIAGNOSTICS_SUFFIX}"
+    if not resolves_within(target, cache_root):
+        raise SecDownloadSecurityError()
+    if diagnostics_dir.is_symlink() or target.is_symlink():
+        raise SecDownloadSecurityError()
+    try:
+        _prepare_cache_directory(diagnostics_dir, cache_root)
+        _write_atomically(target, pending.content)
+    except SecDownloadError:
+        raise
+    except OSError as exc:
+        raise SecDownloadIoError() from exc
+    return target
 
 
 def _validate_inputs(
