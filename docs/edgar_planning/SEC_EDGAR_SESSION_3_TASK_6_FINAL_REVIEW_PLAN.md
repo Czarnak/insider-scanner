@@ -26,9 +26,21 @@ pip-audit, pytest-cov, Graphify.
 - Do not expand Session 3 into repository-wide mypy remediation. Require all
   Session 3 changed Python files to be clean and prove the full-repository
   diagnostic set does not regress from the verified pre-Task-6 baseline.
-- Current pre-Task-6 evidence: 239 SEC-focused tests pass, 2 skip. Full mypy
-  reports 191 errors in 50 files; the three SEC-named errors are in the
-  pre-existing, untouched `core/secform4.py` module.
+- Current pre-Task-6 evidence (the seven quality-gate files run in Task 1): 239
+  tests pass, 2 skip. The broader 10-file SEC suite recorded in the parent plan
+  yields 261 passed, 2 skipped — a test-selection scope difference, not a
+  regression. Treat both as observed counts; Task 1 records the live numbers as
+  the authoritative baseline.
+- Full mypy reports a pre-existing repository-wide error count (the parent plan
+  recorded 192 errors in 51 files; an earlier note cited 191 in 50). Do not gate
+  on a hardcoded figure. Task 1 captures the live count into
+  `build/mypy-session3-before.txt`, and that file is the only no-regression
+  reference. The SEC-named errors are in the pre-existing, untouched
+  `core/secform4.py` module.
+- Naming: this document implements the parent plan's "Task 6: Cross-Boundary
+  Integration" through its own Tasks 2-5. Its Task 5 reviews the newly added
+  tests; its Task 6 is the separate session-wide final review. The two review
+  passes are intentional and distinct.
 - No live SEC requests are permitted. The offline chain is the critical
   end-to-end flow.
 
@@ -55,8 +67,9 @@ New-Item -ItemType Directory -Force build | Out-Null
     Tee-Object build\mypy-session3-before.txt
 ```
 
-Expected: non-zero exit with 191 errors in 50 files and no errors in the
-Session 3 modules changed since `df584e6`.
+Expected: non-zero exit. Record the live error/file count as the baseline (the
+parent plan observed ~192 errors in 51 files — this is not a hardcoded gate) and
+confirm no errors fall in the Session 3 modules changed since `df584e6`.
 
 - [ ] Re-run the current targeted baseline.
 
@@ -64,7 +77,9 @@ Session 3 modules changed since `df584e6`.
 .\.venv\Scripts\python.exe -m pytest tests\test_sec_security.py tests\test_sec_client.py tests\test_sec_downloader.py tests\test_sec_ownership_document.py tests\test_sec_ownership_parser.py tests\test_sec_bulk.py tests\test_sec_offline_integration.py -v -p no:cacheprovider
 ```
 
-Expected: 239 passed, 2 skipped.
+Expected: 239 passed, 2 skipped for these seven files. (The parent plan's 261
+passed counts the broader 10-file SEC suite; both are correct — record the live
+number here as the baseline.)
 
 ## Task 2: Add Static Cross-Boundary Fixtures
 
@@ -84,7 +99,10 @@ Expected: 239 passed, 2 skipped.
   default depth limit of 64 while remaining below the byte and element limits.
 - [ ] Add a valid Form 4 fixture containing nested markup in a footnote and a
   unique `TASK6_FOOTNOTE_SENTINEL`. Its expected parsed value is
-  whitespace-normalized plain text with no markup.
+  whitespace-normalized plain text with no markup. Derive it from the existing
+  `tests/fixtures/sec_form4_primary.xml` so it parses end-to-end, and keep the
+  flattened footnote long enough to exceed a small injected long-text limit (it
+  is reused by the Task 3 parser-stage test) while staying minimal.
 - [ ] Add intentionally malformed submissions metadata containing a unique
   `TASK6_METADATA_SENTINEL`. It will be placed in a ZIP at test time so archive
   safety fixtures remain runtime-generated.
@@ -107,6 +125,9 @@ Expected: 239 passed, 2 skipped.
   `test_http_redirect_rejection_leaves_no_validated_cache_and_stops_after_one_request`.
   Configure the first response as a redirect to an unapproved host, require a
   typed security failure, exactly one transport call, and no cache artifact.
+  The shared `_make_stub_client` helper returns a 200/octet-stream response, so
+  this test needs a dedicated transport double whose first `get()` returns a
+  3xx response carrying a `Location` header pointing at the unapproved host.
 - [ ] Write and run parameterized extraction-stage tests for the DTD/XXE and
   excessive-depth fixtures. Each must fail before parsing or promotion and
   leave no cache artifact.
@@ -215,7 +236,7 @@ with a `fix:` conventional commit before this test commit.
 .\.venv\Scripts\python.exe -m pytest tests\test_sec_security.py tests\test_sec_client.py tests\test_sec_downloader.py tests\test_sec_ownership_document.py tests\test_sec_ownership_parser.py tests\test_sec_bulk.py tests\test_sec_offline_integration.py -v
 .\.venv\Scripts\python.exe -m pytest -v --cov=insider_scanner --cov-report=term-missing --cov-fail-under=80 -p no:cacheprovider --basetemp=build\pytest-tmp-session3
 .\.venv\Scripts\python.exe -m ruff check src tests
-$session3Python = git diff --name-only df584e6..HEAD -- '*.py'
+$session3Python = git diff --name-only --diff-filter=ACMR df584e6..HEAD -- '*.py'
 .\.venv\Scripts\python.exe -m mypy $session3Python
 .\.venv\Scripts\python.exe -m mypy src tests 2>&1 |
     Tee-Object build\mypy-session3-after.txt
@@ -228,9 +249,10 @@ Acceptance:
 - All targeted and full tests pass.
 - Repository coverage is at least 80%.
 - Ruff and changed-file mypy checks are clean.
-- Full mypy adds no diagnostic relative to
-  `build/mypy-session3-before.txt`; the inherited count does not exceed 191
-  errors in 50 files.
+- Full mypy adds no diagnostic relative to `build/mypy-session3-before.txt`.
+  Compare by total error count and by the set of `(file, error-code)` tuples,
+  not a literal text diff — added test lines renumber pre-existing errors. The
+  inherited count must not exceed the live baseline captured in Task 1.
 - Dependency audit has no unresolved vulnerability.
 - No critical/high review finding remains.
 
