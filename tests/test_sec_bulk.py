@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import stat
 import types
 import zipfile
 from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -24,6 +26,9 @@ from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityReason,
 )
+
+# Sentinel string present in the malformed-metadata fixture — must never leak.
+TASK6_METADATA_SENTINEL = "TASK6_METADATA_SENTINEL"
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 FIXTURE_ZIP = FIXTURE_DIR / "sec_submissions_bulk_small.zip"
@@ -543,3 +548,159 @@ def test_duplicate_member_name_reads_each_preflighted_entry(tmp_path: Path) -> N
 
     results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert len(results) == 1
+
+
+# ---------------------------------------------------------------------------
+# 16. Whole-archive ZIP preflight proof: unsafe archives fail BEFORE any read
+# ---------------------------------------------------------------------------
+
+# Minimal valid recognised-member content (low file_size, poor compressibility).
+_VALID_MEMBER_NAME = "CIK0000320193.json"
+_VALID_MEMBER_BYTES = b'{"filings":{"recent":{},"files":[]}}'
+
+
+def _make_zip_with_unsafe(
+    tmp_path: Path,
+    unsafe_info: zipfile.ZipInfo,
+    unsafe_bytes: bytes,
+) -> Path:
+    """Build a ZIP: safe recognised member first, then one unsafe member."""
+    zip_path = tmp_path / "preflight_test.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(_VALID_MEMBER_NAME, _VALID_MEMBER_BYTES)
+        zf.writestr(unsafe_info, unsafe_bytes)
+    return zip_path
+
+
+def _symlink_info(name: str = "link.json") -> zipfile.ZipInfo:
+    """Return a ZipInfo whose unix mode marks it as a symlink."""
+    info = zipfile.ZipInfo(name)
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    return info
+
+
+def _deflated_info(name: str) -> zipfile.ZipInfo:
+    """Return a ZipInfo with ZIP_DEFLATED compression (so compress_size reflects ratio)."""
+    info = zipfile.ZipInfo(name)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    return info
+
+
+# Policies sized so that only the unsafe member trips the check.
+# _VALID_MEMBER_BYTES is 36 bytes stored uncompressed (compress_size == file_size,
+# ratio == 1.0) because writestr with a string name uses the ZipFile default
+# compression, but small data has no appreciable ratio.
+_POLICY_OVERSIZED = replace(
+    DEFAULT_SEC_SECURITY_POLICY,
+    zip_max_member_bytes=50,  # valid (36 B) passes; unsafe (100 B) fails
+)
+_POLICY_RATIO_BOMB = replace(
+    DEFAULT_SEC_SECURITY_POLICY,
+    zip_max_compression_ratio=50.0,  # valid ratio 1.0; b"A"*50_000 deflated ~758
+)
+
+_UNSAFE_CASES = [
+    pytest.param(
+        "traversal",
+        zipfile.ZipInfo("../evil.json"),
+        b"evil content",
+        DEFAULT_SEC_SECURITY_POLICY,
+        id="traversal_name",
+    ),
+    pytest.param(
+        "symlink",
+        _symlink_info(),
+        b"/etc/passwd",
+        DEFAULT_SEC_SECURITY_POLICY,
+        id="symlink_entry",
+    ),
+    pytest.param(
+        "oversized",
+        zipfile.ZipInfo("CIK0000000099.json"),
+        b"X" * 100,
+        _POLICY_OVERSIZED,
+        id="oversized_member",
+    ),
+    pytest.param(
+        "ratio_bomb",
+        _deflated_info("CIK0000000099.json"),  # compress_type=DEFLATED so ratio is real
+        b"A" * 50_000,
+        _POLICY_RATIO_BOMB,
+        id="compression_ratio_bomb",
+    ),
+]
+
+
+@pytest.mark.parametrize("_label,unsafe_info,unsafe_bytes,policy", _UNSAFE_CASES)
+def test_unsafe_archives_fail_preflight_before_any_member_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _label: str,
+    unsafe_info: zipfile.ZipInfo,
+    unsafe_bytes: bytes,
+    policy: object,
+) -> None:
+    """Preflight rejects unsafe archives without reading any member content.
+
+    Instruments ``zipfile.ZipFile.open`` with a counting wrapper.  For every
+    unsafe case the generator must raise ``SecBulkSecurityError`` before
+    ``open`` is called even once (open-count == 0).
+    """
+    zip_path = _make_zip_with_unsafe(tmp_path, unsafe_info, unsafe_bytes)
+
+    open_count: list[int] = [0]
+    _original_open: Callable[..., object] = zipfile.ZipFile.open  # type: ignore[assignment]
+
+    def _counting_open(
+        self: zipfile.ZipFile, *args: object, **kwargs: object
+    ) -> object:
+        open_count[0] += 1
+        return _original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", _counting_open)
+
+    # Safe recognised member is written FIRST and the unsafe member SECOND: the
+    # open-count==0 assertion only holds because preflight scans the entire central
+    # directory before opening any member. This guards against a regression to
+    # scan-as-you-read.
+    with pytest.raises(SecBulkSecurityError):
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path, policy=policy))  # type: ignore[arg-type]
+
+    assert open_count[0] == 0, (
+        f"[{_label}] preflight must not call zf.open; got {open_count[0]} call(s)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 17. Malformed fixture: SecBulkError raised; sentinel never leaks
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_metadata_error_does_not_leak_payload_or_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Malformed-metadata fixture raises SecBulkError without leaking the sentinel.
+
+    The fixture contains TASK6_METADATA_SENTINEL.  It must appear in neither
+    the exception message nor captured log output, confirming the production
+    code never echoes raw member content.
+    """
+    malformed_bytes = (
+        FIXTURE_DIR / "sec_submissions_malformed_metadata.json"
+    ).read_bytes()
+
+    zip_path = tmp_path / "malformed_meta.zip"
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(_VALID_MEMBER_NAME, malformed_bytes)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(SecBulkError) as exc_info:
+            list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+
+    assert TASK6_METADATA_SENTINEL not in str(exc_info.value), (
+        "Sentinel found in exception message — raw payload leaked"
+    )
+    assert TASK6_METADATA_SENTINEL not in caplog.text, (
+        "Sentinel found in log output — raw payload leaked"
+    )

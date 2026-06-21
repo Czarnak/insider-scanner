@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE ownershipDocument [<!ENTITY xxe "TASK6_XXE_SENTINEL">]>
+<ownershipDocument>
+  <schemaVersion>X0508</schemaVersion>
+  <documentType>4</documentType>
+  <periodOfReport>2026-06-12</periodOfReport>
+  <issuer>
+    <issuerCik>0000320193</issuerCik>
+    <issuerName>TASK6_XXE_SENTINEL</issuerName>
+    <issuerTradingSymbol>AAPL</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0001214156</rptOwnerCik>
+      <rptOwnerName>TEST OWNER</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>0</isOther>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <footnotes>
+    <footnote id="F1">&xxe;</footnote>
+  </footnotes>
+</ownershipDocument>

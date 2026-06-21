@@ -7,6 +7,7 @@ parse_ownership_document and asserts the normalised OwnershipFiling.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date
@@ -17,7 +18,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from insider_scanner.core.sec_client import SecClient, SecTransport
+from insider_scanner.core._sec_xml import SecXmlSecurityError
+from insider_scanner.core.sec_client import SecClient, SecClientSecurityError, SecTransport
 from insider_scanner.core.sec_downloader import (
     DownloadedSecFiling,
     fetch_filing,
@@ -29,6 +31,7 @@ from insider_scanner.core.sec_ownership_document import (
     extract_ownership_document,
 )
 from insider_scanner.core.sec_ownership_parser import OwnershipFiling, parse_ownership_document
+from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY, SecSecurityPolicy, SecSecurityReason
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
@@ -87,13 +90,25 @@ def _fetch_parse_promote(
     *,
     client: SecClient,
     cache_root: Path,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
 ) -> tuple[DownloadedSecFiling, OwnershipFiling]:
     """Run the real fetch → parse → promote boundary in that order."""
     pending = fetch_filing(row, client=client, cache_root=cache_root)
-    document = extract_ownership_document(pending.content)
-    filing = parse_ownership_document(document)
+    document = extract_ownership_document(pending.content, policy=policy)
+    filing = parse_ownership_document(document, policy=policy)
     downloaded = promote_validated_filing(pending, cache_root=cache_root)
     return downloaded, filing
+
+
+def _validated_cache_files(cache_root: Path) -> list[Path]:
+    """Return list of files under cache_root/validated-v1, or empty if absent.
+
+    Read-only: does not mutate the cache.
+    """
+    namespace = cache_root / "validated-v1"
+    if not namespace.exists():
+        return []
+    return list(namespace.iterdir())
 
 
 def _run_full_chain(
@@ -372,3 +387,150 @@ class TestCacheReuseAcrossPipeline:
             filing_first.non_derivative_transactions
             == filing_second.non_derivative_transactions
         )
+
+
+# ---------------------------------------------------------------------------
+# Test D — HTTP redirect rejection (Task 3.3)
+# ---------------------------------------------------------------------------
+
+
+class TestHttpRedirectRejection:
+    """A redirect to an unapproved host must be blocked before a second request."""
+
+    def test_http_redirect_rejection_leaves_no_validated_cache_and_stops_after_one_request(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        row = _make_apple_row()
+
+        # Transport returns a 301 redirect to an unapproved external host.
+        redirect_response = StubResponse(
+            status_code=301,
+            chunks=(b"",),
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Location": "https://evil.example.com/stolen-data",
+            },
+        )
+        transport = Mock(spec=SecTransport)
+        transport.get.return_value = redirect_response
+        client = SecClient(
+            user_agent=VALID_USER_AGENT,
+            transport=cast(SecTransport, transport),
+        )
+
+        with caplog.at_level("DEBUG"), pytest.raises(SecClientSecurityError) as exc_info:
+            _fetch_parse_promote(row, client=client, cache_root=tmp_path)
+
+        # Security boundary fires before a second network request is made.
+        transport.get.assert_called_once()
+        # Promotion never ran — no validated cache artifact.
+        assert _validated_cache_files(tmp_path) == []
+        # The rejected redirect target must never appear in diagnostics or logs.
+        assert "evil.example.com" not in str(exc_info.value)
+        assert "evil.example.com" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Test E — extraction-stage XML security rejections (Task 3.4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        pytest.param("sec_form4_xxe_dtd.xml", id="xxe_dtd_pre_parse_guard"),
+        pytest.param("sec_form4_deep.xml", id="deep_tree_depth_guard"),
+    ],
+)
+class TestExtractionStageXmlSecurity:
+    """XXE/DTD and excessive-depth fixtures must be rejected during extraction.
+
+    The XXE/DTD fixture is rejected by the pre-parse DTD/entity regex guard
+    *before* lxml parses; the deep fixture is rejected by the post-parse tree
+    depth guard. Both occur inside ``extract_ownership_document`` (before
+    parse/promote) and both raise ``SecXmlSecurityError``.
+    """
+
+    def test_xml_security_rejected_during_extraction_leaves_no_cache(
+        self, fixture_name: str, tmp_path: Path
+    ) -> None:
+        content = (FIXTURE_DIR / fixture_name).read_bytes()
+        row = _make_apple_row()
+        client, _ = _make_stub_client(content)
+
+        with pytest.raises(SecXmlSecurityError) as exc_info:
+            _fetch_parse_promote(row, client=client, cache_root=tmp_path)
+
+        assert _validated_cache_files(tmp_path) == []
+        assert exc_info.value.reason == SecSecurityReason.XML
+
+
+# ---------------------------------------------------------------------------
+# Test F — parser-stage long-text rejection (Task 3.5)
+# ---------------------------------------------------------------------------
+
+# Fixture footnote flattens to "TASK6_FOOTNOTE_SENTINEL rule 10b5-1 plan adopted".
+# Set the limit well below that length so only this field trips it; Test G proves
+# the SAME fixture parses cleanly under the default policy, so this is not vacuous.
+_TIGHT_LONG_TEXT_POLICY = dataclasses.replace(
+    DEFAULT_SEC_SECURITY_POLICY, xml_max_long_text_chars=24
+)
+
+
+class TestParserStageSecurityRejection:
+    """Long-text limit violation during parse must leave no cache or log leakage."""
+
+    def test_parser_security_rejection_leaves_no_validated_cache_or_diagnostics(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        content = (FIXTURE_DIR / "sec_form4_markup_footnote.xml").read_bytes()
+        row = _make_apple_row()
+        client, _ = _make_stub_client(content)
+
+        with caplog.at_level("DEBUG"):
+            with pytest.raises(SecXmlSecurityError):
+                _fetch_parse_promote(
+                    row,
+                    client=client,
+                    cache_root=tmp_path,
+                    policy=_TIGHT_LONG_TEXT_POLICY,
+                )
+
+        # Promotion never ran.
+        assert _validated_cache_files(tmp_path) == []
+        # Sentinel must not appear in any captured log record.
+        assert "TASK6_FOOTNOTE_SENTINEL" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Test G — markup footnote pipeline under default policy (Task 3.6)
+# ---------------------------------------------------------------------------
+
+
+class TestMarkupFootnotePipeline:
+    """Under the default policy, markup footnotes are flattened to plain text."""
+
+    def test_markup_footnote_pipeline_flattens_text_without_log_leakage(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        content = (FIXTURE_DIR / "sec_form4_markup_footnote.xml").read_bytes()
+        row = _make_apple_row()
+        client, _ = _make_stub_client(content)
+
+        with caplog.at_level("DEBUG"):
+            _, filing = _fetch_parse_promote(
+                row, client=client, cache_root=tmp_path
+            )
+
+        assert len(filing.footnotes) == 1
+        footnote = filing.footnotes[0]
+
+        # Footnote text must be whitespace-normalised plain text — no XML markup.
+        assert "<" not in footnote.text
+        assert ">" not in footnote.text
+
+        # Sentinel IS the footnote content, so it must appear in the parsed value.
+        assert "TASK6_FOOTNOTE_SENTINEL" in footnote.text
+
+        # But it must not leak into logs.
+        assert "TASK6_FOOTNOTE_SENTINEL" not in caplog.text
