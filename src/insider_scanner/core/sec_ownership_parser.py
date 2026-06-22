@@ -206,9 +206,7 @@ def parse_ownership_document(
         root = etree.fromstring(xml_bytes, hardened_xml_parser())
     except etree.XMLSyntaxError as exc:
         acc = document.accession_number
-        raise SecOwnershipParseError(
-            f"XML parse failure (accession={acc})"
-        ) from exc
+        raise SecOwnershipParseError(f"XML parse failure (accession={acc})") from exc
     guard_xml_tree(root, policy, document.accession_number)
 
     ctx = _ParseContext(policy=policy, accession=document.accession_number)
@@ -270,9 +268,12 @@ def _parse_reporting_owner(root: _Element, ctx: _ParseContext) -> ReportingOwner
     el = root.find("reportingOwner")
     if el is None:
         return ReportingOwner(
-            cik=None, name=None,
-            is_director=False, is_officer=False,
-            is_ten_percent_owner=False, is_other=False,
+            cik=None,
+            name=None,
+            is_director=False,
+            is_officer=False,
+            is_ten_percent_owner=False,
+            is_other=False,
             officer_title=None,
         )
     id_el = el.find("reportingOwnerId")
@@ -313,9 +314,7 @@ def _parse_footnotes(root: _Element, ctx: _ParseContext) -> tuple[Footnote, ...]
     return tuple(result)
 
 
-def _parse_transaction_common(
-    el: _Element, ctx: _ParseContext
-) -> _TransactionCommon:
+def _parse_transaction_common(el: _Element, ctx: _ParseContext) -> _TransactionCommon:
     """Extract fields shared by both non-derivative and derivative rows.
 
     Returns None for each field when the element or its <value> child is absent.

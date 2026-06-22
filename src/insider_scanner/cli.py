@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from insider_scanner.services.application import (
     ApplicationServices,
@@ -15,6 +16,11 @@ from insider_scanner.services.application import (
 from insider_scanner.core.prices import get_price_history
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
+
+if TYPE_CHECKING:
+    from insider_scanner.core.sec_client import SecClient
+    from insider_scanner.services.sec_daily import SecDailyIngestionSummary
+    from insider_scanner.services.sec_downloads import SecDownloadProgress
 
 log = get_logger("cli")
 
@@ -260,6 +266,149 @@ def cmd_price(
         )
 
 
+# ---------------------------------------------------------------------------
+# SEC EDGAR daily ingestion commands
+# ---------------------------------------------------------------------------
+
+
+def _build_sec_client() -> SecClient | None:
+    """Construct a hardened SEC client, or print guidance and return ``None``.
+
+    The SEC fair-access client rejects the default placeholder contact email,
+    so a misconfigured ``SEC_USER_AGENT`` is surfaced as a friendly stderr
+    message and a ``None`` return (the caller maps this to exit code 1) before
+    any network work begins.
+    """
+    from insider_scanner.core.sec_client import SecClient, SecConfigurationError
+    from insider_scanner.utils.config import SEC_USER_AGENT
+
+    try:
+        # Only ``user_agent`` is caller-supplied here; the security and retry
+        # policies use validated defaults, so a SecConfigurationError raised by
+        # this call can only be the user-agent rule.
+        return SecClient(user_agent=SEC_USER_AGENT)
+    except SecConfigurationError:
+        print(
+            "SEC_USER_AGENT is not set for SEC fair access. Set it to your app or "
+            "company name plus a real contact email, e.g.\n"
+            '  SEC_USER_AGENT="MyApp/1.0 (you@example.com)"\n'
+            "The default placeholder email is rejected — see the README SEC "
+            "fair-access section.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _sec_cache_root() -> Path:
+    """Directory holding the validated SEC filing cache."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR
+
+
+def _sec_checkpoint_path() -> Path:
+    """Stable checkpoint file under the cache dir for resumable catch-up runs."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR / "sec_catchup_checkpoint.json"
+
+
+def _make_cli_progress(
+    quiet: bool,
+) -> Callable[[SecDownloadProgress], None] | None:
+    """Build a per-date progress callback that writes to stderr, or ``None``."""
+    if quiet:
+        return None
+
+    def _on_progress(snapshot: SecDownloadProgress) -> None:
+        print(
+            f"[{snapshot.dates_completed}/{snapshot.dates_total}] "
+            f"{snapshot.current_date.isoformat()} "
+            f"discovered={snapshot.discovered} parsed={snapshot.parsed} "
+            f"failed={snapshot.failed}",
+            file=sys.stderr,
+        )
+
+    return _on_progress
+
+
+def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
+    """Print a human-readable summary of one ingestion run to stdout."""
+    interval = summary.interval
+    print(
+        f"SEC ingestion {interval.start.isoformat()}..{interval.end.isoformat()}: "
+        f"{summary.dates_completed}/{summary.dates_total} dates completed"
+    )
+    print(
+        f"  filings:      discovered={summary.filings_discovered} "
+        f"parsed={summary.filings_parsed}"
+    )
+    print(
+        f"  transactions: inserted={summary.transactions_inserted} "
+        f"updated={summary.transactions_updated} "
+        f"skipped={summary.transactions_skipped}"
+    )
+    print(f"  failures:     {summary.failures}")
+
+
+def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Ingest one day of SEC ownership filings into the local database."""
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_daily(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=None,
+    )
+    day = args.date or date.today()
+    summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
+    _print_sec_summary(summary)
+    return 0
+
+
+def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Ingest an inclusive date range of SEC ownership filings (resumable)."""
+    from insider_scanner.services.common import validate_range
+
+    try:
+        validate_range(args.since, args.until)
+    except ValueError as error:
+        print(f"Invalid date range: {error}", file=sys.stderr)
+        return 2
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_daily(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=_sec_checkpoint_path(),
+    )
+    summary = service.ingest_range(
+        args.since, args.until, on_progress=_make_cli_progress(args.quiet)
+    )
+    _print_sec_summary(summary)
+    return 0
+
+
+def cmd_sec_backfill(args: argparse.Namespace, _services: ApplicationServices) -> int:
+    """Guarded placeholder for full bulk backfill (arrives in Session 7)."""
+    if not args.confirm_full_backfill:
+        print(
+            "Refusing to start a full bulk backfill without --confirm-full-backfill.",
+            file=sys.stderr,
+        )
+        return 2
+    print(
+        "Full bulk backfill is not yet implemented (planned for Session 7). "
+        "To ingest a date range now, use:\n"
+        "  insider-scanner-cli sec-catchup --since YYYY-MM-DD --until YYYY-MM-DD"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="insider-scanner-cli",
@@ -355,6 +504,73 @@ def build_parser() -> argparse.ArgumentParser:
     p_price.add_argument("--since", type=_parse_date_arg, default=None)
     p_price.add_argument("--until", type=_parse_date_arg, default=None)
     p_price.set_defaults(func=cmd_price)
+
+    # sec-daily
+    p_sec_daily = sub.add_parser(
+        "sec-daily",
+        help="Ingest one day of SEC ownership filings into the local DB",
+    )
+    p_sec_daily.add_argument(
+        "--date",
+        type=_parse_date_arg,
+        default=None,
+        help=(
+            "Day to ingest (YYYY-MM-DD); defaults to today. The SEC daily index "
+            "lags the filing date by about one business day."
+        ),
+    )
+    p_sec_daily.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
+    )
+    p_sec_daily.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-date progress output on stderr",
+    )
+    p_sec_daily.set_defaults(func=cmd_sec_daily)
+
+    # sec-catchup
+    p_sec_catchup = sub.add_parser(
+        "sec-catchup",
+        help="Ingest a date range of SEC ownership filings (resumable)",
+    )
+    p_sec_catchup.add_argument(
+        "--since",
+        type=_parse_date_arg,
+        required=True,
+        help="First day to ingest (YYYY-MM-DD)",
+    )
+    p_sec_catchup.add_argument(
+        "--until",
+        type=_parse_date_arg,
+        required=True,
+        help="Last day to ingest (YYYY-MM-DD)",
+    )
+    p_sec_catchup.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
+    )
+    p_sec_catchup.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-date progress output on stderr",
+    )
+    p_sec_catchup.set_defaults(func=cmd_sec_catchup)
+
+    # sec-backfill (guarded placeholder; full workflow lands in Session 7)
+    p_sec_backfill = sub.add_parser(
+        "sec-backfill",
+        help="Full bulk backfill — guarded placeholder (Session 7)",
+    )
+    p_sec_backfill.add_argument(
+        "--confirm-full-backfill",
+        action="store_true",
+        help="Acknowledge that full bulk backfill is not yet available",
+    )
+    p_sec_backfill.set_defaults(func=cmd_sec_backfill)
 
     return parser
 

@@ -45,9 +45,7 @@ def _add_sec_native_fields(connection: Connection) -> None:
     connection.exec_driver_sql(
         "ALTER TABLE us_trades ADD COLUMN cik_insider VARCHAR(16) NOT NULL DEFAULT ''"
     )
-    connection.exec_driver_sql(
-        "ALTER TABLE us_trades ADD COLUMN period_of_report DATE"
-    )
+    connection.exec_driver_sql("ALTER TABLE us_trades ADD COLUMN period_of_report DATE")
     connection.exec_driver_sql(
         "ALTER TABLE us_trades ADD COLUMN is_amendment BOOLEAN NOT NULL DEFAULT 0"
     )

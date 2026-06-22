@@ -157,6 +157,34 @@ insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
 
 Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every configured ISIN, and `--save` to persist the filtered CSV/JSON bundle.
 
+### SEC EDGAR ingestion CLI
+
+Ingest SEC ownership filings (Forms 3/4/5) directly from EDGAR into the local
+database. These commands require a valid `SEC_USER_AGENT` (see SEC fair access
+below) — the default placeholder contact email is rejected, so set it first:
+
+```bash
+# Required: your app/company name plus a real contact email
+export SEC_USER_AGENT="MyApp/1.0 (you@example.com)"   # PowerShell: $env:SEC_USER_AGENT = "MyApp/1.0 (you@example.com)"
+
+# Ingest one day (defaults to today; the SEC daily index lags ~1 business day)
+insider-scanner-cli sec-daily --date 2026-06-15
+insider-scanner-cli sec-daily --date 2026-06-15 --no-cleanup --quiet
+
+# Ingest an inclusive date range (resumable; only uncovered days are fetched)
+insider-scanner-cli sec-catchup --since 2026-06-01 --until 2026-06-15
+
+# Full bulk backfill is not yet implemented (Session 7); this is a guarded placeholder
+insider-scanner-cli sec-backfill --confirm-full-backfill
+```
+
+Ingestion is idempotent: completed days are recorded as covered, so re-running a
+`sec-daily`/`sec-catchup` over already-ingested dates does not duplicate rows.
+Per-date progress is written to stderr unless `--quiet`; recoverable per-filing
+failures are reported in the summary without failing the command. Exit codes:
+`0` success, `1` when `SEC_USER_AGENT` is misconfigured, `2` for an invalid range
+or a `sec-backfill` invocation missing `--confirm-full-backfill`.
+
 ### Local persistence and paths
 
 Parsed US, Congress, and European trades are stored in a local SQLite database.

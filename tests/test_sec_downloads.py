@@ -244,9 +244,10 @@ def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
             "version": 1,
             "range": {"start": "2026-06-15", "end": "2026-06-15"},
             "completed_dates": ["2026-06-15"],
-            "counters": {key: 99 for key in (
-                "discovered", "downloaded", "parsed", "skipped", "failed"
-            )},
+            "counters": {
+                key: 99
+                for key in ("discovered", "downloaded", "parsed", "skipped", "failed")
+            },
         },
     )
 
@@ -279,9 +280,7 @@ def test_cleanup_runs_purge_on_clean_completion(tmp_path: Path) -> None:
 
 
 def test_cleanup_can_be_disabled(tmp_path: Path) -> None:
-    with patch(
-        "insider_scanner.services.sec_downloads.purge_stale_cache"
-    ) as purge:
+    with patch("insider_scanner.services.sec_downloads.purge_stale_cache") as purge:
         download_filings_in_range(
             start_date=DAY,
             end_date=DAY,

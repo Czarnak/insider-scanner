@@ -289,7 +289,9 @@ def test_declared_oversize_fails_before_body_iteration() -> None:
     )
 
     with pytest.raises(SecClientSecurityError) as exc_info:
-        fetch_bytes(make_client(configured_transport(response), policy=small_text_policy(4)))
+        fetch_bytes(
+            make_client(configured_transport(response), policy=small_text_policy(4))
+        )
 
     assert exc_info.value.reason is SecSecurityReason.RESPONSE_SIZE
     assert response.iter_chunk_sizes == []
@@ -300,7 +302,9 @@ def test_streamed_oversize_fails_and_closes_response() -> None:
     response = StubResponse(chunks=(b"123", b"45"))
 
     with pytest.raises(SecClientSecurityError) as exc_info:
-        fetch_bytes(make_client(configured_transport(response), policy=small_text_policy(4)))
+        fetch_bytes(
+            make_client(configured_transport(response), policy=small_text_policy(4))
+        )
 
     assert exc_info.value.reason is SecSecurityReason.RESPONSE_SIZE
     assert response.close_calls == 1

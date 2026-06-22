@@ -60,7 +60,9 @@ class SecDownloadError(Exception):
 class SecDownloadSecurityError(SecDownloadError):
     """Raised when a cache operation violates the path policy."""
 
-    def __init__(self, reason: SecSecurityReason = SecSecurityReason.CACHE_PATH) -> None:
+    def __init__(
+        self, reason: SecSecurityReason = SecSecurityReason.CACHE_PATH
+    ) -> None:
         self.reason = reason
         super().__init__(f"SEC cache operation rejected ({reason.value})")
 

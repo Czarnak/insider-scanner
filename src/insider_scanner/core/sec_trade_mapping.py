@@ -39,6 +39,7 @@ from insider_scanner.core.sec_ownership_parser import (
 # Public exception
 # ---------------------------------------------------------------------------
 
+
 class SecTradeMappingError(Exception):
     """Raised when a transaction or filing cannot be safely mapped."""
 
@@ -109,6 +110,7 @@ def _date_or_null(value: date | None) -> str | None:
 # Validation (A4)
 # ---------------------------------------------------------------------------
 
+
 def _validate_non_derivative(
     txn: NonDerivativeTransaction,
     filing: OwnershipFiling,
@@ -165,6 +167,7 @@ def _validate_common_dates(
 # ---------------------------------------------------------------------------
 # sec_detail_json builders
 # ---------------------------------------------------------------------------
+
 
 def _amends_key(
     cik_issuer: str,
@@ -231,6 +234,7 @@ def _build_derivative_detail(
 # ---------------------------------------------------------------------------
 # Per-transaction trade builders
 # ---------------------------------------------------------------------------
+
 
 def _build_non_derivative_trade(
     txn: NonDerivativeTransaction,
@@ -349,6 +353,7 @@ def _build_derivative_trade(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def ownership_filing_to_trades(
     filing: OwnershipFiling,

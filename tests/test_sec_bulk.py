@@ -135,7 +135,9 @@ def _by_accession(results: list[BulkFilingMetadata]) -> dict[str, BulkFilingMeta
 
 
 def test_fixture_record_form4_apple_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
+    by_acc = _by_accession(
+        list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
+    )
     r = by_acc["0000320193-26-000061"]
     assert r.cik == "0000320193"
     assert r.form_type == "4"
@@ -144,7 +146,9 @@ def test_fixture_record_form4_apple_main() -> None:
 
 
 def test_fixture_record_form4a_apple_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
+    by_acc = _by_accession(
+        list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
+    )
     r = by_acc["0000320193-26-000035"]
     assert r.cik == "0000320193"
     assert r.form_type == "4/A"
@@ -153,7 +157,9 @@ def test_fixture_record_form4a_apple_main() -> None:
 
 
 def test_fixture_record_form4_tesla_main() -> None:
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
+    by_acc = _by_accession(
+        list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
+    )
     r = by_acc["0001318605-26-000012"]
     assert r.cik == "0001318605"
     assert r.form_type == "4"
@@ -169,7 +175,9 @@ def test_fixture_record_form4_tesla_main() -> None:
 def test_fixture_record_form3_apple_continuation() -> None:
     """Continuation file (CIK0000320193-submissions-001.json) is parsed; CIK
     comes from the filename, not from the JSON body."""
-    by_acc = _by_accession(list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR)))
+    by_acc = _by_accession(
+        list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
+    )
     r = by_acc["0000320193-24-000010"]
     assert r.cik == "0000320193"
     assert r.form_type == "3"
@@ -254,9 +262,7 @@ def test_missing_primary_document_array_yields_none(tmp_path: Path) -> None:
             "files": [],
         },
     }
-    zip_path = _make_zip(
-        tmp_path, {"CIK0000000001.json": json.dumps(data).encode()}
-    )
+    zip_path = _make_zip(tmp_path, {"CIK0000000001.json": json.dumps(data).encode()})
     results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert len(results) == 1
     assert results[0].primary_document is None
@@ -282,9 +288,7 @@ def test_unparseable_filing_date_yields_none_and_row_survives(
             "files": [],
         },
     }
-    zip_path = _make_zip(
-        tmp_path, {"CIK0000000002.json": json.dumps(data).encode()}
-    )
+    zip_path = _make_zip(tmp_path, {"CIK0000000002.json": json.dumps(data).encode()})
     results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert len(results) == 1
     assert results[0].filing_date is None
@@ -336,9 +340,7 @@ def test_non_list_accession_number_is_silently_skipped(tmp_path: Path) -> None:
             "files": [],
         },
     }
-    zip_path = _make_zip(
-        tmp_path, {"CIK0000000003.json": json.dumps(data).encode()}
-    )
+    zip_path = _make_zip(tmp_path, {"CIK0000000003.json": json.dumps(data).encode()})
     results = list(iter_ownership_filings(zip_path, cache_root=tmp_path))
     assert results == []
 

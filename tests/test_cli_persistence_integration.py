@@ -351,6 +351,62 @@ def test_run_close_failure_does_not_override_prior_nonzero(monkeypatch, capsys):
     assert "Could not close local database cleanly." in capsys.readouterr().err
 
 
+def _sec_application_services(database):
+    from insider_scanner.services.application import ApplicationServices
+    from insider_scanner.services.congress import CongressScanService
+    from insider_scanner.services.european import EuropeanScanService
+
+    persistence = open_persistence(database)
+    return ApplicationServices(
+        persistence=persistence,
+        us=UsScanService(persistence),
+        congress=CongressScanService(persistence),
+        european=EuropeanScanService(persistence),
+    )
+
+
+def test_sec_daily_persists_into_local_db_and_rerun_is_idempotent(
+    tmp_path, monkeypatch, capsys
+):
+    from tests.test_sec_downloads import INDEX_TWO_ROWS, make_client, make_transport
+
+    services = _sec_application_services(tmp_path / "sec.sqlite3")
+
+    monkeypatch.setattr(cli, "_sec_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(
+        cli,
+        "_build_sec_client",
+        lambda: make_client(make_transport(index_text=INDEX_TWO_ROWS)),
+    )
+
+    def _run() -> int:
+        return cli.cmd_sec_daily(
+            Namespace(date=date(2026, 6, 15), no_cleanup=False, quiet=True),
+            services,
+        )
+
+    try:
+        first_code = _run()
+        first_out = capsys.readouterr().out
+        first_rows = list(
+            services.persistence.us_trades.query_latest(100, sources="sec_edgar")
+        )
+
+        # Re-run over the already-covered date must not duplicate rows.
+        second_code = _run()
+        second_rows = list(
+            services.persistence.us_trades.query_latest(100, sources="sec_edgar")
+        )
+    finally:
+        services.close()
+
+    assert first_code == 0
+    assert second_code == 0
+    assert len(first_rows) == 2  # CLI wrote SEC rows into the local DB
+    assert len(second_rows) == 2  # idempotent: no duplicates on re-run
+    assert "SEC ingestion" in first_out
+
+
 def test_import_legacy_oversized_file_returns_nonzero_without_reading(tmp_path, capsys):
     path = tmp_path / "oversized.json"
     with path.open("wb") as stream:

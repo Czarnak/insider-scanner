@@ -23,6 +23,7 @@ from insider_scanner.services.sec_daily import (
     SecDailyIngestionService,
     SecDailyIngestionSummary,
 )
+from insider_scanner.services.sec_downloads import SecDownloadProgress
 from tests.test_sec_downloads import (
     INDEX_TWO_ROWS,
     make_client,
@@ -37,9 +38,7 @@ NEXT_DAY = date(2026, 6, 16)
 # it, so only the Form 4 is downloaded, parsed, and persisted.
 INDEX_MIXED = (
     "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n"
-    + "-" * 60
-    + "\n"
+    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
     "320193|APPLE INC|4|2026-06-15|edgar/data/320193/0000320193-26-000061.txt\n"
     "789019|MICROSOFT CORP|8-K|2026-06-15|edgar/data/789019/0000789019-26-000010.txt\n"
 )
@@ -47,18 +46,14 @@ INDEX_MIXED = (
 # An index whose only ownership row is a Form 4 (single filing for that day).
 INDEX_ONE_ROW = (
     "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n"
-    + "-" * 60
-    + "\n"
+    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
     "320193|APPLE INC|4|2026-06-15|edgar/data/320193/0000320193-26-000061.txt\n"
 )
 
 # An index with one ownership row dated to the second day of a two-day range.
 INDEX_DAY_TWO = (
     "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n"
-    + "-" * 60
-    + "\n"
+    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
     "789019|MICROSOFT CORP|4|2026-06-16|edgar/data/789019/0000789019-26-000010.txt\n"
 )
 
@@ -347,9 +342,7 @@ def test_mid_date_cancel_leaves_date_uncovered_then_resumes(
     # completes, so this fires between dates: day one completes, day two is
     # cancelled before it runs and stays uncovered for the follow-up run.
     def cancelled() -> bool:
-        covered = persistence.coverage.get(
-            "us", SEC_DAILY_IDENTIFIER, "sec_edgar"
-        )
+        covered = persistence.coverage.get("us", SEC_DAILY_IDENTIFIER, "sec_edgar")
         return any(interval.start <= DAY <= interval.end for interval in covered)
 
     summary = service.ingest_range(DAY, NEXT_DAY, cancelled=cancelled)
@@ -365,9 +358,7 @@ def test_mid_date_cancel_leaves_date_uncovered_then_resumes(
     resume_summary = resume.ingest_range(DAY, NEXT_DAY)
 
     assert resume_summary.dates_completed == 2
-    final_cov = persistence.coverage.get(
-        "us", SEC_DAILY_IDENTIFIER, "sec_edgar"
-    )
+    final_cov = persistence.coverage.get("us", SEC_DAILY_IDENTIFIER, "sec_edgar")
     assert len(final_cov) == 1
     assert final_cov[0].start == DAY
     assert final_cov[0].end == NEXT_DAY
@@ -504,3 +495,100 @@ def test_mapping_error_is_swallowed_filing_level_and_date_completes(
     assert len(_coverage(persistence)) == 1
     # No rows persisted (mapping never produced trades).
     assert _sec_rows(persistence) == []
+
+
+# ---------------------------------------------------------------------------
+# 10. on_progress passthrough (WS-A): callers observe per-date progress
+# ---------------------------------------------------------------------------
+
+
+def _two_day_transport() -> object:
+    """Mock transport serving a single Form 4 on each of the two range days."""
+    from unittest.mock import Mock
+
+    from insider_scanner.core.sec_client import SecTransport
+    from tests.test_sec_downloads import StubResponse, VALID_FILING
+
+    def _get(url: str, **_kwargs: object) -> StubResponse:
+        if url.endswith(".idx"):
+            if "20260615" in url:
+                return StubResponse(chunks=(INDEX_ONE_ROW.encode("utf-8"),))
+            if "20260616" in url:
+                return StubResponse(chunks=(INDEX_DAY_TWO.encode("utf-8"),))
+            return StubResponse(chunks=(EMPTY_INDEX.encode("utf-8"),))
+        return StubResponse(
+            chunks=(VALID_FILING,), headers={"Content-Type": "application/xml"}
+        )
+
+    transport = Mock(spec=SecTransport)
+    transport.get.side_effect = _get
+    return transport
+
+
+def test_ingest_range_emits_one_progress_per_completed_date(
+    persistence: PersistenceContext, tmp_path: Path
+) -> None:
+    service = _make_service(persistence, tmp_path, _two_day_transport())
+    snapshots: list[SecDownloadProgress] = []
+
+    summary = service.ingest_range(DAY, NEXT_DAY, on_progress=snapshots.append)
+
+    assert all(isinstance(s, SecDownloadProgress) for s in snapshots)
+    assert [s.current_date for s in snapshots] == [DAY, NEXT_DAY]
+    # Coverage is still recorded even though a user callback was injected.
+    assert summary.dates_completed == 2
+    coverage = _coverage(persistence)
+    assert len(coverage) == 1
+    assert coverage[0].start == DAY  # type: ignore[attr-defined]
+    assert coverage[0].end == NEXT_DAY  # type: ignore[attr-defined]
+
+
+def test_ingest_date_forwards_progress_for_the_single_day(
+    persistence: PersistenceContext, tmp_path: Path
+) -> None:
+    service = _make_service(
+        persistence, tmp_path, make_transport(index_text=INDEX_ONE_ROW)
+    )
+    snapshots: list[SecDownloadProgress] = []
+
+    service.ingest_date(DAY, on_progress=snapshots.append)
+
+    assert [s.current_date for s in snapshots] == [DAY]
+
+
+def test_coverage_is_recorded_before_the_user_callback_fires(
+    persistence: PersistenceContext, tmp_path: Path
+) -> None:
+    service = _make_service(
+        persistence, tmp_path, make_transport(index_text=INDEX_ONE_ROW)
+    )
+    covered_at_callback: list[bool] = []
+
+    def on_progress(snapshot: SecDownloadProgress) -> None:
+        covered = _coverage(persistence)
+        covered_at_callback.append(
+            any(i.start <= snapshot.current_date <= i.end for i in covered)  # type: ignore[attr-defined]
+        )
+
+    service.ingest_date(DAY, on_progress=on_progress)
+
+    # The recorder ran before the user callback, so coverage was already present.
+    assert covered_at_callback == [True]
+
+
+def test_failing_user_callback_does_not_lose_already_recorded_coverage(
+    persistence: PersistenceContext, tmp_path: Path
+) -> None:
+    service = _make_service(
+        persistence, tmp_path, make_transport(index_text=INDEX_ONE_ROW)
+    )
+
+    def boom(_snapshot: SecDownloadProgress) -> None:
+        raise RuntimeError("user progress callback failed")
+
+    with pytest.raises(RuntimeError):
+        service.ingest_date(DAY, on_progress=boom)
+
+    # Coverage was recorded before the failing callback ran, so it survives.
+    covered = _coverage(persistence)
+    assert any(i.start <= DAY <= i.end for i in covered)  # type: ignore[attr-defined]

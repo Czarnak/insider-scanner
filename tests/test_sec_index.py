@@ -43,7 +43,9 @@ def test_master_index_row_is_frozen_and_slotted() -> None:
         row.company_name = "MUTATED"  # type: ignore[misc]
 
 
-def test_parse_master_index_filters_validates_deduplicates_and_preserves_order() -> None:
+def test_parse_master_index_filters_validates_deduplicates_and_preserves_order() -> (
+    None
+):
     text = FIXTURE_PATH.read_text(encoding="utf-8")
 
     result = parse_master_index(text)

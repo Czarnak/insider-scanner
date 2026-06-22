@@ -60,6 +60,7 @@ def _safe_for_log(value: str | None) -> str:
     """Sanitize a string for log output by replacing non-printable ASCII with '?'."""
     return _CONTROL_CHARS_RE.sub("?", value) if value else ""
 
+
 # Sentinel coverage identifier for the SEC daily feed. It cannot collide with a
 # real ticker (no ticker contains the double-underscore sentinel form), so daily
 # coverage is independent of per-ticker coverage.
@@ -134,9 +135,10 @@ class SecDailyIngestionService:
         day: date,
         *,
         cancelled: Callable[[], bool] = not_cancelled,
+        on_progress: Callable[[SecDownloadProgress], None] | None = None,
     ) -> SecDailyIngestionSummary:
         """Ingest a single calendar day (equivalent to a one-day range)."""
-        return self.ingest_range(day, day, cancelled=cancelled)
+        return self.ingest_range(day, day, cancelled=cancelled, on_progress=on_progress)
 
     def ingest_range(
         self,
@@ -144,14 +146,20 @@ class SecDailyIngestionService:
         end: date,
         *,
         cancelled: Callable[[], bool] = not_cancelled,
+        on_progress: Callable[[SecDownloadProgress], None] | None = None,
     ) -> SecDailyIngestionSummary:
-        """Ingest an inclusive date range, processing only uncovered gaps."""
+        """Ingest an inclusive date range, processing only uncovered gaps.
+
+        ``on_progress`` (optional) receives one :class:`SecDownloadProgress`
+        snapshot per fully completed date. It is invoked *after* the date's
+        coverage is recorded, so a failing user callback can never lose coverage.
+        """
         requested = validate_range(start, end)
         dates_total = _day_count(requested)
 
         state = _RunState()
         sink = self._make_sink(state)
-        record_coverage = self._make_coverage_recorder()
+        progress = _compose_progress(self._make_coverage_recorder(), on_progress)
 
         gaps = self._persistence.coverage.gaps(
             _COVERAGE_DOMAIN, SEC_DAILY_IDENTIFIER, _COVERAGE_SOURCE, requested
@@ -167,7 +175,7 @@ class SecDailyIngestionService:
                 break
             total_gap_days += _day_count(gap)
             report = self._download_gap(
-                gap, sink=sink, record_coverage=record_coverage, cancelled=cancelled
+                gap, sink=sink, on_progress=progress, cancelled=cancelled
             )
             filings_discovered += report.discovered
             filings_parsed += report.parsed
@@ -194,7 +202,7 @@ class SecDailyIngestionService:
         gap: DateInterval,
         *,
         sink: Callable[[SecMasterIndexRow, OwnershipFiling], None],
-        record_coverage: Callable[[SecDownloadProgress], None],
+        on_progress: Callable[[SecDownloadProgress], None],
         cancelled: Callable[[], bool],
     ) -> SecDownloadReport:
         return download_filings_in_range(
@@ -208,7 +216,7 @@ class SecDailyIngestionService:
             checkpoint_path=self._checkpoint_path,
             cancelled=cancelled,
             on_filing_parsed=sink,
-            on_progress=record_coverage,
+            on_progress=on_progress,
         )
 
     def _make_sink(
@@ -256,6 +264,26 @@ class SecDailyIngestionService:
             )
 
         return _record_coverage
+
+
+def _compose_progress(
+    record_coverage: Callable[[SecDownloadProgress], None],
+    on_progress: Callable[[SecDownloadProgress], None] | None,
+) -> Callable[[SecDownloadProgress], None]:
+    """Compose the coverage recorder with an optional user progress callback.
+
+    Coverage is always recorded first; the user callback (if any) fires second.
+    This ordering guarantees a failing user callback can never lose the coverage
+    bookkeeping for an already-completed date.
+    """
+    if on_progress is None:
+        return record_coverage
+
+    def _composed(snapshot: SecDownloadProgress) -> None:
+        record_coverage(snapshot)
+        on_progress(snapshot)
+
+    return _composed
 
 
 def _day_count(interval: DateInterval) -> int:

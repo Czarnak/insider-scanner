@@ -446,3 +446,94 @@ def test_main_window_tab_failure_is_logged_and_propagated_without_secret(
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert secret in caplog.text
     assert f"{tab_name} tab initialization failed" in caplog.text
+
+
+def test_sec_ingest_range_dispatch_emits_progress_cancels_and_reads_concurrently(
+    tmp_path, qtbot
+):
+    """A background SEC ingest job emits progress, honours cancellation between
+    dates, and lets a second connection read committed rows mid-run."""
+    from unittest.mock import Mock
+
+    from insider_scanner.core.sec_client import SecTransport
+    from insider_scanner.services.sec_daily import SecDailyIngestionService
+    from insider_scanner.utils.threading import dispatch
+    from tests.test_sec_daily_service import (
+        DAY,
+        EMPTY_INDEX,
+        INDEX_DAY_TWO,
+        INDEX_ONE_ROW,
+        NEXT_DAY,
+    )
+    from tests.test_sec_downloads import StubResponse, VALID_FILING, make_client
+
+    db_path = tmp_path / "sec-bg.sqlite3"
+    persistence = open_persistence(db_path)
+
+    def _get(url: str, **_kwargs: object) -> StubResponse:
+        if url.endswith(".idx"):
+            if "20260615" in url:
+                return StubResponse(chunks=(INDEX_ONE_ROW.encode("utf-8"),))
+            if "20260616" in url:
+                return StubResponse(chunks=(INDEX_DAY_TWO.encode("utf-8"),))
+            return StubResponse(chunks=(EMPTY_INDEX.encode("utf-8"),))
+        return StubResponse(
+            chunks=(VALID_FILING,), headers={"Content-Type": "application/xml"}
+        )
+
+    transport = Mock(spec=SecTransport)
+    transport.get.side_effect = _get
+
+    cancel_event = threading.Event()
+    progress: list[object] = []
+    results: list[object] = []
+    concurrent_read: dict[str, object] = {}
+
+    def on_progress(snapshot: object) -> None:
+        progress.append(snapshot)
+
+        # A separate connection must read the just-committed rows mid-run.
+        def _read() -> None:
+            reader = open_persistence(db_path)
+            try:
+                concurrent_read["rows"] = list(
+                    reader.us_trades.query_latest(100, sources="sec_edgar")
+                )
+            finally:
+                reader.close()
+
+        thread = threading.Thread(target=_read)
+        thread.start()
+        thread.join(timeout=5)
+
+        # Cancel after the first date completes; the second date must be skipped.
+        cancel_event.set()
+
+    def work(progress_callback):
+        service = SecDailyIngestionService(
+            persistence,
+            client=make_client(transport),
+            cache_root=tmp_path / "cache",
+        )
+        return service.ingest_range(
+            DAY,
+            NEXT_DAY,
+            cancelled=cancel_event.is_set,
+            on_progress=progress_callback,
+        )
+
+    try:
+        dispatch(
+            InlinePool(),
+            work,
+            on_result=results.append,
+            on_progress=on_progress,
+        )
+    finally:
+        persistence.close()
+
+    # Progress emitted for the first date only (cancelled before the second).
+    assert [s.current_date for s in progress] == [DAY]  # type: ignore[attr-defined]
+    assert results and results[0].dates_completed == 1  # type: ignore[attr-defined]
+    # The concurrent reader saw the first date's row committed during the run.
+    assert len(concurrent_read["rows"]) == 1  # type: ignore[arg-type]

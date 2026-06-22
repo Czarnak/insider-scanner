@@ -140,9 +140,7 @@ def test_validated_promotion_writes_versioned_cache_atomically(tmp_path: Path) -
     assert downloaded.content_path == expected_cache_path(row, tmp_path)
     assert downloaded.content_path.read_bytes() == b"validated filing"
     assert downloaded.from_cache is False
-    assert tuple(downloaded.content_path.parent.iterdir()) == (
-        downloaded.content_path,
-    )
+    assert tuple(downloaded.content_path.parent.iterdir()) == (downloaded.content_path,)
 
 
 def test_promotion_preserves_originating_policy_size_limit(tmp_path: Path) -> None:
@@ -251,9 +249,7 @@ def test_invalid_cache_root_fails_before_transport(invalid_root: object) -> None
     client, transport = make_client()
 
     with pytest.raises(TypeError, match="cache_root must be a pathlib.Path"):
-        fetch_filing(
-            make_row(), client=client, cache_root=cast(Path, invalid_root)
-        )
+        fetch_filing(make_row(), client=client, cache_root=cast(Path, invalid_root))
 
     transport.get.assert_not_called()
 

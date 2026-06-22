@@ -84,7 +84,9 @@ def test_extract_from_direct_xml_with_accession_number_param() -> None:
 
     content = (FIXTURE_DIR / "sec_form4_primary.xml").read_text(encoding="utf-8")
 
-    result = extract_ownership_document(content, accession_number="0000320193-26-000061")
+    result = extract_ownership_document(
+        content, accession_number="0000320193-26-000061"
+    )
 
     assert result.document_type == "4"
     assert result.accession_number == "0000320193-26-000061"
@@ -126,7 +128,10 @@ def test_extract_amendment_document_type() -> None:
 
 
 def test_full_submission_with_only_non_ownership_block_raises() -> None:
-    from insider_scanner.core.sec_ownership_document import NonOwnershipDocumentError, extract_ownership_document
+    from insider_scanner.core.sec_ownership_document import (
+        NonOwnershipDocumentError,
+        extract_ownership_document,
+    )
 
     content = """\
 <SEC-DOCUMENT>
@@ -156,7 +161,10 @@ This is not an ownership document.
 
 
 def test_direct_xml_with_non_ownership_root_raises() -> None:
-    from insider_scanner.core.sec_ownership_document import NonOwnershipDocumentError, extract_ownership_document
+    from insider_scanner.core.sec_ownership_document import (
+        NonOwnershipDocumentError,
+        extract_ownership_document,
+    )
 
     content = """\
 <?xml version="1.0" encoding="UTF-8"?>
@@ -176,7 +184,10 @@ def test_direct_xml_with_non_ownership_root_raises() -> None:
 
 
 def test_malformed_xml_raises_and_body_not_in_error_message() -> None:
-    from insider_scanner.core.sec_ownership_document import SecOwnershipDocumentError, extract_ownership_document
+    from insider_scanner.core.sec_ownership_document import (
+        SecOwnershipDocumentError,
+        extract_ownership_document,
+    )
 
     broken_xml = "<ownershipDocument><issuer></ownershipDocument>"
     content = f"""\
@@ -292,7 +303,10 @@ ACCESSION NUMBER:\t\t0001234567-26-000010
 
 
 def test_ownership_block_with_no_text_section_raises() -> None:
-    from insider_scanner.core.sec_ownership_document import SecOwnershipDocumentError, extract_ownership_document
+    from insider_scanner.core.sec_ownership_document import (
+        SecOwnershipDocumentError,
+        extract_ownership_document,
+    )
 
     block_body_sentinel = "SENSITIVE_BLOCK_CONTENT"
     content = f"""\
@@ -369,7 +383,10 @@ This block has no TYPE line.
 
 
 def test_invalid_utf8_bytes_raise_and_raw_not_in_message() -> None:
-    from insider_scanner.core.sec_ownership_document import SecOwnershipDocumentError, extract_ownership_document
+    from insider_scanner.core.sec_ownership_document import (
+        SecOwnershipDocumentError,
+        extract_ownership_document,
+    )
 
     bad_bytes = b"\xff\xfe invalid utf-8 \x80\x81"
 

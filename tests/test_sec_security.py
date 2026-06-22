@@ -230,10 +230,7 @@ def test_constructor_copies_collections_into_immutable_values() -> None:
     hosts = {"www.sec.gov"}
     media_types = {"text/plain"}
     limits = SecResourceLimits(cast(Any, media_types), 10)
-    profiles = {
-        profile: limits
-        for profile in SecResourceProfile
-    }
+    profiles = {profile: limits for profile in SecResourceProfile}
 
     policy = replace(
         DEFAULT_SEC_SECURITY_POLICY,

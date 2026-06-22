@@ -168,6 +168,7 @@ def _filing(
 # Test: order — N non-derivatives then M derivatives
 # ---------------------------------------------------------------------------
 
+
 class TestTransactionOrdering:
     def test_non_deriv_first_then_deriv(self) -> None:
         nd0 = _non_deriv(row_id="nd:0")
@@ -184,7 +185,9 @@ class TestTransactionOrdering:
     def test_is_derivative_flag(self) -> None:
         nd = _non_deriv()
         d = _deriv()
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), derivs=(d,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), derivs=(d,)), _INDEX_ROW
+        )
         assert trades[0].is_derivative is False
         assert trades[1].is_derivative is True
 
@@ -207,6 +210,7 @@ class TestTransactionOrdering:
 # ---------------------------------------------------------------------------
 # Test: category → trade_type mapping
 # ---------------------------------------------------------------------------
+
 
 class TestCategoryToTradeType:
     @pytest.mark.parametrize(
@@ -247,6 +251,7 @@ class TestCategoryToTradeType:
 # Test: numeric fields
 # ---------------------------------------------------------------------------
 
+
 class TestNumericFields:
     def test_value_equals_shares_times_price(self) -> None:
         nd = _non_deriv(shares=Decimal("100"), price_per_share=Decimal("50"))
@@ -286,6 +291,7 @@ class TestNumericFields:
 # Test: ticker / company fallbacks
 # ---------------------------------------------------------------------------
 
+
 class TestTickerCompanyFallback:
     def test_ticker_uses_trading_symbol(self) -> None:
         nd = _non_deriv()
@@ -320,6 +326,7 @@ class TestTickerCompanyFallback:
 # Test: insider name / title
 # ---------------------------------------------------------------------------
 
+
 class TestInsiderTitle:
     def test_officer_title_used_when_present(self) -> None:
         nd = _non_deriv()
@@ -337,7 +344,9 @@ class TestInsiderTitle:
             is_ten_percent_owner=True,
             is_other=False,
         )
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), owner=owner), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), owner=owner), _INDEX_ROW
+        )
         assert trades[0].insider_title == "Director, 10% Owner"
 
     def test_empty_title_when_no_flags_and_no_officer_title(self) -> None:
@@ -349,7 +358,9 @@ class TestInsiderTitle:
             is_ten_percent_owner=False,
             is_other=False,
         )
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), owner=owner), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), owner=owner), _INDEX_ROW
+        )
         assert trades[0].insider_title == ""
 
     def test_insider_name_from_reporting_owner(self) -> None:
@@ -371,6 +382,7 @@ class TestInsiderTitle:
 # Test: first-class SEC fields
 # ---------------------------------------------------------------------------
 
+
 class TestFirstClassSecFields:
     def test_source_is_sec_edgar(self) -> None:
         nd = _non_deriv()
@@ -386,7 +398,8 @@ class TestFirstClassSecFields:
     def test_accession_number(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(
-            _filing(non_derivs=(nd,), accession_number="0001234567-24-000001"), _INDEX_ROW
+            _filing(non_derivs=(nd,), accession_number="0001234567-24-000001"),
+            _INDEX_ROW,
         )
         assert trades[0].accession_number == "0001234567-24-000001"
 
@@ -415,12 +428,16 @@ class TestFirstClassSecFields:
 
     def test_period_of_report(self) -> None:
         nd = _non_deriv()
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), period_of_report=_PERIOD), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), period_of_report=_PERIOD), _INDEX_ROW
+        )
         assert trades[0].period_of_report == _PERIOD
 
     def test_is_amendment_propagated(self) -> None:
         nd = _non_deriv()
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), is_amendment=True), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), is_amendment=True), _INDEX_ROW
+        )
         assert trades[0].is_amendment is True
 
     def test_document_sha256_propagated(self) -> None:
@@ -458,6 +475,7 @@ class TestFirstClassSecFields:
 # Test: sec_detail_json for non-derivative
 # ---------------------------------------------------------------------------
 
+
 class TestSecDetailJsonNonDerivative:
     def test_security_title_in_detail(self) -> None:
         nd = _non_deriv(security_title="Common Stock")
@@ -468,7 +486,9 @@ class TestSecDetailJsonNonDerivative:
     def test_footnote_ids_in_detail(self) -> None:
         fn = Footnote(footnote_id="F1", text="See note")
         nd = _non_deriv(footnote_ids=("F1",))
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), footnotes=(fn,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), footnotes=(fn,)), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert detail["footnote_ids"] == ["F1"]
         assert detail["footnotes"]["F1"] == "See note"
@@ -514,6 +534,7 @@ class TestSecDetailJsonNonDerivative:
 # Test: sec_detail_json for derivative
 # ---------------------------------------------------------------------------
 
+
 class TestSecDetailJsonDerivative:
     def test_derivative_extra_fields_present(self) -> None:
         d = _deriv(
@@ -552,7 +573,9 @@ class TestSecDetailJsonDerivative:
     def test_derivative_footnote_resolution(self) -> None:
         fn = Footnote(footnote_id="F2", text="Derivative note")
         d = _deriv(footnote_ids=("F2",))
-        trades = ownership_filing_to_trades(_filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert detail["footnote_ids"] == ["F2"]
         assert detail["footnotes"]["F2"] == "Derivative note"
@@ -571,6 +594,7 @@ class TestSecDetailJsonDerivative:
 # ---------------------------------------------------------------------------
 # Test: determinism
 # ---------------------------------------------------------------------------
+
 
 class TestDeterminism:
     def test_identical_json_on_repeated_call(self) -> None:
@@ -591,7 +615,9 @@ class TestDeterminism:
         """Keys in sec_detail_json must be ASCII-sorted (sort_keys=True)."""
         fn = Footnote(footnote_id="F1", text="x")
         d = _deriv(footnote_ids=("F1",))
-        trades = ownership_filing_to_trades(_filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW
+        )
         raw = trades[0].sec_detail_json
         parsed = json.loads(raw)
         keys = list(parsed.keys())
@@ -601,6 +627,7 @@ class TestDeterminism:
 # ---------------------------------------------------------------------------
 # Test: A4 validation — SecTradeMappingError raised
 # ---------------------------------------------------------------------------
+
 
 class TestA4Validation:
     def test_empty_row_id_non_deriv_raises(self) -> None:
@@ -669,6 +696,7 @@ class TestA4Validation:
 # Test: footnote embedding caps (fix #5)
 # ---------------------------------------------------------------------------
 
+
 class TestFootnoteCaps:
     """Verify that the defensive footnote caps are deterministic."""
 
@@ -676,7 +704,9 @@ class TestFootnoteCaps:
         long_text = "x" * (_MAX_FOOTNOTE_CHARS + 100)
         fn = Footnote(footnote_id="F1", text=long_text)
         nd = _non_deriv(footnote_ids=("F1",))
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), footnotes=(fn,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), footnotes=(fn,)), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert len(detail["footnotes"]["F1"]) == _MAX_FOOTNOTE_CHARS
 
@@ -684,27 +714,37 @@ class TestFootnoteCaps:
         long_text = "y" * (_MAX_FOOTNOTE_CHARS + 200)
         fn = Footnote(footnote_id="F2", text=long_text)
         d = _deriv(footnote_ids=("F2",))
-        trades = ownership_filing_to_trades(_filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(derivs=(d,), footnotes=(fn,)), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert len(detail["footnotes"]["F2"]) == _MAX_FOOTNOTE_CHARS
 
     def test_excess_footnote_ids_capped_non_deriv(self) -> None:
         # Build _MAX_EMBEDDED_FOOTNOTES + 10 footnote IDs
         count = _MAX_EMBEDDED_FOOTNOTES + 10
-        footnotes = tuple(Footnote(footnote_id=f"F{i}", text=f"note{i}") for i in range(count))
+        footnotes = tuple(
+            Footnote(footnote_id=f"F{i}", text=f"note{i}") for i in range(count)
+        )
         fids = tuple(f"F{i}" for i in range(count))
         nd = _non_deriv(footnote_ids=fids)
-        trades = ownership_filing_to_trades(_filing(non_derivs=(nd,), footnotes=footnotes), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(nd,), footnotes=footnotes), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert len(detail["footnote_ids"]) == _MAX_EMBEDDED_FOOTNOTES
         assert len(detail["footnotes"]) == _MAX_EMBEDDED_FOOTNOTES
 
     def test_excess_footnote_ids_capped_deriv(self) -> None:
         count = _MAX_EMBEDDED_FOOTNOTES + 5
-        footnotes = tuple(Footnote(footnote_id=f"D{i}", text=f"dnote{i}") for i in range(count))
+        footnotes = tuple(
+            Footnote(footnote_id=f"D{i}", text=f"dnote{i}") for i in range(count)
+        )
         fids = tuple(f"D{i}" for i in range(count))
         d = _deriv(footnote_ids=fids)
-        trades = ownership_filing_to_trades(_filing(derivs=(d,), footnotes=footnotes), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(derivs=(d,), footnotes=footnotes), _INDEX_ROW
+        )
         detail = json.loads(trades[0].sec_detail_json)
         assert len(detail["footnote_ids"]) == _MAX_EMBEDDED_FOOTNOTES
         assert len(detail["footnotes"]) == _MAX_EMBEDDED_FOOTNOTES
@@ -712,7 +752,10 @@ class TestFootnoteCaps:
     def test_footnote_cap_is_deterministic(self) -> None:
         """Identical inputs produce byte-identical sec_detail_json on repeated calls."""
         count = _MAX_EMBEDDED_FOOTNOTES + 3
-        footnotes = tuple(Footnote(footnote_id=f"F{i}", text="x" * (_MAX_FOOTNOTE_CHARS + 1)) for i in range(count))
+        footnotes = tuple(
+            Footnote(footnote_id=f"F{i}", text="x" * (_MAX_FOOTNOTE_CHARS + 1))
+            for i in range(count)
+        )
         fids = tuple(f"F{i}" for i in range(count))
         nd = _non_deriv(footnote_ids=fids)
         filing = _filing(non_derivs=(nd,), footnotes=footnotes)

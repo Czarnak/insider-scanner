@@ -387,4 +387,6 @@ def _validate_user_agent(user_agent: str) -> None:
         raise SecConfigurationError("SEC User-Agent must not use a placeholder email")
     identity = user_agent[: email_match.start()] + user_agent[email_match.end() :]
     if not any(character.isalnum() for character in identity):
-        raise SecConfigurationError("SEC User-Agent must contain an app or company identity")
+        raise SecConfigurationError(
+            "SEC User-Agent must contain an app or company identity"
+        )

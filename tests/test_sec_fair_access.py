@@ -75,7 +75,9 @@ def test_slow_caller_is_not_throttled() -> None:
 def test_default_rate_limiter_stays_below_sec_ceiling() -> None:
     limiter = default_rate_limiter()
 
-    assert limiter.min_interval_seconds == pytest.approx(1.0 / DEFAULT_REQUESTS_PER_SECOND)
+    assert limiter.min_interval_seconds == pytest.approx(
+        1.0 / DEFAULT_REQUESTS_PER_SECOND
+    )
     assert 1.0 / limiter.min_interval_seconds < 10.0
 
 

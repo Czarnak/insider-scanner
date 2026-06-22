@@ -71,7 +71,9 @@ class InsiderTrade:
             "form_type": self.form_type,
             "cik_issuer": self.cik_issuer,
             "cik_insider": self.cik_insider,
-            "period_of_report": str(self.period_of_report) if self.period_of_report else "",
+            "period_of_report": str(self.period_of_report)
+            if self.period_of_report
+            else "",
             "is_amendment": self.is_amendment,
             "is_derivative": self.is_derivative,
             "document_sha256": self.document_sha256,

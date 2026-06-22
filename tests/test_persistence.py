@@ -513,9 +513,15 @@ def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
             assert versions == [1, 2, 3]
 
             # Legacy row preserved with v3 column defaults
-            row = connection.execute(
-                select(us_trades).where(us_trades.c.canonical_key == "legacy-row-key")
-            ).mappings().one()
+            row = (
+                connection.execute(
+                    select(us_trades).where(
+                        us_trades.c.canonical_key == "legacy-row-key"
+                    )
+                )
+                .mappings()
+                .one()
+            )
 
             assert row["ticker"] == "AAPL"
             assert row["accession_number"] == ""
@@ -575,9 +581,15 @@ def test_us_trades_sec_fields_round_trip(engine):
         )
 
     with engine.connect() as connection:
-        row = connection.execute(
-            select(us_trades).where(us_trades.c.canonical_key == "sec-native-round-trip")
-        ).mappings().one()
+        row = (
+            connection.execute(
+                select(us_trades).where(
+                    us_trades.c.canonical_key == "sec-native-round-trip"
+                )
+            )
+            .mappings()
+            .one()
+        )
 
     assert row["accession_number"] == "0000789019-25-000001"
     assert row["sec_row_id"] == "0000789019-25-000001-row-1"

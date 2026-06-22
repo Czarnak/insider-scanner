@@ -19,7 +19,11 @@ from unittest.mock import Mock
 import pytest
 
 from insider_scanner.core._sec_xml import SecXmlSecurityError
-from insider_scanner.core.sec_client import SecClient, SecClientSecurityError, SecTransport
+from insider_scanner.core.sec_client import (
+    SecClient,
+    SecClientSecurityError,
+    SecTransport,
+)
 from insider_scanner.core.sec_downloader import (
     DownloadedSecFiling,
     fetch_filing,
@@ -30,8 +34,15 @@ from insider_scanner.core.sec_ownership_document import (
     SecOwnershipDocumentError,
     extract_ownership_document,
 )
-from insider_scanner.core.sec_ownership_parser import OwnershipFiling, parse_ownership_document
-from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY, SecSecurityPolicy, SecSecurityReason
+from insider_scanner.core.sec_ownership_parser import (
+    OwnershipFiling,
+    parse_ownership_document,
+)
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
+    SecSecurityReason,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
@@ -135,9 +146,7 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, transport = _make_stub_client(_fixture_bytes())
 
-        downloaded, _ = _fetch_parse_promote(
-            row, client=client, cache_root=tmp_path
-        )
+        downloaded, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
 
         expected_url = (
             "https://www.sec.gov/Archives/edgar/data/320193/0000320193-26-000061.txt"
@@ -155,9 +164,7 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
-        downloaded, _ = _fetch_parse_promote(
-            row, client=client, cache_root=tmp_path
-        )
+        downloaded, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
 
         assert downloaded.from_cache is False
         assert downloaded.content_path.exists()
@@ -177,9 +184,7 @@ class TestFullChainFromExplicitRow:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
-        downloaded, _ = _fetch_parse_promote(
-            row, client=client, cache_root=tmp_path
-        )
+        downloaded, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
         content_bytes = downloaded.content_path.read_bytes()
         doc = extract_ownership_document(content_bytes)
 
@@ -241,9 +246,7 @@ class TestFullChainFromExplicitRow:
         assert txn.price_per_share == Decimal("195.50")
         assert txn.acquired_disposed == "D"
 
-    def test_non_derivative_transaction_has_footnote_f1(
-        self, tmp_path: Path
-    ) -> None:
+    def test_non_derivative_transaction_has_footnote_f1(self, tmp_path: Path) -> None:
         row = _make_apple_row()
         client, _ = _make_stub_client(_fixture_bytes())
 
@@ -347,15 +350,11 @@ class TestCacheReuseAcrossPipeline:
         client, transport = _make_stub_client(_fixture_bytes())
 
         # First call — cache miss.
-        first, _ = _fetch_parse_promote(
-            row, client=client, cache_root=tmp_path
-        )
+        first, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
         assert first.from_cache is False
 
         # Second call — cache hit (same transport mock, same client).
-        second, _ = _fetch_parse_promote(
-            row, client=client, cache_root=tmp_path
-        )
+        second, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
         assert second.from_cache is True
 
     def test_transport_called_only_once(self, tmp_path: Path) -> None:
@@ -418,7 +417,10 @@ class TestHttpRedirectRejection:
             transport=cast(SecTransport, transport),
         )
 
-        with caplog.at_level("DEBUG"), pytest.raises(SecClientSecurityError) as exc_info:
+        with (
+            caplog.at_level("DEBUG"),
+            pytest.raises(SecClientSecurityError) as exc_info,
+        ):
             _fetch_parse_promote(row, client=client, cache_root=tmp_path)
 
         # Security boundary fires before a second network request is made.
@@ -518,9 +520,7 @@ class TestMarkupFootnotePipeline:
         client, _ = _make_stub_client(content)
 
         with caplog.at_level("DEBUG"):
-            _, filing = _fetch_parse_promote(
-                row, client=client, cache_root=tmp_path
-            )
+            _, filing = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
 
         assert len(filing.footnotes) == 1
         footnote = filing.footnotes[0]

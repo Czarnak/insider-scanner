@@ -58,10 +58,7 @@ def build_daily_master_index_url(day: date) -> str:
         raise TypeError("day must be a datetime.date")
 
     quarter = quarter_for_date(day)
-    return (
-        f"{SEC_DAILY_INDEX_BASE_URL}/{day.year}/{quarter}/"
-        f"master.{day:%Y%m%d}.idx"
-    )
+    return f"{SEC_DAILY_INDEX_BASE_URL}/{day.year}/{quarter}/master.{day:%Y%m%d}.idx"
 
 
 def build_filing_archive_url(index_path: str) -> str:

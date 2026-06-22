@@ -109,9 +109,7 @@ def extract_ownership_document(
         ``ownershipDocument``.
     """
     if not isinstance(content, (bytes, str)):
-        raise TypeError(
-            f"content must be bytes or str, got {type(content).__name__!r}"
-        )
+        raise TypeError(f"content must be bytes or str, got {type(content).__name__!r}")
 
     max_input = policy.limits_for(SecResourceProfile.FILING_DOCUMENT).max_bytes
     if len(content) > max_input:
@@ -245,6 +243,4 @@ def _validate_ownership_xml(
 
     local_name = etree.QName(root.tag).localname
     if local_name != "ownershipDocument":
-        raise NonOwnershipDocumentError(
-            "Root element is not 'ownershipDocument'."
-        )
+        raise NonOwnershipDocumentError("Root element is not 'ownershipDocument'.")

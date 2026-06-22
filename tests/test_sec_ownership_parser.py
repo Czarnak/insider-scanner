@@ -43,7 +43,11 @@ def _load_doc(
 
 
 def test_ownership_filing_is_frozen_and_slotted() -> None:
-    from insider_scanner.core.sec_ownership_parser import OwnershipFiling, Issuer, ReportingOwner
+    from insider_scanner.core.sec_ownership_parser import (
+        OwnershipFiling,
+        Issuer,
+        ReportingOwner,
+    )
 
     filing = OwnershipFiling(
         accession_number="0000320193-26-000061",
@@ -54,9 +58,12 @@ def test_ownership_filing_is_frozen_and_slotted() -> None:
         document_sha256="abc",
         issuer=Issuer(cik=None, name=None, trading_symbol=None),
         reporting_owner=ReportingOwner(
-            cik=None, name=None,
-            is_director=False, is_officer=False,
-            is_ten_percent_owner=False, is_other=False,
+            cik=None,
+            name=None,
+            is_director=False,
+            is_officer=False,
+            is_ten_percent_owner=False,
+            is_other=False,
             officer_title=None,
         ),
         non_derivative_transactions=(),
@@ -184,7 +191,10 @@ def test_non_derivative_transaction_primary_all_fields() -> None:
 
 
 def test_footnotes_from_primary() -> None:
-    from insider_scanner.core.sec_ownership_parser import Footnote, parse_ownership_document
+    from insider_scanner.core.sec_ownership_parser import (
+        Footnote,
+        parse_ownership_document,
+    )
 
     doc = _load_doc("sec_form4_primary.xml")
     filing = parse_ownership_document(doc)
@@ -404,7 +414,10 @@ _MALFORMED_DATE_XML = """\
 
 
 def test_malformed_shares_raises_parse_error() -> None:
-    from insider_scanner.core.sec_ownership_parser import SecOwnershipParseError, parse_ownership_document
+    from insider_scanner.core.sec_ownership_parser import (
+        SecOwnershipParseError,
+        parse_ownership_document,
+    )
 
     doc = OwnershipDocument(
         accession_number="0000000001-26-000001",
@@ -462,7 +475,10 @@ def test_row_id_with_accession_number() -> None:
     doc = _load_doc("sec_form4_primary.xml", accession_number="0000320193-26-000061")
     filing = parse_ownership_document(doc)
 
-    assert filing.non_derivative_transactions[0].row_id == "0000320193-26-000061:nonDerivative:0"
+    assert (
+        filing.non_derivative_transactions[0].row_id
+        == "0000320193-26-000061:nonDerivative:0"
+    )
 
 
 def test_row_id_without_accession_number() -> None:
@@ -580,7 +596,9 @@ def test_parser_rejects_oversized_scalar_field() -> None:
 
     xml = _non_derivative_with_security_title("X" * 50)
     with pytest.raises(SecXmlSecurityError):
-        parse_ownership_document(_doc(xml), policy=_small_policy(xml_max_scalar_chars=8))
+        parse_ownership_document(
+            _doc(xml), policy=_small_policy(xml_max_scalar_chars=8)
+        )
 
 
 def test_parser_rejects_oversized_numeric_lexeme() -> None:
@@ -642,5 +660,7 @@ def test_security_rejection_message_has_no_field_value() -> None:
     secret = "S" * 50
     xml = _non_derivative_with_security_title(secret)
     with pytest.raises(SecXmlSecurityError) as exc_info:
-        parse_ownership_document(_doc(xml), policy=_small_policy(xml_max_scalar_chars=8))
+        parse_ownership_document(
+            _doc(xml), policy=_small_policy(xml_max_scalar_chars=8)
+        )
     assert secret not in str(exc_info.value)

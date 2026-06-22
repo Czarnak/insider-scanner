@@ -24,11 +24,12 @@ class Worker(QRunnable):
     raising ``RuntimeError: Signal source has been deleted``.
     """
 
-    def __init__(self, fn, *args, **kwargs):
+    def __init__(self, fn, *args, emit_progress: bool = False, **kwargs):
         super().__init__()
         self.fn = fn
         self.args = args
         self.kwargs = kwargs
+        self.emit_progress = emit_progress
         self.signals = WorkerSignals()
         self.setAutoDelete(True)
 
@@ -40,10 +41,20 @@ class Worker(QRunnable):
             # WorkerSignals QObject was destroyed (app closing) — ignore
             pass
 
+    def _emit_progress(self, value: object) -> None:
+        """Forward a worker progress update onto the ``progress`` signal."""
+        self._safe_emit(self.signals.progress, value)
+
     @Slot()
     def run(self):
+        # Only inject ``progress_callback`` when progress emission was requested,
+        # so functions that don't expect the kwarg keep working unchanged. A new
+        # dict is built rather than mutating ``self.kwargs``.
+        kwargs = self.kwargs
+        if self.emit_progress:
+            kwargs = {**self.kwargs, "progress_callback": self._emit_progress}
         try:
-            result = self.fn(*self.args, **self.kwargs)
+            result = self.fn(*self.args, **kwargs)
         except Exception:
             self._safe_emit(self.signals.error, sys.exc_info())
         else:
@@ -69,7 +80,7 @@ def dispatch(
     boilerplate used by the GUI tabs into a single call. Returns the
     worker so callers can keep a reference if needed.
     """
-    worker = Worker(fn, *args, **(kwargs or {}))
+    worker = Worker(fn, *args, emit_progress=on_progress is not None, **(kwargs or {}))
     if on_result is not None:
         worker.signals.result.connect(on_result)
     if on_error is not None:
