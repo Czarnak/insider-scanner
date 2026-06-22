@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import TICKERS_FILE
 from insider_scanner.utils.logging import get_logger
@@ -56,6 +57,7 @@ class ScanTab(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.addWidget(self._build_search_group())
+        root.addWidget(build_sec_backfill_info_group())
         root.addLayout(self._build_filter_row())
         root.addLayout(self._build_progress_row())
         root.addWidget(self._build_results_splitter(), stretch=1)
