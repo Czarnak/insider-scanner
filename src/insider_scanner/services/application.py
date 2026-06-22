@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
+from insider_scanner.core.sec_client import SecClient
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
+)
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.european import EuropeanScanService
+from insider_scanner.services.sec_daily import SecDailyIngestionService
 from insider_scanner.services.us import UsScanService
 
 
@@ -21,6 +28,32 @@ class ApplicationServices:
 
     def close(self) -> None:
         self.persistence.close()
+
+    def make_sec_daily(
+        self,
+        *,
+        client: SecClient,
+        cache_root: Path,
+        policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+        cleanup: bool = True,
+        continue_on_error: bool = True,
+        checkpoint_path: Path | None = None,
+    ) -> SecDailyIngestionService:
+        """Lazily construct a daily SEC ingestion service.
+
+        The ``SecClient`` is supplied by the caller (CLI/GUI boundary) rather
+        than eagerly built in :func:`open_application_services`, because it needs
+        a user-agent and network policy that most processes never use.
+        """
+        return SecDailyIngestionService(
+            self.persistence,
+            client=client,
+            cache_root=cache_root,
+            policy=policy,
+            cleanup=cleanup,
+            continue_on_error=continue_on_error,
+            checkpoint_path=checkpoint_path,
+        )
 
 
 def open_application_services() -> ApplicationServices:

@@ -342,3 +342,43 @@ price_history = metadata.tables["price_history"]
 price_history.append_column(
     Column("source", String(32), nullable=False, server_default="")
 )
+
+us_trades.append_column(
+    Column("accession_number", String(64), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("sec_row_id", String(128), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("form_type", String(16), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("cik_issuer", String(16), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("cik_insider", String(16), nullable=False, server_default="")
+)
+us_trades.append_column(Column("period_of_report", Date))
+us_trades.append_column(
+    Column("is_amendment", Boolean, nullable=False, server_default=text("0"))
+)
+us_trades.append_column(
+    Column("is_derivative", Boolean, nullable=False, server_default=text("0"))
+)
+us_trades.append_column(
+    Column("document_sha256", String(64), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("transaction_code", String(8), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("acquired_disposed", String(1), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("direct_or_indirect", String(1), nullable=False, server_default="")
+)
+us_trades.append_column(
+    Column("sec_detail_json", Text, nullable=False, server_default="")
+)
+Index("ix_us_trades_accession", us_trades.c.accession_number)
+Index("ix_us_trades_cik_issuer", us_trades.c.cik_issuer)

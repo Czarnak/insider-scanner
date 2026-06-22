@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import date
 from itertools import permutations
+from typing import Any
 
 import pytest
 from sqlalchemy import event
@@ -18,6 +19,7 @@ from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.repositories import (
     CongressTradeRepository,
     EuropeanTradeRepository,
+    UpsertResult,
     UsTradeRepository,
 )
 
@@ -554,3 +556,176 @@ def test_european_concurrent_upserts_preserve_complementary_enrichment(engine):
     assert result.position == "Director"
     assert result.volume == 100.0
     assert result.source_url == "https://example.test/rns"
+
+
+# ---------------------------------------------------------------------------
+# SEC identity tests
+# ---------------------------------------------------------------------------
+
+_ACC_A = "0001234567-26-000001"
+_ROW_A = "0001234567-26-000001:nonDerivative:0"
+_ACC_B = "0001234567-26-000002"
+_ROW_B = "0001234567-26-000002:nonDerivative:0"
+
+
+def _sec_us(**overrides) -> InsiderTrade:
+    """Minimal valid InsiderTrade with SEC identity fields."""
+    values: dict[str, Any] = {
+        "ticker": "AAPL",
+        "company": "Apple Inc.",
+        "insider_name": "Tim Cook",
+        "insider_title": "CEO",
+        "trade_type": "Sell",
+        "trade_date": date(2026, 1, 5),
+        "filing_date": date(2026, 1, 7),
+        "shares": 100.0,
+        "price": 200.0,
+        "value": 20_000.0,
+        "shares_owned_after": 500_000.0,
+        "source": "sec_edgar",
+        "edgar_url": "",
+        "is_congress": False,
+        "congress_member": "",
+        "accession_number": _ACC_A,
+        "sec_row_id": _ROW_A,
+        "form_type": "4",
+        "cik_issuer": "0000320193",
+        "cik_insider": "0001513925",
+        "is_amendment": False,
+        "is_derivative": False,
+        "transaction_code": "S",
+        "acquired_disposed": "D",
+        "direct_or_indirect": "D",
+        "sec_detail_json": '{"v": 1}',
+    }
+    values.update(overrides)
+    return InsiderTrade(**values)
+
+
+def test_sec_identity_upsert_is_idempotent(engine):
+    """Re-ingesting the identical SEC trade must SKIP (no new row)."""
+    repo = UsTradeRepository(engine)
+    trade = _sec_us()
+
+    first = repo.upsert([trade])
+    second = repo.upsert([trade])
+
+    assert first == UpsertResult(inserted=1)
+    assert second == UpsertResult(skipped=1)
+    assert len(repo.query("AAPL", sources={"sec_edgar"})) == 1
+
+
+def test_sec_identity_richer_reparsed_trade_updates_row(engine):
+    """Re-ingesting the same row_id with richer data must UPDATE the stored row."""
+    repo = UsTradeRepository(engine)
+    sparse = _sec_us(price=0.0, value=0.0)
+    richer = _sec_us(price=200.0, value=20_000.0, insider_title="Chief Executive")
+
+    first = repo.upsert([sparse])
+    second = repo.upsert([richer])
+
+    assert first == UpsertResult(inserted=1)
+    assert second == UpsertResult(updated=1)
+    rows = repo.query("AAPL", sources={"sec_edgar"})
+    assert len(rows) == 1
+    assert rows[0].price == 200.0
+    assert rows[0].insider_title == "Chief Executive"
+
+
+def test_sec_identity_key_unchanged_after_update(engine):
+    """Updating a SEC row must not change its canonical_key."""
+    from insider_scanner.persistence.mappings import us_canonical_key
+
+    repo = UsTradeRepository(engine)
+    sparse = _sec_us(price=0.0, value=0.0)
+    richer = _sec_us(price=200.0, value=20_000.0)
+
+    repo.upsert([sparse])
+    repo.upsert([richer])
+
+    rows = repo.query("AAPL", sources={"sec_edgar"})
+    assert len(rows) == 1
+    # canonical key of the round-tripped trade must equal the SEC identity key
+    assert us_canonical_key(rows[0]) == us_canonical_key(sparse)
+
+
+def test_sec_and_third_party_trade_coexist(engine):
+    """SEC row (accession+row_id) and fuzzy third-party row occupy separate slots."""
+    repo = UsTradeRepository(engine)
+    sec_trade = _sec_us()
+    third_party = _us(
+        source="secform4",
+        accession_number="",
+        sec_row_id="",
+    )
+
+    result = repo.upsert([sec_trade, third_party])
+
+    assert result.inserted == 2
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_sec_amendment_coexists_with_original(engine):
+    """Original filing and its amendment are stored as separate rows."""
+    repo = UsTradeRepository(engine)
+    original = _sec_us(
+        accession_number=_ACC_A,
+        sec_row_id=_ROW_A,
+        is_amendment=False,
+    )
+    amendment = _sec_us(
+        accession_number=_ACC_B,
+        sec_row_id=_ROW_B,
+        is_amendment=True,
+    )
+
+    result = repo.upsert([original, amendment])
+
+    assert result.inserted == 2
+    assert len(repo.query("AAPL", sources={"sec_edgar"})) == 2
+
+
+def test_sec_amendment_re_upsert_is_skipped(engine):
+    """Re-ingesting the amendment produces SKIP, not a new row."""
+    repo = UsTradeRepository(engine)
+    amendment = _sec_us(
+        accession_number=_ACC_B,
+        sec_row_id=_ROW_B,
+        is_amendment=True,
+    )
+
+    repo.upsert([amendment])
+    second = repo.upsert([amendment])
+
+    assert second == UpsertResult(skipped=1)
+    assert len(repo.query("AAPL", sources={"sec_edgar"})) == 1
+
+
+def test_sec_query_filters_by_source(engine):
+    """query(..., sources={'sec_edgar'}) returns only SEC rows."""
+    repo = UsTradeRepository(engine)
+    sec_trade = _sec_us()
+    third_party = _us(source="secform4", accession_number="", sec_row_id="")
+
+    repo.upsert([sec_trade, third_party])
+
+    sec_only = repo.query("AAPL", sources={"sec_edgar"})
+    third_only = repo.query("AAPL", sources={"secform4"})
+
+    assert len(sec_only) == 1
+    assert sec_only[0].source == "sec_edgar"
+    assert len(third_only) == 1
+    assert third_only[0].source == "secform4"
+
+
+def test_sec_query_latest_filters_by_source(engine):
+    """query_latest(..., sources={'sec_edgar'}) returns only SEC rows."""
+    repo = UsTradeRepository(engine)
+    sec_trade = _sec_us()
+    third_party = _us(source="secform4", accession_number="", sec_row_id="")
+
+    repo.upsert([sec_trade, third_party])
+
+    sec_latest = repo.query_latest(10, sources={"sec_edgar"})
+    assert len(sec_latest) == 1
+    assert sec_latest[0].source == "sec_edgar"

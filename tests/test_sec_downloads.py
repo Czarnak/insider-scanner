@@ -13,6 +13,9 @@ import pytest
 
 from insider_scanner.core.sec_client import SecClient, SecTransport
 from insider_scanner.core.sec_fair_access import RateLimiter
+from insider_scanner.core.sec_index import SecMasterIndexRow
+from insider_scanner.core.sec_ownership_parser import OwnershipFiling
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.json_state import atomic_write_json
 from insider_scanner.services.sec_downloads import (
     SecDownloadProgress,
@@ -365,3 +368,127 @@ def test_continue_on_error_false_halts_on_first_failed_date(tmp_path: Path) -> N
     assert report.dates_total == 2
     assert report.dates_completed == 0
     assert not checkpoint.exists()  # no date completed → nothing checkpointed
+
+
+# ---------------------------------------------------------------------------
+# on_filing_parsed hook tests
+# ---------------------------------------------------------------------------
+
+
+def test_on_filing_parsed_hook_is_called_for_each_filing(tmp_path: Path) -> None:
+    """Hook receives (SecMasterIndexRow, OwnershipFiling) for every parsed filing."""
+    calls: list[tuple[object, object]] = []
+
+    def hook(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
+        calls.append((row, filing))
+
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=hook,
+    )
+
+    assert report.parsed == 2
+    assert len(calls) == 2
+    assert all(isinstance(row, SecMasterIndexRow) for row, _ in calls)
+    assert all(isinstance(filing, OwnershipFiling) for _, filing in calls)
+
+
+def test_on_filing_parsed_none_default_is_unchanged(tmp_path: Path) -> None:
+    """Omitting on_filing_parsed (default None) leaves behavior identical."""
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        # on_filing_parsed not passed — defaults to None
+    )
+
+    assert (report.discovered, report.downloaded, report.parsed) == (2, 2, 2)
+    assert (report.skipped, report.failed) == (0, 0)
+    assert report.dates_completed == 1
+
+
+def test_on_filing_parsed_persistence_error_leaves_date_incomplete(
+    tmp_path: Path,
+) -> None:
+    """When the hook raises PersistenceError, failed is incremented and the date
+    is NOT marked completed so it can be retried on the next run."""
+    call_count = 0
+
+    def failing_hook(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
+        nonlocal call_count
+        call_count += 1
+        raise PersistenceError("simulated persist failure")
+
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=failing_hook,
+        continue_on_error=True,
+    )
+
+    # Hook was called for both filings — loop is not aborted early.
+    assert call_count == 2
+    # Each hook failure increments failed.
+    assert report.failed == 2
+    # The date is NOT marked completed (sink failure → retry next run).
+    assert report.dates_completed == 0
+
+
+def test_on_filing_parsed_persistence_error_progress_not_emitted(
+    tmp_path: Path,
+) -> None:
+    """on_progress is not called for a date whose hook raised PersistenceError."""
+    progress_dates: list[date] = []
+
+    def failing_hook(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
+        raise PersistenceError("simulated persist failure")
+
+    download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=failing_hook,
+        on_progress=lambda snap: progress_dates.append(snap.current_date),
+    )
+
+    assert DAY not in progress_dates
+
+
+def test_on_filing_parsed_sink_failure_date_retried_on_next_run(
+    tmp_path: Path,
+) -> None:
+    """After a hook failure the date stays uncovered; a second run without the
+    failing hook completes it."""
+    hook_raises = True
+
+    def conditional_hook(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
+        if hook_raises:
+            raise PersistenceError("transient failure")
+
+    first = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=conditional_hook,
+    )
+    assert first.dates_completed == 0
+
+    # Second run: hook no longer raises.
+    hook_raises = False
+    second = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=conditional_hook,
+    )
+    assert second.dates_completed == 1
+    assert second.parsed == 2

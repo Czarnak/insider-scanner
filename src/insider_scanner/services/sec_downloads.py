@@ -39,9 +39,11 @@ from insider_scanner.core.sec_ownership_document import (
     extract_ownership_document,
 )
 from insider_scanner.core.sec_ownership_parser import (
+    OwnershipFiling,
     SecOwnershipParseError,
     parse_ownership_document,
 )
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
@@ -110,6 +112,8 @@ def download_filings_in_range(
     cache_root: Path,
     checkpoint_path: Path | None = None,
     on_progress: Callable[[SecDownloadProgress], None] | None = None,
+    on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
+    | None = None,
     cancelled: Callable[[], bool] = not_cancelled,
     continue_on_error: bool = True,
     cleanup: bool = True,
@@ -145,6 +149,7 @@ def download_filings_in_range(
             cancelled=cancelled,
             retain_failed_downloads=retain_failed_downloads,
             policy=policy,
+            on_filing_parsed=on_filing_parsed,
         )
         if outcome is None:  # cancelled mid-date — leave the date uncovered
             interrupted = True
@@ -181,6 +186,8 @@ def _process_date(
     cancelled: Callable[[], bool],
     retain_failed_downloads: bool,
     policy: SecSecurityPolicy,
+    on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
+    | None = None,
 ) -> bool | None:
     """Process one calendar day.
 
@@ -204,17 +211,23 @@ def _process_date(
 
     rows = sec_index.parse_master_index(index_text)
     counters["discovered"] += len(rows)
+    any_sink_failure = False
     for row in rows:
         if cancelled():
             return None
-        _process_filing(
+        ok = _process_filing(
             row,
             client=client,
             cache_root=cache_root,
             counters=counters,
             retain_failed_downloads=retain_failed_downloads,
             policy=policy,
+            on_filing_parsed=on_filing_parsed,
         )
+        if not ok:
+            any_sink_failure = True
+    if any_sink_failure:
+        return False
     return True
 
 
@@ -226,7 +239,15 @@ def _process_filing(
     counters: dict[str, int],
     retain_failed_downloads: bool,
     policy: SecSecurityPolicy,
-) -> None:
+    on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
+    | None = None,
+) -> bool:
+    """Process a single filing.
+
+    Returns True in all normal code paths (fetch/parse/promote failures keep the
+    existing behavior — the date still completes). Returns False only when the
+    on_filing_parsed sink raises, signalling a date-level retry.
+    """
     try:
         pending = fetch_filing(row, client=client, cache_root=cache_root)
     except _RECOVERABLE as exc:
@@ -234,7 +255,7 @@ def _process_filing(
         _log_recoverable_level(
             "SEC filing failed stage=fetch cik=%s reason=%s", row.cik, exc
         )
-        return
+        return True
 
     if pending.from_cache:
         counters["skipped"] += 1
@@ -246,7 +267,7 @@ def _process_filing(
         document = extract_ownership_document(
             pending.content, accession_number=accession, policy=policy
         )
-        parse_ownership_document(document, policy=policy)
+        filing = parse_ownership_document(document, policy=policy)
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
@@ -255,7 +276,7 @@ def _process_filing(
         _maybe_quarantine(
             pending, cache_root=cache_root, enabled=retain_failed_downloads
         )
-        return
+        return True
 
     try:
         promote_validated_filing(pending, cache_root=cache_root)
@@ -264,8 +285,20 @@ def _process_filing(
         _log_recoverable_level(
             "SEC filing failed stage=promote cik=%s reason=%s", row.cik, exc
         )
-        return
+        return True
     counters["parsed"] += 1
+
+    if on_filing_parsed is not None:
+        try:
+            on_filing_parsed(row, filing)
+        except (*_RECOVERABLE, PersistenceError) as exc:
+            counters["failed"] += 1
+            _log_recoverable_level(
+                "SEC filing failed stage=persist cik=%s reason=%s", row.cik, exc
+            )
+            return False
+
+    return True
 
 
 def _log_recoverable_level(message: str, identifier: str, exc: Exception) -> None:

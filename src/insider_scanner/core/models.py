@@ -34,6 +34,21 @@ class InsiderTrade:
     is_congress: bool = False
     congress_member: str = ""
 
+    # SEC EDGAR native fields
+    accession_number: str = ""
+    sec_row_id: str = ""
+    form_type: str = ""
+    cik_issuer: str = ""
+    cik_insider: str = ""
+    period_of_report: date | None = None
+    is_amendment: bool = False
+    is_derivative: bool = False
+    document_sha256: str = ""
+    transaction_code: str = ""
+    acquired_disposed: str = ""
+    direct_or_indirect: str = ""
+    sec_detail_json: str = ""
+
     def to_dict(self) -> dict:
         return {
             "ticker": self.ticker,
@@ -51,12 +66,26 @@ class InsiderTrade:
             "edgar_url": self.edgar_url,
             "is_congress": self.is_congress,
             "congress_member": self.congress_member,
+            "accession_number": self.accession_number,
+            "sec_row_id": self.sec_row_id,
+            "form_type": self.form_type,
+            "cik_issuer": self.cik_issuer,
+            "cik_insider": self.cik_insider,
+            "period_of_report": str(self.period_of_report) if self.period_of_report else "",
+            "is_amendment": self.is_amendment,
+            "is_derivative": self.is_derivative,
+            "document_sha256": self.document_sha256,
+            "transaction_code": self.transaction_code,
+            "acquired_disposed": self.acquired_disposed,
+            "direct_or_indirect": self.direct_or_indirect,
+            "sec_detail_json": self.sec_detail_json,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "InsiderTrade":
         td = d.get("trade_date", "")
         fd = d.get("filing_date", "")
+        pr = d.get("period_of_report", "")
         return cls(
             ticker=d.get("ticker", ""),
             company=d.get("company", ""),
@@ -73,6 +102,19 @@ class InsiderTrade:
             edgar_url=d.get("edgar_url", ""),
             is_congress=d.get("is_congress", False),
             congress_member=d.get("congress_member", ""),
+            accession_number=d.get("accession_number", ""),
+            sec_row_id=d.get("sec_row_id", ""),
+            form_type=d.get("form_type", ""),
+            cik_issuer=d.get("cik_issuer", ""),
+            cik_insider=d.get("cik_insider", ""),
+            period_of_report=date.fromisoformat(pr) if pr else None,
+            is_amendment=d.get("is_amendment", False),
+            is_derivative=d.get("is_derivative", False),
+            document_sha256=d.get("document_sha256", ""),
+            transaction_code=d.get("transaction_code", ""),
+            acquired_disposed=d.get("acquired_disposed", ""),
+            direct_or_indirect=d.get("direct_or_indirect", ""),
+            sec_detail_json=d.get("sec_detail_json", ""),
         )
 
 

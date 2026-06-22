@@ -65,7 +65,17 @@ def _normalized(value: str) -> str:
 
 
 def us_canonical_key(trade: InsiderTrade) -> str:
-    """Return the established fuzzy US deduplication identity."""
+    """Return the deduplication identity for a US insider trade.
+
+    When both ``accession_number`` and ``sec_row_id`` are present the key is a
+    deterministic SEC identity derived from those two fields.  Otherwise the
+    established fuzzy key (ticker + normalised name + trade date + share bucket)
+    is used so that existing third-party rows are unaffected.
+    """
+    accession = (trade.accession_number or "").strip()
+    sec_row = (trade.sec_row_id or "").strip()
+    if accession and sec_row:
+        return _digest(("sec", accession, sec_row))
     shares_bucket = round(trade.shares / 10) * 10 if trade.shares else 0
     return _digest(
         (
