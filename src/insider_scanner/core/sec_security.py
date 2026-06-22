@@ -225,7 +225,9 @@ DEFAULT_SEC_SECURITY_POLICY = SecSecurityPolicy(
     zip_max_compression_ratio=200.0,
     resource_limits={
         SecResourceProfile.DAILY_INDEX: SecResourceLimits(
-            frozenset({"text/plain"}), 32 * _MIB
+            # SEC serves daily/full-index .idx files as application/octet-stream;
+            # text/plain is also accepted for resilience to header variation.
+            frozenset({"text/plain", "application/octet-stream"}), 32 * _MIB
         ),
         SecResourceProfile.JSON_METADATA: SecResourceLimits(
             frozenset({"application/json", "text/plain"}), 32 * _MIB

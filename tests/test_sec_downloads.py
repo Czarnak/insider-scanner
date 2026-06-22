@@ -68,7 +68,8 @@ def make_transport(
                 return StubResponse(status_code=index_status, chunks=())
             return StubResponse(
                 chunks=(index_text.encode("utf-8"),),
-                headers={"Content-Type": "text/plain"},
+                # SEC serves daily-index .idx files as application/octet-stream.
+                headers={"Content-Type": "application/octet-stream"},
             )
         return StubResponse(
             chunks=(filing_bytes,), headers={"Content-Type": "application/xml"}

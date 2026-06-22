@@ -276,6 +276,16 @@ def test_content_type_parameters_are_normalized() -> None:
     assert fetch_bytes(make_client(configured_transport(response))) == b"index"
 
 
+def test_daily_index_accepts_octet_stream_content_type() -> None:
+    # SEC serves the daily-index .idx file as application/octet-stream (not
+    # text/plain), so the DAILY_INDEX profile must accept that media type.
+    response = StubResponse(
+        chunks=(b"index",), headers={"Content-Type": "application/octet-stream"}
+    )
+
+    assert fetch_bytes(make_client(configured_transport(response))) == b"index"
+
+
 def small_text_policy(max_bytes: int) -> SecSecurityPolicy:
     limits = dict(DEFAULT_SEC_SECURITY_POLICY.resource_limits)
     limits[TEXT_PROFILE] = SecResourceLimits(frozenset({"text/plain"}), max_bytes)
