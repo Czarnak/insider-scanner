@@ -215,7 +215,7 @@ def _process_date(
     for row in rows:
         if cancelled():
             return None
-        ok = _process_filing(
+        ok = process_filing_row(
             row,
             client=client,
             cache_root=cache_root,
@@ -231,14 +231,14 @@ def _process_date(
     return True
 
 
-def _process_filing(
+def process_filing_row(
     row: sec_index.SecMasterIndexRow,
     *,
     client: SecClient,
     cache_root: Path,
     counters: dict[str, int],
-    retain_failed_downloads: bool,
-    policy: SecSecurityPolicy,
+    retain_failed_downloads: bool = False,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
 ) -> bool:
@@ -341,14 +341,14 @@ def _accession_from_path(archive_path: str) -> str | None:
     return stem or None
 
 
-def _new_counters() -> dict[str, int]:
+def new_counters() -> dict[str, int]:
     return {key: 0 for key in _COUNTER_KEYS}
 
 
 def _load_checkpoint(
     path: Path | None, interval: DateInterval
 ) -> tuple[set[date], dict[str, int]]:
-    counters = _new_counters()
+    counters = new_counters()
     completed: set[date] = set()
     if path is None:
         return completed, counters

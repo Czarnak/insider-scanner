@@ -492,3 +492,29 @@ def test_on_filing_parsed_sink_failure_date_retried_on_next_run(
     )
     assert second.dates_completed == 1
     assert second.parsed == 2
+
+
+def test_process_filing_row_is_public_and_parses_one_filing(tmp_path):
+    from insider_scanner.services.sec_downloads import process_filing_row, new_counters
+    from insider_scanner.core.sec_index import SecMasterIndexRow
+    from datetime import date
+
+    row = SecMasterIndexRow(
+        cik="0000320193",
+        company_name="APPLE INC",
+        form_type="4",
+        filing_date=date(2026, 6, 15),
+        archive_path="edgar/data/320193/0000320193-26-000061.txt",
+    )
+    counters = new_counters()
+    seen = []
+    ok = process_filing_row(
+        row,
+        client=make_client(make_transport(filing_bytes=VALID_FILING)),
+        cache_root=tmp_path / "cache",
+        counters=counters,
+        on_filing_parsed=lambda r, f: seen.append((r, f)),
+    )
+    assert ok is True
+    assert counters["parsed"] == 1
+    assert len(seen) == 1
