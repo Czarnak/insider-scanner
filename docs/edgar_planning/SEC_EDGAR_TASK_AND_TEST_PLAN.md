@@ -629,7 +629,7 @@ User:
 Exit criteria:
 
 - SEC-native source becomes trusted default.
-- Third-party sources are either fallback-only or queued for removal.
+- Third-party sources are queued for removal.
 
 ## Test Command Set
 
