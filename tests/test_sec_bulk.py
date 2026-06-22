@@ -20,8 +20,10 @@ from insider_scanner.core.sec_bulk import (
     OWNERSHIP_FORMS,
     SecBulkError,
     SecBulkSecurityError,
+    bulk_metadata_to_index_row,
     iter_ownership_filings,
 )
+from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityReason,
@@ -706,3 +708,41 @@ def test_malformed_metadata_error_does_not_leak_payload_or_logs(
     assert TASK6_METADATA_SENTINEL not in caplog.text, (
         "Sentinel found in log output — raw payload leaked"
     )
+
+
+# ---------------------------------------------------------------------------
+# 18. bulk_metadata_to_index_row converter
+# ---------------------------------------------------------------------------
+
+
+def _meta(cik="0000320193", form="4", d=date(2026, 6, 13),
+          acc="0000320193-26-000061", primary="form4.xml"):
+    return BulkFilingMetadata(cik=cik, form_type=form, filing_date=d,
+                              accession_number=acc, primary_document=primary)
+
+
+def test_synthesizes_archive_path_from_cik_and_accession():
+    row = bulk_metadata_to_index_row(_meta())
+    assert isinstance(row, SecMasterIndexRow)
+    assert row.cik == "0000320193"
+    assert row.form_type == "4"
+    assert row.filing_date == date(2026, 6, 13)
+    assert row.archive_path == "edgar/data/320193/0000320193-26-000061.txt"
+
+
+def test_missing_filing_date_is_rejected():
+    with pytest.raises(SecBulkError):
+        bulk_metadata_to_index_row(_meta(d=None))
+
+
+def test_malformed_accession_is_rejected():
+    with pytest.raises(SecBulkError):
+        bulk_metadata_to_index_row(_meta(acc="../etc/passwd"))
+    with pytest.raises(SecBulkError):
+        bulk_metadata_to_index_row(_meta(acc="not-an-accession"))
+
+
+def test_cik_filter_limits_yielded_records():
+    results = list(iter_ownership_filings(
+        FIXTURE_ZIP, cache_root=FIXTURE_DIR, ciks=frozenset({"0001318605"})))
+    assert [r.cik for r in results] == ["0001318605"]

@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from insider_scanner.core import edgar
 from insider_scanner.core._sec_paths import resolves_within
+from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
@@ -40,6 +41,7 @@ OWNERSHIP_FORMS: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"}
 
 _RE_MAIN = re.compile(r"^CIK(\d{10})\.json$")
 _RE_CONT = re.compile(r"^CIK(\d{10})-submissions-(\d+)\.json$")
+_ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +82,36 @@ class SecBulkSecurityError(SecBulkError):
 # ---------------------------------------------------------------------------
 
 
+def bulk_metadata_to_index_row(meta: BulkFilingMetadata) -> SecMasterIndexRow:
+    """Convert bulk metadata into a SecMasterIndexRow the hardened pipeline accepts.
+
+    Raises SecBulkError when filing_date is absent or the accession is malformed
+    (defense in depth — accession is used to build a download path).
+    """
+    if not isinstance(meta, BulkFilingMetadata):
+        raise TypeError("meta must be a BulkFilingMetadata")
+    if meta.filing_date is None:
+        raise SecBulkError("bulk metadata has no filing_date")
+    if not _ACCESSION_RE.match(meta.accession_number):
+        raise SecBulkError("bulk metadata has a malformed accession number")
+    cik_no_zeros = str(int(meta.cik))  # meta.cik is 10-digit zero-padded
+    archive_path = f"edgar/data/{cik_no_zeros}/{meta.accession_number}.txt"
+    edgar.build_filing_archive_url(archive_path)  # raises on any unsafe path
+    return SecMasterIndexRow(
+        cik=meta.cik,
+        company_name="",  # bulk metadata has no issuer name; mapper falls back to parsed filing
+        form_type=meta.form_type,
+        filing_date=meta.filing_date,
+        archive_path=archive_path,
+    )
+
+
 def iter_ownership_filings(
     zip_path: Path,
     *,
     cache_root: Path,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+    ciks: frozenset[str] | None = None,
 ) -> Iterator[BulkFilingMetadata]:
     """Yield ownership-form filing metadata streamed from a submissions bulk ZIP.
 
@@ -99,6 +126,10 @@ def iter_ownership_filings(
     policy:
         Immutable security policy bounding member counts, sizes, totals,
         compression ratios, and names.  Defaults to the secure default.
+    ciks:
+        Optional frozenset of normalized 10-digit CIKs to include; ``None``
+        means all CIKs are yielded.  Filtering occurs before the JSON read for
+        efficiency on large multi-GB archives.
 
     Yields
     ------
@@ -165,6 +196,8 @@ def iter_ownership_filings(
                 continue  # stray member — preflighted, never read
 
             cik = edgar.normalize_cik(cik_str)
+            if ciks is not None and cik not in ciks:
+                continue
             data = _read_member_json(zf, info, policy)
 
             if m_main:
