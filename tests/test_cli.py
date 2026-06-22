@@ -260,14 +260,17 @@ class TestSecParsers:
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args(["sec-catchup", "--since", "2026-06-01"])
 
-    def test_sec_backfill_parser_wiring(self):
+    def test_sec_backfill_parser_wiring(self, tmp_path):
+        zip_path = tmp_path / "submissions.zip"
+        zip_path.touch()
         args = cli.build_parser().parse_args(
-            ["sec-backfill", "--confirm-full-backfill"]
+            ["sec-backfill", "--zip", str(zip_path), "--confirm-full-backfill"]
         )
 
         assert args.command == "sec-backfill"
         assert args.func is cli.cmd_sec_backfill
         assert args.confirm_full_backfill is True
+        assert args.zip == str(zip_path)
 
 
 class TestMakeCliProgress:
@@ -430,17 +433,145 @@ class TestCmdSecCatchup:
 class TestCmdSecBackfill:
     def test_refuses_without_confirmation(self, capsys):
         code = cli.cmd_sec_backfill(
-            Namespace(confirm_full_backfill=False), SimpleNamespace()
+            Namespace(confirm_full_backfill=False, zip=None, cik=None),
+            SimpleNamespace(),
         )
 
         assert code == 2
         assert "--confirm-full-backfill" in capsys.readouterr().err
 
-    def test_with_confirmation_reports_session_7_deferral(self, capsys):
+    def test_missing_zip_returns_2(self, capsys, tmp_path):
         code = cli.cmd_sec_backfill(
-            Namespace(confirm_full_backfill=True), SimpleNamespace()
+            Namespace(
+                confirm_full_backfill=True,
+                zip=str(tmp_path / "missing.zip"),
+                cik=None,
+                no_cleanup=False,
+            ),
+            SimpleNamespace(),
+        )
+
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "not found" in err.lower()
+
+    def test_invalid_cik_returns_2(self, capsys, tmp_path):
+        zip_path = tmp_path / "submissions.zip"
+        zip_path.touch()
+        # CIK validation happens before the client is built, so no monkeypatch needed.
+        code = cli.cmd_sec_backfill(
+            Namespace(
+                confirm_full_backfill=True,
+                zip=str(zip_path),
+                cik=["NOT_A_VALID_CIK_!@#"],
+                no_cleanup=False,
+            ),
+            SimpleNamespace(),
+        )
+
+        assert code == 2
+
+    def test_dispatches_service_and_prints_summary(self, monkeypatch, capsys, tmp_path):
+        monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+        monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
+        monkeypatch.setattr(
+            cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf_ckpt.json")
+        )
+        zip_path = tmp_path / "submissions.zip"
+        zip_path.touch()
+        seen: dict[str, object] = {}
+
+        class FakeService:
+            def run(self, zp, *, confirm, ciks, cancelled=None, on_progress=None):
+                seen["run"] = dict(zip_path=zp, confirm=confirm, ciks=ciks)
+                from insider_scanner.services.sec_backfill import SecBackfillSummary
+
+                return SecBackfillSummary(10, 8, 5, 1, 2, 1, 0, 0)
+
+        class FakeServices:
+            def make_sec_backfill(self, **kwargs):
+                seen["make"] = kwargs
+                return FakeService()
+
+            def close(self):
+                pass
+
+        code = cli.cmd_sec_backfill(
+            Namespace(
+                confirm_full_backfill=True,
+                zip=str(zip_path),
+                cik=["320193"],
+                no_cleanup=False,
+            ),
+            FakeServices(),
         )
 
         assert code == 0
+        assert seen["run"]["confirm"] is True
+        assert seen["run"]["ciks"] == frozenset({"0000320193"})
+        assert seen["make"]["cleanup"] is True
         out = capsys.readouterr().out
-        assert "sec-catchup" in out
+        assert "discovered=10" in out
+
+
+def test_sec_backfill_requires_confirmation(capsys, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+
+    class _FakeServices:
+        def close(self):
+            pass
+
+    rc = cli.run(
+        ["sec-backfill", "--zip", str(tmp_path / "submissions.zip")],
+        service_factory=_FakeServices,
+    )
+    out = capsys.readouterr()
+    assert rc == 2
+    assert cli.SEC_BULK_SUBMISSIONS_URL in (out.out + out.err)
+
+
+def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    zip_path = tmp_path / "submissions.zip"
+    zip_path.touch()
+
+    class _Svc:
+        def run(self, zp, *, confirm, ciks, cancelled=None, on_progress=None):
+            captured.update(zip_path=zp, confirm=confirm, ciks=ciks)
+            from insider_scanner.services.sec_backfill import SecBackfillSummary
+
+            return SecBackfillSummary(2, 2, 2, 0, 0, 0, 0, 0)
+
+    class _FakeServices:
+        def make_sec_backfill(self, **kw):
+            return _Svc()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+    monkeypatch.setattr(cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf.json"))
+
+    rc = cli.run(
+        [
+            "sec-backfill",
+            "--zip",
+            str(zip_path),
+            "--cik",
+            "320193",
+            "--cik",
+            "1318605",
+            "--confirm-full-backfill",
+        ],
+        service_factory=_FakeServices,
+    )
+    assert rc == 0
+    assert captured["confirm"] is True
+    assert captured["ciks"] == frozenset({"0000320193", "0001318605"})
+
+
+def test_sec_backfill_missing_zip_is_arg_error():
+    import pytest
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["sec-backfill", "--confirm-full-backfill"])

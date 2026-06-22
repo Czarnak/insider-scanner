@@ -13,6 +13,7 @@ from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
 )
+from insider_scanner.core import edgar
 from insider_scanner.core.prices import get_price_history
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
@@ -23,6 +24,21 @@ if TYPE_CHECKING:
     from insider_scanner.services.sec_downloads import SecDownloadProgress
 
 log = get_logger("cli")
+
+# SEC submissions bulk archive — the only input to full backfill.
+# VERIFY against https://www.sec.gov/search-filings/edgar-application-programming-interfaces
+# (host www.sec.gov is already in the SEC client host allowlist).
+SEC_BULK_SUBMISSIONS_URL = (
+    "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
+)
+SEC_BULK_INSTRUCTIONS = (
+    "Full backfill needs the SEC 'submissions' bulk archive (multi-GB, refreshed nightly).\n"
+    "1. Download it once:\n"
+    f"   {SEC_BULK_SUBMISSIONS_URL}\n"
+    "2. Run backfill against the local file:\n"
+    "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
+    "Backfill is resumable: re-run the same command after an interruption to continue."
+)
 
 
 def _parse_date_arg(value: str) -> date:
@@ -313,6 +329,13 @@ def _sec_checkpoint_path() -> Path:
     return EDGAR_CACHE_DIR / "sec_catchup_checkpoint.json"
 
 
+def _sec_backfill_checkpoint_path() -> Path:
+    """Stable checkpoint file under the cache dir for resumable full-backfill runs."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR / "sec_backfill_checkpoint.json"
+
+
 def _make_cli_progress(
     quiet: bool,
 ) -> Callable[[SecDownloadProgress], None] | None:
@@ -393,19 +416,58 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
     return 0
 
 
-def cmd_sec_backfill(args: argparse.Namespace, _services: ApplicationServices) -> int:
-    """Guarded placeholder for full bulk backfill (arrives in Session 7)."""
+def _print_backfill_summary(summary: object) -> None:
+    print(
+        f"SEC backfill: discovered={summary.filings_discovered} "  # type: ignore[union-attr]
+        f"parsed={summary.filings_parsed}"  # type: ignore[union-attr]
+    )
+    print(
+        f"  transactions: inserted={summary.transactions_inserted} "  # type: ignore[union-attr]
+        f"updated={summary.transactions_updated} skipped={summary.transactions_skipped}"  # type: ignore[union-attr]
+    )
+    print(
+        f"  skipped:      resume={summary.skipped_resume} "  # type: ignore[union-attr]
+        f"metadata={summary.skipped_metadata}"  # type: ignore[union-attr]
+    )
+    print(f"  failures:     {summary.failures}")  # type: ignore[union-attr]
+
+
+def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Run an explicit, resumable full bulk backfill from a local submissions ZIP."""
     if not args.confirm_full_backfill:
+        print(SEC_BULK_INSTRUCTIONS)
         print(
-            "Refusing to start a full bulk backfill without --confirm-full-backfill.",
+            "\nRefusing to start a full bulk backfill without --confirm-full-backfill.",
             file=sys.stderr,
         )
         return 2
-    print(
-        "Full bulk backfill is not yet implemented (planned for Session 7). "
-        "To ingest a date range now, use:\n"
-        "  insider-scanner-cli sec-catchup --since YYYY-MM-DD --until YYYY-MM-DD"
+
+    zip_path = Path(args.zip)
+    if not zip_path.is_file():
+        print(SEC_BULK_INSTRUCTIONS, file=sys.stderr)
+        print(f"\nSubmissions archive not found: {zip_path}", file=sys.stderr)
+        return 2
+
+    try:
+        ciks = (
+            frozenset(edgar.normalize_cik(c) for c in args.cik) if args.cik else None
+        )
+    except ValueError as error:
+        print(f"Invalid --cik value: {error}", file=sys.stderr)
+        return 2
+
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_backfill(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=_sec_backfill_checkpoint_path(),
     )
+    print(f"Starting full bulk backfill from {zip_path} (resumable).")
+    summary = service.run(zip_path, confirm=True, ciks=ciks)
+    _print_backfill_summary(summary)
     return 0
 
 
@@ -560,15 +622,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sec_catchup.set_defaults(func=cmd_sec_catchup)
 
-    # sec-backfill (guarded placeholder; full workflow lands in Session 7)
+    # sec-backfill (full bulk backfill from a local submissions ZIP)
     p_sec_backfill = sub.add_parser(
         "sec-backfill",
-        help="Full bulk backfill — guarded placeholder (Session 7)",
+        help="Full bulk backfill from a local SEC submissions ZIP (resumable)",
+        epilog=SEC_BULK_INSTRUCTIONS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sec_backfill.add_argument(
+        "--zip",
+        required=True,
+        help="Path to a locally-downloaded SEC submissions.zip (see epilog for the link)",
+    )
+    p_sec_backfill.add_argument(
+        "--cik",
+        action="append",
+        default=None,
+        help="Limit backfill to one or more CIKs (repeatable). Default: all filings.",
     )
     p_sec_backfill.add_argument(
         "--confirm-full-backfill",
         action="store_true",
-        help="Acknowledge that full bulk backfill is not yet available",
+        help="Required: acknowledge the heavy, network-intensive full backfill",
+    )
+    p_sec_backfill.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
     )
     p_sec_backfill.set_defaults(func=cmd_sec_backfill)
 
