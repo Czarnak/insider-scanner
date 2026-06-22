@@ -8,6 +8,14 @@ JSON checkpoint of completed accession numbers keyed to the ZIP identity.
 Known limitation: the checkpoint stores the full set of completed accessions; for
 a whole-archive backfill this set can grow large. Acceptable for fixture-scale and
 repair runs; a compact cursor is a future optimization (do not silently cap it).
+
+Resume convergence: a filing that fails BEFORE the persist sink (fetch 404, a
+document that never parses as valid ownership XML, or a security-bound rejection)
+is intentionally retried on every resume run -- it is never added to the completed
+set. This guarantees transient failures are retried, but a *deterministic*
+non-mapping failure is therefore re-fetched on each run and never converges
+(bounded, no data loss). Distinguishing deterministic from transient failures
+(e.g. a separate failed_accessions checkpoint set) is a deferred follow-up.
 """
 
 from __future__ import annotations
@@ -46,6 +54,14 @@ class SecBackfillConfirmationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class SecBackfillSummary:
+    """Outcome counters for one backfill run.
+
+    These fields do NOT cleanly partition ``filings_discovered``: a filing that
+    parsed but then failed to persist is counted in both ``filings_parsed`` and
+    ``failures``; ``skipped_resume``/``skipped_metadata`` count filings that were
+    never fetched. Treat each counter independently, not as a sum.
+    """
+
     filings_discovered: int
     filings_parsed: int
     transactions_inserted: int
@@ -141,7 +157,7 @@ class SecBackfillService:
         finally:
             gen.close()  # release the ZIP handle promptly on early exit
 
-        fully_done = not interrupted and not cancelled()
+        fully_done = not interrupted
         if fully_done:
             self._delete_checkpoint()
             if self._cleanup:

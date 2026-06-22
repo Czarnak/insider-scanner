@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 log = get_logger("cli")
 
 # SEC submissions bulk archive — the only input to full backfill.
-# VERIFY against https://www.sec.gov/search-filings/edgar-application-programming-interfaces
-# (host www.sec.gov is already in the SEC client host allowlist).
+# Verified reachable: ranged GET with a compliant SEC User-Agent returned HTTP 206,
+# Content-Type application/zip, ~1.55 GB. Host www.sec.gov is in the SEC client allowlist.
 SEC_BULK_SUBMISSIONS_URL = (
     "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
 )

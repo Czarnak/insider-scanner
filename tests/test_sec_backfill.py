@@ -9,6 +9,8 @@ from insider_scanner.services.sec_backfill import (
 )
 from tests.test_sec_downloads import make_client, make_transport, VALID_FILING
 from tests.test_sec_bulk import FIXTURE_ZIP  # reuse the 4-record fixture
+from insider_scanner.persistence.errors import PersistenceError
+from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 
 
 @pytest.fixture
@@ -78,3 +80,48 @@ def test_cleanup_can_be_disabled(persistence, tmp_path, monkeypatch):
     svc = _service(persistence, tmp_path, cleanup=False)
     svc.run(FIXTURE_ZIP, confirm=True)
     assert calls == []
+
+
+def test_persistence_error_is_not_checkpointed_and_is_retried(persistence, tmp_path, monkeypatch):
+    def _boom(trades):
+        raise PersistenceError("transient db failure")
+
+    # Run 1: every upsert fails -> no accession is retired.
+    monkeypatch.setattr(persistence.us_trades, "upsert", _boom)
+    svc = _service(persistence, tmp_path)
+    summary1 = svc.run(FIXTURE_ZIP, confirm=True)
+    assert summary1.failures == 4
+    assert summary1.transactions_inserted == 0
+    assert not (tmp_path / "backfill.json").exists()  # nothing checkpointed
+
+    # Run 2: upsert restored -> nothing skipped via resume; trades now persist.
+    monkeypatch.undo()
+    resume = _service(persistence, tmp_path)
+    summary2 = resume.run(FIXTURE_ZIP, confirm=True)
+    assert summary2.skipped_resume == 0
+    assert summary2.transactions_inserted > 0
+
+
+def test_mapping_error_is_checkpointed_and_skipped_on_resume(persistence, tmp_path, monkeypatch):
+    def _raise(filing, row):
+        raise SecTradeMappingError("unmappable")
+
+    monkeypatch.setattr(
+        "insider_scanner.services.sec_backfill.ownership_filing_to_trades", _raise
+    )
+    seen = {"n": 0}
+
+    def cancel_after_one() -> bool:
+        seen["n"] += 1
+        return seen["n"] > 1
+
+    # Run 1: process exactly one filing (mapping fails -> still retired), then interrupt.
+    svc = _service(persistence, tmp_path)
+    first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
+    assert first.failures >= 1
+    assert (tmp_path / "backfill.json").exists()  # interrupted -> checkpoint kept
+
+    # Run 2 (resume): the mapping-poisoned accession is retired -> skipped, not retried.
+    resume = _service(persistence, tmp_path)
+    second = resume.run(FIXTURE_ZIP, confirm=True)
+    assert second.skipped_resume >= 1
