@@ -21,7 +21,7 @@ def build_sec_backfill_info_group() -> QGroupBox:
         "interruption."
     )
     label.setWordWrap(True)
-    label.setTextFormat(Qt.RichText)
+    label.setTextFormat(Qt.TextFormat.RichText)
     label.setOpenExternalLinks(True)
     layout.addWidget(label)
     return group

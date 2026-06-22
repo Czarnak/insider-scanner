@@ -8,7 +8,7 @@ from insider_scanner.services.sec_backfill import (
     SecBackfillService, SecBackfillSummary, SecBackfillConfirmationError,
 )
 from tests.test_sec_downloads import make_client, make_transport, VALID_FILING
-from tests.test_sec_bulk import FIXTURE_DIR, FIXTURE_ZIP  # reuse the 4-record fixture
+from tests.test_sec_bulk import FIXTURE_ZIP  # reuse the 4-record fixture
 
 
 @pytest.fixture
@@ -55,7 +55,7 @@ def test_rerun_skips_completed_accessions_via_checkpoint(persistence, tmp_path):
         seen["n"] += 1
         return seen["n"] > 1
     svc = _service(persistence, tmp_path)
-    first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
+    svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
     assert (tmp_path / "backfill.json").exists()
     resume = _service(persistence, tmp_path)
     second = resume.run(FIXTURE_ZIP, confirm=True)

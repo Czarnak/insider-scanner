@@ -15,7 +15,7 @@ import json
 import re
 import stat
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -112,7 +112,7 @@ def iter_ownership_filings(
     cache_root: Path,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
     ciks: frozenset[str] | None = None,
-) -> Iterator[BulkFilingMetadata]:
+) -> Generator[BulkFilingMetadata, None, None]:
     """Yield ownership-form filing metadata streamed from a submissions bulk ZIP.
 
     Parameters

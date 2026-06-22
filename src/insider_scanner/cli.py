@@ -20,6 +20,7 @@ from insider_scanner.utils.logging import get_logger, setup_logging
 
 if TYPE_CHECKING:
     from insider_scanner.core.sec_client import SecClient
+    from insider_scanner.services.sec_backfill import SecBackfillSummary
     from insider_scanner.services.sec_daily import SecDailyIngestionSummary
     from insider_scanner.services.sec_downloads import SecDownloadProgress
 
@@ -416,20 +417,20 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
     return 0
 
 
-def _print_backfill_summary(summary: object) -> None:
+def _print_backfill_summary(summary: SecBackfillSummary) -> None:
     print(
-        f"SEC backfill: discovered={summary.filings_discovered} "  # type: ignore[union-attr]
-        f"parsed={summary.filings_parsed}"  # type: ignore[union-attr]
+        f"SEC backfill: discovered={summary.filings_discovered} "
+        f"parsed={summary.filings_parsed}"
     )
     print(
-        f"  transactions: inserted={summary.transactions_inserted} "  # type: ignore[union-attr]
-        f"updated={summary.transactions_updated} skipped={summary.transactions_skipped}"  # type: ignore[union-attr]
+        f"  transactions: inserted={summary.transactions_inserted} "
+        f"updated={summary.transactions_updated} skipped={summary.transactions_skipped}"
     )
     print(
-        f"  skipped:      resume={summary.skipped_resume} "  # type: ignore[union-attr]
-        f"metadata={summary.skipped_metadata}"  # type: ignore[union-attr]
+        f"  skipped:      resume={summary.skipped_resume} "
+        f"metadata={summary.skipped_metadata}"
     )
-    print(f"  failures:     {summary.failures}")  # type: ignore[union-attr]
+    print(f"  failures:     {summary.failures}")
 
 
 def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) -> int:
