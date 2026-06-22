@@ -92,3 +92,34 @@ GitHub Actions runs on push/PR:
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+## SEC EDGAR integration notes
+
+All EDGAR HTTP calls go through `src/insider_scanner/utils/http.py`, which enforces
+the ≤ 10 requests/second rate limit required by SEC policy. The `SEC_USER_AGENT`
+environment variable must carry a real name and contact email
+(e.g. `MyApp/1.0 (you@example.com)`); the placeholder default is intentionally
+rejected at startup.
+
+### Bulk backfill command
+
+The `sec-backfill` CLI command ingests SEC ownership filings from a locally
+downloaded bulk archive. Key implementation details for contributors:
+
+- Entry point: `src/insider_scanner/cli.py` — the `sec-backfill` subcommand.
+- The `--confirm-full-backfill` flag is a required acknowledgement; exit code `2`
+  if it is absent.
+- The `--zip PATH` argument is required; `--cik CIK` (repeatable) limits
+  processing to specific CIKs; `--no-cleanup` keeps the extraction cache.
+- Resumability is checkpoint-based — already-processed CIKs are skipped on
+  re-runs; do not break this invariant when modifying the backfill logic.
+- The backfill reuses the same downloader and parser as `sec-daily`; fixes to
+  the shared HTTP/parser layer apply to both.
+- The GUI shows the archive URL and the exact CLI command in an info panel but
+  does **not** invoke the backfill; keep backfill execution strictly CLI-only.
+- When writing tests for backfill logic, mock the ZIP extraction and the EDGAR
+  HTTP layer (use the `responses` library) so tests remain offline.
+
+The bulk archive URL for manual testing reference:
+`https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip`
+(multi-GB; do not fetch it in automated tests).
