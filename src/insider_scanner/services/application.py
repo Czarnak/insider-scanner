@@ -14,6 +14,7 @@ from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.european import EuropeanScanService
 from insider_scanner.services.sec_backfill import SecBackfillService
+from insider_scanner.services.sec_comparison import SecComparisonService
 from insider_scanner.services.sec_daily import SecDailyIngestionService
 from insider_scanner.services.us import UsScanService
 
@@ -56,6 +57,9 @@ class ApplicationServices:
             checkpoint_path=checkpoint_path,
         )
 
+    def make_sec_comparison(self) -> SecComparisonService:
+        """Construct a local DB comparison service for SEC validation reports."""
+        return SecComparisonService(self.persistence)
     def make_sec_backfill(
         self,
         *,

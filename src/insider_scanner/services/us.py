@@ -25,6 +25,7 @@ from insider_scanner.services.common import (
     validate_sources,
 )
 from insider_scanner.services.context import PersistenceContext
+from insider_scanner.services.sec_comparison import SEC_EDGAR_SOURCE
 from insider_scanner.persistence.refresh import is_fresh
 
 
@@ -62,28 +63,30 @@ class UsScanService:
     ) -> list[InsiderTrade]:
         identifier = normalize_identifier(ticker, "ticker").upper()
         if start_date is None and end_date is None:
-            available = {**self._adapters, **self._latest_adapters}
-            requested_sources = validate_sources(sources, available)
-            selected = tuple(
-                source
-                for source in requested_sources
-                if source in self._latest_adapters
+            selected = validate_sources(sources, self._unbounded_sources_available())
+            refresh_sources = tuple(
+                source for source in selected if source in self._latest_adapters
             )
-            if not selected:
+            local_sources = tuple(
+                source for source in selected if source == SEC_EDGAR_SOURCE
+            )
+            if not refresh_sources and not local_sources:
                 raise ValueError("selected sources do not support unbounded scans")
-            self._refresh_latest(
-                selected,
-                count=self._latest_overlap_count,
-                use_cache=use_cache,
-                cancelled=cancelled,
-            )
+            if refresh_sources:
+                self._refresh_latest(
+                    refresh_sources,
+                    count=self._latest_overlap_count,
+                    use_cache=use_cache,
+                    cancelled=cancelled,
+                )
             return flag_congress_copies(
                 self._persistence.us_trades.query(identifier, sources=selected)
             )
         requested = validate_range(start_date, end_date)
-        selected = validate_sources(sources, self._adapters)
+        selected = validate_sources(sources, self._bounded_sources_available())
+        adapter_sources = tuple(source for source in selected if source in self._adapters)
 
-        for source in selected:
+        for source in adapter_sources:
             for gap in self._persistence.coverage.gaps(
                 "us", identifier, source, requested
             ):
@@ -127,7 +130,7 @@ class UsScanService:
             validate_range(start_date, end_date)
             if ticker:
                 identifier = normalize_identifier(ticker, "ticker").upper()
-                selected = validate_sources(sources, self._adapters)
+                selected = validate_sources(sources, self._bounded_sources_available())
                 return self.scan(
                     identifier,
                     sources=selected,
@@ -136,6 +139,8 @@ class UsScanService:
                     use_cache=use_cache,
                     cancelled=cancelled,
                 )[:count]
+            assert start_date is not None
+            assert end_date is not None
             return self._latest_in_range(
                 count=count,
                 sources=sources,
@@ -145,16 +150,29 @@ class UsScanService:
                 cancelled=cancelled,
             )
 
-        selected = validate_sources(sources, self._latest_adapters)
-        self._refresh_latest(
-            selected,
-            count=count,
-            use_cache=use_cache,
-            cancelled=cancelled,
+        selected = validate_sources(sources, self._latest_sources_available())
+        refresh_sources = tuple(
+            source for source in selected if source in self._latest_adapters
         )
+        if refresh_sources:
+            self._refresh_latest(
+                refresh_sources,
+                count=count,
+                use_cache=use_cache,
+                cancelled=cancelled,
+            )
         return flag_congress_copies(
             self._persistence.us_trades.query_latest(count, sources=selected)
         )
+
+    def _unbounded_sources_available(self) -> Mapping[str, object]:
+        return {**self._adapters, **self._latest_adapters, SEC_EDGAR_SOURCE: object()}
+
+    def _bounded_sources_available(self) -> Mapping[str, object]:
+        return {**self._adapters, SEC_EDGAR_SOURCE: object()}
+
+    def _latest_sources_available(self) -> Mapping[str, object]:
+        return {**self._latest_adapters, SEC_EDGAR_SOURCE: object()}
 
     def _refresh_latest(
         self,
@@ -199,9 +217,12 @@ class UsScanService:
         use_cache: bool,
         cancelled: Callable[[], bool],
     ) -> list[InsiderTrade]:
-        selected = validate_sources(sources, self._latest_adapters)
+        selected = validate_sources(sources, self._latest_sources_available())
         fetch_count = max(count, self._latest_overlap_count)
-        for source in selected:
+        refresh_sources = tuple(
+            source for source in selected if source in self._latest_adapters
+        )
+        for source in refresh_sources:
             if cancelled():
                 break
             try:

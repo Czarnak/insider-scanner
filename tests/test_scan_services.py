@@ -19,6 +19,7 @@ from insider_scanner.services import (
     open_persistence,
 )
 from insider_scanner.services.common import LATEST_OVERLAP_COUNT
+from insider_scanner.services.sec_comparison import SEC_EDGAR_SOURCE
 
 
 def _us(
@@ -28,20 +29,23 @@ def _us(
     filing_date: date = date(2026, 1, 10),
     trade_date: date = date(2026, 1, 9),
     insider_name: str = "Tim Cook",
+    **overrides,
 ) -> InsiderTrade:
-    return InsiderTrade(
-        ticker=ticker,
-        company="Example Inc.",
-        insider_name=insider_name,
-        insider_title="Officer",
-        trade_type="Buy",
-        trade_date=trade_date,
-        filing_date=filing_date,
-        shares=10,
-        price=100,
-        value=1_000,
-        source=source,
-    )
+    values = {
+        "ticker": ticker,
+        "company": "Example Inc.",
+        "insider_name": insider_name,
+        "insider_title": "Officer",
+        "trade_type": "Buy",
+        "trade_date": trade_date,
+        "filing_date": filing_date,
+        "shares": 10,
+        "price": 100,
+        "value": 1_000,
+        "source": source,
+    }
+    values.update(overrides)
+    return InsiderTrade(**values)  # type: ignore[arg-type]
 
 
 def _congress(
@@ -76,8 +80,8 @@ def _eu(
     return EuropeanInsiderTrade(
         isin=isin,
         issuer_name="Example PLC",
-        country=country,
-        regulatory_body={
+        country=country,  # type: ignore[arg-type]
+        regulatory_body={  # type: ignore[arg-type]
             "UK": "FCA",
             "DE": "BaFin",
             "FR": "AMF",
@@ -237,6 +241,92 @@ def test_us_unbounded_scan_uses_latest_refresh_without_infinite_coverage(persist
     assert persistence.coverage.get("us", "AAPL", "openinsider") == ()
 
 
+
+def test_us_scan_can_read_sec_edgar_from_local_db_without_adapter(persistence):
+    adapter = BoundedAdapter(lambda *_: [_us(source="secform4")])
+    persistence.us_trades.upsert(
+        [
+            _us(
+                source=SEC_EDGAR_SOURCE,
+                filing_date=date(2026, 1, 10),
+                trade_date=date(2026, 1, 9),
+                insider_name="SEC Insider",
+                accession_number="0000320193-26-000010",
+                sec_row_id="non-derivative:0",
+            ),
+            _us(
+                ticker="MSFT",
+                source=SEC_EDGAR_SOURCE,
+                filing_date=date(2026, 1, 10),
+                accession_number="0000789019-26-000010",
+                sec_row_id="non-derivative:0",
+            ),
+        ]
+    )
+    service = UsScanService(persistence, adapters={"secform4": adapter})
+
+    trades = service.scan(
+        " aapl ",
+        sources=(SEC_EDGAR_SOURCE,),
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 1, 31),
+        use_cache=False,
+    )
+
+    assert [trade.insider_name for trade in trades] == ["SEC Insider"]
+    assert trades[0].source == SEC_EDGAR_SOURCE
+    assert adapter.calls == []
+    assert persistence.coverage.get("us", "AAPL", SEC_EDGAR_SOURCE) == ()
+
+
+def test_us_latest_can_read_sec_edgar_from_local_db_without_latest_adapter(persistence):
+    latest = LatestAdapter([_us(source="openinsider")])
+    persistence.us_trades.upsert(
+        [
+            _us(
+                source=SEC_EDGAR_SOURCE,
+                filing_date=date(2026, 1, 9),
+                trade_date=date(2026, 1, 8),
+                insider_name="Older SEC Insider",
+                accession_number="0000320193-26-000009",
+                sec_row_id="non-derivative:0",
+            ),
+            _us(
+                source=SEC_EDGAR_SOURCE,
+                filing_date=date(2026, 1, 10),
+                trade_date=date(2026, 1, 9),
+                insider_name="Newest SEC Insider",
+                accession_number="0000320193-26-000010",
+                sec_row_id="non-derivative:0",
+            ),
+            _us(
+                source="openinsider",
+                filing_date=date(2026, 1, 11),
+                trade_date=date(2026, 1, 10),
+                insider_name="Legacy Insider",
+            ),
+        ]
+    )
+    service = UsScanService(
+        persistence,
+        adapters={"secform4": BoundedAdapter(lambda *_: [])},
+        latest_adapters={"openinsider": latest},
+    )
+
+    trades = service.latest(count=1, sources=(SEC_EDGAR_SOURCE,))
+
+    assert [trade.insider_name for trade in trades] == ["Newest SEC Insider"]
+    assert latest.calls == []
+
+def test_us_latest_rejects_bounded_only_sources_without_dates(persistence):
+    service = UsScanService(
+        persistence,
+        adapters={"secform4": BoundedAdapter(lambda *_: [])},
+        latest_adapters={"openinsider": LatestAdapter([])},
+    )
+
+    with pytest.raises(ValueError, match="unknown source"):
+        service.latest(count=1, sources=("secform4",))
 def test_us_coverage_is_per_source_and_empty_success_closes_gap(persistence):
     sec = BoundedAdapter(lambda *_: [])
     oi = BoundedAdapter(
@@ -494,7 +584,7 @@ def test_eu_country_selects_expected_sources(persistence, country, expected):
 
     service.scan(
         "gb0002875804",
-        country=country,
+        country=country,  # type: ignore[arg-type]
         start_date=date(2026, 9, 1),
         end_date=date(2026, 9, 2),
     )
@@ -847,7 +937,7 @@ def test_latest_eu_with_dates_delegates_to_bounded_isin_scan(
             _eu(
                 isin=identifier or "",
                 source=source,
-                country=country,
+                country=country,  # type: ignore[arg-type]
                 trade_date=start,
             )
         ]
@@ -862,7 +952,7 @@ def test_latest_eu_with_dates_delegates_to_bounded_isin_scan(
     result = service.latest(
         count=10,
         isin=isin,
-        country=country,
+        country=country,  # type: ignore[arg-type]
         sources=(source,),
         start_date=date(2026, 12, 1),
         end_date=date(2026, 12, 31),

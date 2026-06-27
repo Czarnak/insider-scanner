@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from insider_scanner.services.sec_backfill import SecBackfillSummary
     from insider_scanner.services.sec_daily import SecDailyIngestionSummary
     from insider_scanner.services.sec_downloads import SecDownloadProgress
+    from insider_scanner.services.sec_comparison import SecComparisonTarget
 
 log = get_logger("cli")
 
@@ -40,6 +41,8 @@ SEC_BULK_INSTRUCTIONS = (
     "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
     "Backfill is resumable: re-run the same command after an interruption to continue."
 )
+DEFAULT_US_SCAN_SOURCES = ("secform4", "openinsider")
+DEFAULT_US_LATEST_SOURCES = ("openinsider",)
 
 
 def _parse_date_arg(value: str) -> date:
@@ -74,9 +77,10 @@ def cmd_scan(args: argparse.Namespace, services: ApplicationServices) -> None:
     until = getattr(args, "until", None)
     log.info("Scanning insider trades for %s...", ticker)
 
+    selected_sources = tuple(getattr(args, "sources", None) or DEFAULT_US_SCAN_SOURCES)
     trades = services.us.scan(
         ticker,
-        sources=("secform4", "openinsider"),
+        sources=selected_sources,
         start_date=since,
         end_date=until,
         use_cache=not args.no_cache,
@@ -111,9 +115,10 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     """Fetch latest insider trades across all tickers."""
     since = getattr(args, "since", None)
     until = getattr(args, "until", None)
+    selected_sources = tuple(getattr(args, "sources", None) or DEFAULT_US_LATEST_SOURCES)
     trades = services.us.latest(
         count=args.count,
-        sources=("openinsider",),
+        sources=selected_sources,
         use_cache=not args.no_cache,
         start_date=since,
         end_date=until,
@@ -356,6 +361,52 @@ def _make_cli_progress(
     return _on_progress
 
 
+def _comparison_targets_from_args(
+    args: argparse.Namespace,
+) -> tuple[SecComparisonTarget, ...]:
+    from insider_scanner.services.sec_comparison import SecComparisonTarget
+
+    tickers = tuple(args.tickers or ())
+    dates = tuple(args.dates or ())
+    if dates:
+        if args.since is not None or args.until is not None:
+            raise ValueError("Use --date or --since/--until, not both")
+        return tuple(
+            SecComparisonTarget(ticker, day, day)
+            for ticker in tickers
+            for day in dates
+        )
+    if args.since is None or args.until is None:
+        raise ValueError("Provide --date or both --since and --until")
+    return tuple(
+        SecComparisonTarget(ticker, args.since, args.until) for ticker in tickers
+    )
+
+
+def cmd_sec_compare(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Render a local DB comparison report for SEC validation."""
+    from insider_scanner.services.sec_comparison import (
+        DEFAULT_LEGACY_SOURCES,
+        render_report,
+    )
+
+    try:
+        targets = _comparison_targets_from_args(args)
+        legacy_sources = tuple(args.legacy_sources or DEFAULT_LEGACY_SOURCES)
+        report = services.make_sec_comparison().compare(
+            targets=targets,
+            legacy_sources=legacy_sources,
+        )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    rendered = render_report(report, args.format)
+    if args.output is not None:
+        args.output.write_text(rendered, encoding="utf-8")
+        print(f"Comparison report written to: {args.output}")
+    else:
+        print(rendered, end="")
+    return 0
 def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
     """Print a human-readable summary of one ingestion run to stdout."""
     interval = summary.interval
@@ -491,6 +542,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--until", type=_parse_date_arg, default=None)
     p_scan.add_argument("--save", action="store_true")
     p_scan.add_argument("--no-cache", action="store_true")
+    p_scan.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        default=None,
+        help=(
+            "US source to scan (repeatable). Default before validation approval: "
+            "secform4 + openinsider. Use sec_edgar for local SEC-native rows."
+        ),
+    )
     p_scan.set_defaults(func=cmd_scan)
 
     # latest
@@ -500,6 +561,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_latest.add_argument("--until", type=_parse_date_arg, default=None)
     p_latest.add_argument("--save", action="store_true")
     p_latest.add_argument("--no-cache", action="store_true")
+    p_latest.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        default=None,
+        help=(
+            "US latest source (repeatable). Default before validation approval: "
+            "openinsider. Use sec_edgar for local SEC-native rows."
+        ),
+    )
     p_latest.set_defaults(func=cmd_latest)
 
     # resolve-cik
@@ -653,6 +724,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sec_backfill.set_defaults(func=cmd_sec_backfill)
 
+    # sec-compare (local validation report, no live network fetches)
+    p_sec_compare = sub.add_parser(
+        "sec-compare",
+        help="Compare persisted SEC EDGAR rows against persisted legacy US sources",
+    )
+    p_sec_compare.add_argument(
+        "--ticker",
+        action="append",
+        dest="tickers",
+        required=True,
+        help="Ticker to compare (repeatable)",
+    )
+    p_sec_compare.add_argument(
+        "--date",
+        action="append",
+        dest="dates",
+        type=_parse_date_arg,
+        default=None,
+        help="Single filing date to compare (repeatable)",
+    )
+    p_sec_compare.add_argument(
+        "--since",
+        type=_parse_date_arg,
+        default=None,
+        help="First filing date in a comparison range (YYYY-MM-DD)",
+    )
+    p_sec_compare.add_argument(
+        "--until",
+        type=_parse_date_arg,
+        default=None,
+        help="Last filing date in a comparison range (YYYY-MM-DD)",
+    )
+    p_sec_compare.add_argument(
+        "--legacy-source",
+        action="append",
+        dest="legacy_sources",
+        default=None,
+        help="Legacy source to compare against (repeatable; default: secform4 + openinsider)",
+    )
+    p_sec_compare.add_argument(
+        "--format",
+        choices=["text", "markdown", "json"],
+        default="text",
+        help="Report format (default: text)",
+    )
+    p_sec_compare.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write report to this file instead of stdout",
+    )
+    p_sec_compare.set_defaults(func=cmd_sec_compare)
     return parser
 
 

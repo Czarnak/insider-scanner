@@ -14,6 +14,10 @@ from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.services.sec_daily import SecDailyIngestionSummary
 from insider_scanner.services.sec_downloads import SecDownloadProgress
+from insider_scanner.services.sec_comparison import (
+    SEC_EDGAR_SOURCE,
+    SecComparisonReport,
+)
 
 PLACEHOLDER_USER_AGENT = "InsiderScanner/0.1 (research; contact@example.com)"
 
@@ -90,6 +94,48 @@ class TestBuildParser:
         assert args.watchlist is True
         assert args.save is True
 
+    def test_scan_parser_accepts_repeated_sources(self):
+        args = cli.build_parser().parse_args(
+            ["scan", "AAPL", "--source", SEC_EDGAR_SOURCE, "--source", "secform4"]
+        )
+
+        assert args.command == "scan"
+        assert args.sources == [SEC_EDGAR_SOURCE, "secform4"]
+
+    def test_latest_parser_accepts_repeated_sources(self):
+        args = cli.build_parser().parse_args(
+            ["latest", "--source", SEC_EDGAR_SOURCE, "--source", "openinsider"]
+        )
+
+        assert args.command == "latest"
+        assert args.sources == [SEC_EDGAR_SOURCE, "openinsider"]
+
+    def test_sec_compare_parser_populates_expected_fields(self):
+        args = cli.build_parser().parse_args(
+            [
+                "sec-compare",
+                "--ticker",
+                "AAPL",
+                "--ticker",
+                "MSFT",
+                "--date",
+                "2026-01-07",
+                "--legacy-source",
+                "secform4",
+                "--format",
+                "json",
+                "--output",
+                "report.json",
+            ]
+        )
+
+        assert args.command == "sec-compare"
+        assert args.tickers == ["AAPL", "MSFT"]
+        assert args.dates == [date(2026, 1, 7)]
+        assert args.legacy_sources == ["secform4"]
+        assert args.format == "json"
+        assert args.output == Path("report.json")
+        assert args.func is cli.cmd_sec_compare
 
 class TestCmdEuScan:
     def test_requires_isin_or_watchlist(self, capsys):
@@ -299,6 +345,178 @@ class TestMakeCliProgress:
         assert "2026-06-15" in captured.err
         assert "1/3" in captured.err
 
+
+class TestCmdUsSources:
+    def test_scan_passes_selected_sources_to_service(self, capsys):
+        seen: dict[str, object] = {}
+
+        class FakeUsService:
+            def scan(self, ticker, **kwargs):
+                seen["scan"] = (ticker, kwargs)
+                return []
+
+        cli.cmd_scan(
+            Namespace(
+                ticker="aapl",
+                type=None,
+                min_value=None,
+                congress_only=False,
+                since=None,
+                until=None,
+                save=False,
+                no_cache=True,
+                sources=[SEC_EDGAR_SOURCE],
+            ),
+            SimpleNamespace(us=FakeUsService()),
+        )
+
+        ticker, kwargs = seen["scan"]  # type: ignore[misc]
+        assert ticker == "AAPL"
+        assert kwargs["sources"] == (SEC_EDGAR_SOURCE,)
+        assert kwargs["use_cache"] is False
+        assert "Found 0 trades" in capsys.readouterr().out
+
+    def test_latest_passes_selected_sources_to_service(self, capsys):
+        seen: dict[str, object] = {}
+
+        class FakeUsService:
+            def latest(self, **kwargs):
+                seen["latest"] = kwargs
+                return []
+
+        cli.cmd_latest(
+            Namespace(
+                count=5,
+                since=None,
+                until=None,
+                save=False,
+                no_cache=False,
+                sources=[SEC_EDGAR_SOURCE],
+            ),
+            SimpleNamespace(us=FakeUsService()),
+        )
+
+        assert seen["latest"]["sources"] == (SEC_EDGAR_SOURCE,)  # type: ignore[index]
+        assert seen["latest"]["count"] == 5  # type: ignore[index]
+        assert "Latest 0 insider trades" in capsys.readouterr().out
+
+
+class TestCmdSecCompare:
+    def test_dispatches_comparison_service_and_prints_report(self, capsys):
+        seen: dict[str, object] = {}
+
+        class FakeComparisonService:
+            def compare(self, *, targets, legacy_sources):
+                seen["targets"] = tuple(targets)
+                seen["legacy_sources"] = tuple(legacy_sources)
+                return SecComparisonReport(
+                    legacy_sources=("secform4",),
+                    results=(),
+                )
+
+        class FakeServices:
+            def make_sec_comparison(self):
+                seen["made"] = True
+                return FakeComparisonService()
+
+        code = cli.cmd_sec_compare(
+            Namespace(
+                tickers=[" aapl "],
+                dates=[date(2026, 1, 7)],
+                since=None,
+                until=None,
+                legacy_sources=["secform4"],
+                format="text",
+                output=None,
+            ),
+            FakeServices(),
+        )
+
+        assert code == 0
+        assert seen["made"] is True
+        assert seen["legacy_sources"] == ("secform4",)
+        targets = seen["targets"]
+        assert targets[0].ticker == "AAPL"  # type: ignore[index]
+        assert targets[0].start_date == date(2026, 1, 7)  # type: ignore[index]
+        assert "SEC EDGAR Comparison Report" in capsys.readouterr().out
+
+    def test_writes_report_to_output_file(self, tmp_path, capsys):
+        output = tmp_path / "report.md"
+
+        class FakeComparisonService:
+            def compare(self, *, targets, legacy_sources):
+                return SecComparisonReport(
+                    legacy_sources=("secform4",),
+                    results=(),
+                )
+
+        class FakeServices:
+            def make_sec_comparison(self):
+                return FakeComparisonService()
+
+        code = cli.cmd_sec_compare(
+            Namespace(
+                tickers=["AAPL"],
+                dates=[date(2026, 1, 7)],
+                since=None,
+                until=None,
+                legacy_sources=["secform4"],
+                format="markdown",
+                output=output,
+            ),
+            FakeServices(),
+        )
+
+        assert code == 0
+        assert output.read_text(encoding="utf-8").startswith(
+            "# SEC EDGAR Comparison Report"
+        )
+        assert str(output) in capsys.readouterr().out
+
+    def test_rejects_missing_date_selection(self, capsys):
+        class FakeServices:
+            def make_sec_comparison(self):
+                raise AssertionError("service should not be built")
+
+        code = cli.cmd_sec_compare(
+            Namespace(
+                tickers=["AAPL"],
+                dates=None,
+                since=None,
+                until=None,
+                legacy_sources=["secform4"],
+                format="text",
+                output=None,
+            ),
+            FakeServices(),
+        )
+
+        assert code == 2
+        assert "Provide --date or both --since and --until" in capsys.readouterr().err
+    def test_invalid_legacy_source_returns_2(self, capsys):
+        class FakeComparisonService:
+            def compare(self, *, targets, legacy_sources):
+                raise ValueError("legacy_sources must not include sec_edgar")
+
+        class FakeServices:
+            def make_sec_comparison(self):
+                return FakeComparisonService()
+
+        code = cli.cmd_sec_compare(
+            Namespace(
+                tickers=["AAPL"],
+                dates=[date(2026, 1, 7)],
+                since=None,
+                until=None,
+                legacy_sources=[SEC_EDGAR_SOURCE],
+                format="text",
+                output=None,
+            ),
+            FakeServices(),
+        )
+
+        assert code == 2
+        assert "legacy_sources must not include sec_edgar" in capsys.readouterr().err
 
 class TestCmdSecDaily:
     def test_builds_service_and_ingests_requested_date(self, monkeypatch, capsys):

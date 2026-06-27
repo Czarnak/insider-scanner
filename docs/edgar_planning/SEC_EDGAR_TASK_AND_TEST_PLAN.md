@@ -631,6 +631,23 @@ Exit criteria:
 - SEC-native source becomes trusted default.
 - Third-party sources are queued for removal.
 
+## Session 8 Validation Workflow
+
+Session 8 adds local comparison tooling before changing runtime defaults.
+
+Validation reports compare rows already persisted in the local SQLite database:
+
+```powershell
+.\.venv\Scripts\insider-scanner-cli.exe sec-compare --ticker AAPL --date 2026-01-07 --format markdown --output outputs\sec_compare_aapl_2026-01-07.md
+.\.venv\Scripts\insider-scanner-cli.exe sec-compare --ticker AAPL --ticker MSFT --since 2026-01-01 --until 2026-01-31 --legacy-source secform4 --legacy-source openinsider
+```
+
+Rules:
+
+- `sec-compare` does not fetch live SEC or third-party data; run `sec-daily`, `sec-catchup`, or `sec-backfill` first, and keep legacy rows in the DB for comparison.
+- `scan` and `latest` now accept repeatable `--source` values, including `sec_edgar`, so validation can query SEC-native rows explicitly.
+- Default US runtime sources remain `secform4 + openinsider` for `scan` and `openinsider` for `latest` until comparison reports are reviewed and approved.
+- `secform4` and `openinsider` are temporary fallback/comparison sources queued for later removal; Session 8 does not remove their code.
 ## Test Command Set
 
 Targeted commands during development:
