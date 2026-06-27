@@ -7,16 +7,42 @@ import sys
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
 )
+from insider_scanner.core import edgar
 from insider_scanner.core.prices import get_price_history
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
 
+if TYPE_CHECKING:
+    from insider_scanner.core.sec_client import SecClient
+    from insider_scanner.services.sec_backfill import SecBackfillSummary
+    from insider_scanner.services.sec_daily import SecDailyIngestionSummary
+    from insider_scanner.services.sec_downloads import SecDownloadProgress
+    from insider_scanner.services.sec_comparison import SecComparisonTarget
+
 log = get_logger("cli")
+
+# SEC submissions bulk archive — the only input to full backfill.
+# Verified reachable: ranged GET with a compliant SEC User-Agent returned HTTP 206,
+# Content-Type application/zip, ~1.55 GB. Host www.sec.gov is in the SEC client allowlist.
+SEC_BULK_SUBMISSIONS_URL = (
+    "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
+)
+SEC_BULK_INSTRUCTIONS = (
+    "Full backfill needs the SEC 'submissions' bulk archive (multi-GB, refreshed nightly).\n"
+    "1. Download it once:\n"
+    f"   {SEC_BULK_SUBMISSIONS_URL}\n"
+    "2. Run backfill against the local file:\n"
+    "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
+    "Backfill is resumable: re-run the same command after an interruption to continue."
+)
+DEFAULT_US_SCAN_SOURCES = ("secform4", "openinsider")
+DEFAULT_US_LATEST_SOURCES = ("openinsider",)
 
 
 def _parse_date_arg(value: str) -> date:
@@ -51,9 +77,10 @@ def cmd_scan(args: argparse.Namespace, services: ApplicationServices) -> None:
     until = getattr(args, "until", None)
     log.info("Scanning insider trades for %s...", ticker)
 
+    selected_sources = tuple(getattr(args, "sources", None) or DEFAULT_US_SCAN_SOURCES)
     trades = services.us.scan(
         ticker,
-        sources=("secform4", "openinsider"),
+        sources=selected_sources,
         start_date=since,
         end_date=until,
         use_cache=not args.no_cache,
@@ -88,9 +115,10 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     """Fetch latest insider trades across all tickers."""
     since = getattr(args, "since", None)
     until = getattr(args, "until", None)
+    selected_sources = tuple(getattr(args, "sources", None) or DEFAULT_US_LATEST_SOURCES)
     trades = services.us.latest(
         count=args.count,
-        sources=("openinsider",),
+        sources=selected_sources,
         use_cache=not args.no_cache,
         start_date=since,
         end_date=until,
@@ -260,6 +288,241 @@ def cmd_price(
         )
 
 
+# ---------------------------------------------------------------------------
+# SEC EDGAR daily ingestion commands
+# ---------------------------------------------------------------------------
+
+
+def _build_sec_client() -> SecClient | None:
+    """Construct a hardened SEC client, or print guidance and return ``None``.
+
+    The SEC fair-access client rejects the default placeholder contact email,
+    so a misconfigured ``SEC_USER_AGENT`` is surfaced as a friendly stderr
+    message and a ``None`` return (the caller maps this to exit code 1) before
+    any network work begins.
+    """
+    from insider_scanner.core.sec_client import SecClient, SecConfigurationError
+    from insider_scanner.utils.config import SEC_USER_AGENT
+
+    try:
+        # Only ``user_agent`` is caller-supplied here; the security and retry
+        # policies use validated defaults, so a SecConfigurationError raised by
+        # this call can only be the user-agent rule.
+        return SecClient(user_agent=SEC_USER_AGENT)
+    except SecConfigurationError:
+        print(
+            "SEC_USER_AGENT is not set for SEC fair access. Set it to your app or "
+            "company name plus a real contact email, e.g.\n"
+            '  SEC_USER_AGENT="MyApp/1.0 (you@example.com)"\n'
+            "The default placeholder email is rejected — see the README SEC "
+            "fair-access section.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _sec_cache_root() -> Path:
+    """Directory holding the validated SEC filing cache."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR
+
+
+def _sec_checkpoint_path() -> Path:
+    """Stable checkpoint file under the cache dir for resumable catch-up runs."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR / "sec_catchup_checkpoint.json"
+
+
+def _sec_backfill_checkpoint_path() -> Path:
+    """Stable checkpoint file under the cache dir for resumable full-backfill runs."""
+    from insider_scanner.utils.config import EDGAR_CACHE_DIR
+
+    return EDGAR_CACHE_DIR / "sec_backfill_checkpoint.json"
+
+
+def _make_cli_progress(
+    quiet: bool,
+) -> Callable[[SecDownloadProgress], None] | None:
+    """Build a per-date progress callback that writes to stderr, or ``None``."""
+    if quiet:
+        return None
+
+    def _on_progress(snapshot: SecDownloadProgress) -> None:
+        print(
+            f"[{snapshot.dates_completed}/{snapshot.dates_total}] "
+            f"{snapshot.current_date.isoformat()} "
+            f"discovered={snapshot.discovered} parsed={snapshot.parsed} "
+            f"failed={snapshot.failed}",
+            file=sys.stderr,
+        )
+
+    return _on_progress
+
+
+def _comparison_targets_from_args(
+    args: argparse.Namespace,
+) -> tuple[SecComparisonTarget, ...]:
+    from insider_scanner.services.sec_comparison import SecComparisonTarget
+
+    tickers = tuple(args.tickers or ())
+    dates = tuple(args.dates or ())
+    if dates:
+        if args.since is not None or args.until is not None:
+            raise ValueError("Use --date or --since/--until, not both")
+        return tuple(
+            SecComparisonTarget(ticker, day, day)
+            for ticker in tickers
+            for day in dates
+        )
+    if args.since is None or args.until is None:
+        raise ValueError("Provide --date or both --since and --until")
+    return tuple(
+        SecComparisonTarget(ticker, args.since, args.until) for ticker in tickers
+    )
+
+
+def cmd_sec_compare(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Render a local DB comparison report for SEC validation."""
+    from insider_scanner.services.sec_comparison import (
+        DEFAULT_LEGACY_SOURCES,
+        render_report,
+    )
+
+    try:
+        targets = _comparison_targets_from_args(args)
+        legacy_sources = tuple(args.legacy_sources or DEFAULT_LEGACY_SOURCES)
+        report = services.make_sec_comparison().compare(
+            targets=targets,
+            legacy_sources=legacy_sources,
+        )
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    rendered = render_report(report, args.format)
+    if args.output is not None:
+        args.output.write_text(rendered, encoding="utf-8")
+        print(f"Comparison report written to: {args.output}")
+    else:
+        print(rendered, end="")
+    return 0
+def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
+    """Print a human-readable summary of one ingestion run to stdout."""
+    interval = summary.interval
+    print(
+        f"SEC ingestion {interval.start.isoformat()}..{interval.end.isoformat()}: "
+        f"{summary.dates_completed}/{summary.dates_total} dates completed"
+    )
+    print(
+        f"  filings:      discovered={summary.filings_discovered} "
+        f"parsed={summary.filings_parsed}"
+    )
+    print(
+        f"  transactions: inserted={summary.transactions_inserted} "
+        f"updated={summary.transactions_updated} "
+        f"skipped={summary.transactions_skipped}"
+    )
+    print(f"  failures:     {summary.failures}")
+
+
+def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Ingest one day of SEC ownership filings into the local database."""
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_daily(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=None,
+    )
+    day = args.date or date.today()
+    summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
+    _print_sec_summary(summary)
+    return 0
+
+
+def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Ingest an inclusive date range of SEC ownership filings (resumable)."""
+    from insider_scanner.services.common import validate_range
+
+    try:
+        validate_range(args.since, args.until)
+    except ValueError as error:
+        print(f"Invalid date range: {error}", file=sys.stderr)
+        return 2
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_daily(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=_sec_checkpoint_path(),
+    )
+    summary = service.ingest_range(
+        args.since, args.until, on_progress=_make_cli_progress(args.quiet)
+    )
+    _print_sec_summary(summary)
+    return 0
+
+
+def _print_backfill_summary(summary: SecBackfillSummary) -> None:
+    print(
+        f"SEC backfill: discovered={summary.filings_discovered} "
+        f"parsed={summary.filings_parsed}"
+    )
+    print(
+        f"  transactions: inserted={summary.transactions_inserted} "
+        f"updated={summary.transactions_updated} skipped={summary.transactions_skipped}"
+    )
+    print(
+        f"  skipped:      resume={summary.skipped_resume} "
+        f"metadata={summary.skipped_metadata}"
+    )
+    print(f"  failures:     {summary.failures}")
+
+
+def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) -> int:
+    """Run an explicit, resumable full bulk backfill from a local submissions ZIP."""
+    if not args.confirm_full_backfill:
+        print(SEC_BULK_INSTRUCTIONS)
+        print(
+            "\nRefusing to start a full bulk backfill without --confirm-full-backfill.",
+            file=sys.stderr,
+        )
+        return 2
+
+    zip_path = Path(args.zip)
+    if not zip_path.is_file():
+        print(SEC_BULK_INSTRUCTIONS, file=sys.stderr)
+        print(f"\nSubmissions archive not found: {zip_path}", file=sys.stderr)
+        return 2
+
+    try:
+        ciks = (
+            frozenset(edgar.normalize_cik(c) for c in args.cik) if args.cik else None
+        )
+    except ValueError as error:
+        print(f"Invalid --cik value: {error}", file=sys.stderr)
+        return 2
+
+    client = _build_sec_client()
+    if client is None:
+        return 1
+    service = services.make_sec_backfill(
+        client=client,
+        cache_root=_sec_cache_root(),
+        cleanup=not args.no_cleanup,
+        checkpoint_path=_sec_backfill_checkpoint_path(),
+    )
+    print(f"Starting full bulk backfill from {zip_path} (resumable).")
+    summary = service.run(zip_path, confirm=True, ciks=ciks)
+    _print_backfill_summary(summary)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="insider-scanner-cli",
@@ -279,6 +542,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--until", type=_parse_date_arg, default=None)
     p_scan.add_argument("--save", action="store_true")
     p_scan.add_argument("--no-cache", action="store_true")
+    p_scan.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        default=None,
+        help=(
+            "US source to scan (repeatable). Default before validation approval: "
+            "secform4 + openinsider. Use sec_edgar for local SEC-native rows."
+        ),
+    )
     p_scan.set_defaults(func=cmd_scan)
 
     # latest
@@ -288,6 +561,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_latest.add_argument("--until", type=_parse_date_arg, default=None)
     p_latest.add_argument("--save", action="store_true")
     p_latest.add_argument("--no-cache", action="store_true")
+    p_latest.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        default=None,
+        help=(
+            "US latest source (repeatable). Default before validation approval: "
+            "openinsider. Use sec_edgar for local SEC-native rows."
+        ),
+    )
     p_latest.set_defaults(func=cmd_latest)
 
     # resolve-cik
@@ -356,6 +639,143 @@ def build_parser() -> argparse.ArgumentParser:
     p_price.add_argument("--until", type=_parse_date_arg, default=None)
     p_price.set_defaults(func=cmd_price)
 
+    # sec-daily
+    p_sec_daily = sub.add_parser(
+        "sec-daily",
+        help="Ingest one day of SEC ownership filings into the local DB",
+    )
+    p_sec_daily.add_argument(
+        "--date",
+        type=_parse_date_arg,
+        default=None,
+        help=(
+            "Day to ingest (YYYY-MM-DD); defaults to today. The SEC daily index "
+            "lags the filing date by about one business day."
+        ),
+    )
+    p_sec_daily.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
+    )
+    p_sec_daily.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-date progress output on stderr",
+    )
+    p_sec_daily.set_defaults(func=cmd_sec_daily)
+
+    # sec-catchup
+    p_sec_catchup = sub.add_parser(
+        "sec-catchup",
+        help="Ingest a date range of SEC ownership filings (resumable)",
+    )
+    p_sec_catchup.add_argument(
+        "--since",
+        type=_parse_date_arg,
+        required=True,
+        help="First day to ingest (YYYY-MM-DD)",
+    )
+    p_sec_catchup.add_argument(
+        "--until",
+        type=_parse_date_arg,
+        required=True,
+        help="Last day to ingest (YYYY-MM-DD)",
+    )
+    p_sec_catchup.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
+    )
+    p_sec_catchup.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress per-date progress output on stderr",
+    )
+    p_sec_catchup.set_defaults(func=cmd_sec_catchup)
+
+    # sec-backfill (full bulk backfill from a local submissions ZIP)
+    p_sec_backfill = sub.add_parser(
+        "sec-backfill",
+        help="Full bulk backfill from a local SEC submissions ZIP (resumable)",
+        epilog=SEC_BULK_INSTRUCTIONS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_sec_backfill.add_argument(
+        "--zip",
+        required=True,
+        help="Path to a locally-downloaded SEC submissions.zip (see epilog for the link)",
+    )
+    p_sec_backfill.add_argument(
+        "--cik",
+        action="append",
+        default=None,
+        help="Limit backfill to one or more CIKs (repeatable). Default: all filings.",
+    )
+    p_sec_backfill.add_argument(
+        "--confirm-full-backfill",
+        action="store_true",
+        help="Required: acknowledge the heavy, network-intensive full backfill",
+    )
+    p_sec_backfill.add_argument(
+        "--no-cleanup",
+        action="store_true",
+        help="Keep the download cache after a clean run",
+    )
+    p_sec_backfill.set_defaults(func=cmd_sec_backfill)
+
+    # sec-compare (local validation report, no live network fetches)
+    p_sec_compare = sub.add_parser(
+        "sec-compare",
+        help="Compare persisted SEC EDGAR rows against persisted legacy US sources",
+    )
+    p_sec_compare.add_argument(
+        "--ticker",
+        action="append",
+        dest="tickers",
+        required=True,
+        help="Ticker to compare (repeatable)",
+    )
+    p_sec_compare.add_argument(
+        "--date",
+        action="append",
+        dest="dates",
+        type=_parse_date_arg,
+        default=None,
+        help="Single filing date to compare (repeatable)",
+    )
+    p_sec_compare.add_argument(
+        "--since",
+        type=_parse_date_arg,
+        default=None,
+        help="First filing date in a comparison range (YYYY-MM-DD)",
+    )
+    p_sec_compare.add_argument(
+        "--until",
+        type=_parse_date_arg,
+        default=None,
+        help="Last filing date in a comparison range (YYYY-MM-DD)",
+    )
+    p_sec_compare.add_argument(
+        "--legacy-source",
+        action="append",
+        dest="legacy_sources",
+        default=None,
+        help="Legacy source to compare against (repeatable; default: secform4 + openinsider)",
+    )
+    p_sec_compare.add_argument(
+        "--format",
+        choices=["text", "markdown", "json"],
+        default="text",
+        help="Report format (default: text)",
+    )
+    p_sec_compare.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write report to this file instead of stdout",
+    )
+    p_sec_compare.set_defaults(func=cmd_sec_compare)
     return parser
 
 

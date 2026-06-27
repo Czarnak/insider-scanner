@@ -6,6 +6,7 @@ as required by https://www.sec.gov/os/accessing-edgar-data.
 
 from __future__ import annotations
 
+from datetime import date
 import json
 
 from insider_scanner.core.models import InsiderTrade
@@ -22,6 +23,62 @@ EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
 EDGAR_FILING_BASE = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=4&dateb=&owner=include&count=40"
 EDGAR_FILING_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=4&dateb=&owner=include&count={count}"
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives"
+SEC_DAILY_INDEX_BASE_URL = f"{SEC_ARCHIVES_BASE_URL}/edgar/daily-index"
+
+
+def normalize_cik(cik: str | int) -> str:
+    """Return a SEC CIK as a zero-padded 10-digit string."""
+    if isinstance(cik, bool) or not isinstance(cik, (str, int)):
+        raise TypeError("cik must be a string or integer")
+
+    cik_text = str(cik)
+    if (
+        not cik_text
+        or not cik_text.isascii()
+        or not cik_text.isdigit()
+        or len(cik_text) > 10
+    ):
+        raise ValueError("cik must contain 1 to 10 ASCII digits")
+
+    return cik_text.zfill(10)
+
+
+def quarter_for_date(day: date) -> str:
+    """Return the SEC quarter label for a calendar date."""
+    if not isinstance(day, date):
+        raise TypeError("day must be a datetime.date")
+
+    return f"QTR{((day.month - 1) // 3) + 1}"
+
+
+def build_daily_master_index_url(day: date) -> str:
+    """Build the SEC daily master-index URL for a calendar date."""
+    if not isinstance(day, date):
+        raise TypeError("day must be a datetime.date")
+
+    quarter = quarter_for_date(day)
+    return f"{SEC_DAILY_INDEX_BASE_URL}/{day.year}/{quarter}/master.{day:%Y%m%d}.idx"
+
+
+def build_filing_archive_url(index_path: str) -> str:
+    """Build a SEC Archives URL from a validated master-index path."""
+    if not isinstance(index_path, str):
+        raise TypeError("index_path must be a string")
+    if not index_path.startswith("edgar/data/"):
+        raise ValueError("index_path must be relative and begin with edgar/data/")
+    if "\\" in index_path or "?" in index_path or "#" in index_path:
+        raise ValueError("index_path contains unsafe URL characters")
+
+    segments = index_path.split("/")
+    if any(not segment or segment in {".", ".."} for segment in segments):
+        raise ValueError("index_path contains an empty or traversal segment")
+    if any(
+        len(segment) >= 2 and segment[0].isalpha() and segment[1] == ":"
+        for segment in segments
+    ):
+        raise ValueError("index_path contains a drive-letter fragment")
+    return f"{SEC_ARCHIVES_BASE_URL}/{index_path}"
 
 
 def resolve_cik_from_json(ticker: str, use_cache: bool = True) -> str | None:
@@ -119,7 +176,9 @@ def parse_cik_from_html(html: str) -> str | None:
 
     # Look for CIK in the page (appears in links like /cgi-bin/browse-edgar?action=getcompany&CIK=0000320193)
     for a in soup.find_all("a"):
-        href = a.get("href", "")
+        href = a.get("href")
+        if not isinstance(href, str):
+            continue
         if "CIK=" in href:
             parts = href.split("CIK=")
             if len(parts) > 1:

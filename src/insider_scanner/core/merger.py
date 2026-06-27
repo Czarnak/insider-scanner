@@ -70,7 +70,16 @@ def _primary_rank(trade: InsiderTrade) -> tuple[int, str]:
 
 
 def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
-    """Merge duplicate trades deterministically without mutating inputs."""
+    """Merge duplicate trades deterministically without mutating inputs.
+
+    The SEC-native fields added in Session 5 (accession_number, sec_row_id,
+    form_type, cik_issuer, cik_insider, period_of_report, is_amendment,
+    is_derivative, document_sha256, transaction_code, acquired_disposed,
+    direct_or_indirect, sec_detail_json) are intentionally NOT field-coalesced
+    here: an identical re-ingest still SKIPs because the primary record is
+    returned unchanged, and field-level SEC coalescing is deferred to a later
+    session.
+    """
     left_rank = _primary_rank(left)
     right_rank = _primary_rank(right)
     primary = right if right_rank > left_rank else left

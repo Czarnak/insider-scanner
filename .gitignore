@@ -325,5 +325,6 @@ graphify-out/.graphify_python
 graphify-out/.graphify_root
 graphify-out/graph.html
 docs/superpowers/
+docs/edgar_planning/credentials.json
 UI_design/
 

@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import date
 import json
+from typing import Any
 
+import pytest
 import responses
 
 from insider_scanner.core.edgar import (
     COMPANY_TICKERS_URL,
+    build_daily_master_index_url,
     parse_cik_from_html,
     resolve_cik,
     resolve_cik_from_json,
     get_filing_url,
     build_edgar_url_for_trade,
+    build_filing_archive_url,
+    normalize_cik,
+    quarter_for_date,
 )
 from insider_scanner.core.models import InsiderTrade
 from tests.fixtures import EDGAR_CIK_HTML, EDGAR_CIK_NOT_FOUND_HTML
@@ -25,6 +32,104 @@ COMPANY_TICKERS_JSON = json.dumps(
         "2": {"cik_str": 1318605, "ticker": "TSLA", "title": "Tesla, Inc."},
     }
 )
+
+
+class TestNormalizeCik:
+    @pytest.mark.parametrize(
+        ("cik", "expected"),
+        [
+            ("320193", "0000320193"),
+            (320193, "0000320193"),
+            ("0000320193", "0000320193"),
+        ],
+    )
+    def test_normalizes_valid_cik(self, cik: str | int, expected: str):
+        assert normalize_cik(cik) == expected
+
+    @pytest.mark.parametrize("cik", ["", "   ", "32A193", "12345678901"])
+    def test_rejects_invalid_cik_values(self, cik: str):
+        with pytest.raises(ValueError):
+            normalize_cik(cik)
+
+    @pytest.mark.parametrize("cik", [None, 320193.0, True, b"320193"])
+    def test_rejects_wrong_cik_types(self, cik: Any):
+        with pytest.raises(TypeError):
+            normalize_cik(cik)
+
+
+class TestEdgarDateHelpers:
+    @pytest.mark.parametrize(
+        ("day", "expected"),
+        [
+            (date(2026, 1, 1), "QTR1"),
+            (date(2026, 4, 1), "QTR2"),
+            (date(2026, 7, 1), "QTR3"),
+            (date(2026, 10, 1), "QTR4"),
+        ],
+    )
+    def test_quarter_for_date(self, day: date, expected: str):
+        assert quarter_for_date(day) == expected
+
+    def test_builds_daily_master_index_url(self):
+        assert build_daily_master_index_url(date(2026, 6, 15)) == (
+            "https://www.sec.gov/Archives/edgar/daily-index/2026/QTR2/"
+            "master.20260615.idx"
+        )
+
+    @pytest.mark.parametrize("day", [None, "2026-06-15", 20260615])
+    def test_rejects_wrong_date_types(self, day: Any):
+        with pytest.raises(TypeError):
+            quarter_for_date(day)
+        with pytest.raises(TypeError):
+            build_daily_master_index_url(day)
+
+
+class TestFilingArchiveUrl:
+    @pytest.mark.parametrize(
+        ("index_path", "expected"),
+        [
+            (
+                "edgar/data/1000228/0001190297-26-000004.txt",
+                "https://www.sec.gov/Archives/edgar/data/1000228/"
+                "0001190297-26-000004.txt",
+            ),
+            (
+                "edgar/data/1000228/ownership.xml",
+                "https://www.sec.gov/Archives/edgar/data/1000228/ownership.xml",
+            ),
+            (
+                "edgar/data/1000228/filing.html",
+                "https://www.sec.gov/Archives/edgar/data/1000228/filing.html",
+            ),
+        ],
+    )
+    def test_builds_filing_archive_url(self, index_path: str, expected: str):
+        assert build_filing_archive_url(index_path) == expected
+
+    @pytest.mark.parametrize(
+        "index_path",
+        [
+            "",
+            "/edgar/data/1000228/filing.txt",
+            r"edgar\data\1000228\filing.txt",
+            "edgar/data/../filing.txt",
+            "edgar/data/1000228/./filing.txt",
+            "C:/edgar/data/1000228/filing.txt",
+            "edgar/data/C:/filing.txt",
+            "edgar/data/1000228/filing.txt?download=1",
+            "edgar/data/1000228/filing.txt#document",
+            "edgar/data//filing.txt",
+            "other/data/1000228/filing.txt",
+        ],
+    )
+    def test_rejects_invalid_archive_paths(self, index_path: str):
+        with pytest.raises(ValueError):
+            build_filing_archive_url(index_path)
+
+    @pytest.mark.parametrize("index_path", [None, 123, b"edgar/data/1/a.txt"])
+    def test_rejects_wrong_archive_path_types(self, index_path: Any):
+        with pytest.raises(TypeError):
+            build_filing_archive_url(index_path)
 
 
 class TestParseCik:

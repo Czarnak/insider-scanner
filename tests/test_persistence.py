@@ -20,6 +20,7 @@ from insider_scanner.persistence.bootstrap import (
 from insider_scanner.persistence.engine import create_sqlite_engine
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.migrations import Migration
+from insider_scanner.persistence.migrations import MIGRATIONS
 from insider_scanner.persistence.schema import (
     congress_trades,
     european_trades,
@@ -27,6 +28,7 @@ from insider_scanner.persistence.schema import (
     refresh_state,
     scan_coverage,
     schema_version,
+    us_trades,
 )
 from insider_scanner.persistence.types import UTCDateTime
 
@@ -53,6 +55,8 @@ EXPECTED_INDEXES = {
     "us_trades": {
         "ix_us_trades_ticker_filing_date",
         "ix_us_trades_source_filing_date",
+        "ix_us_trades_accession",
+        "ix_us_trades_cik_issuer",
     },
     "congress_trades": {
         "ix_congress_trades_official_filing_date",
@@ -245,7 +249,7 @@ def test_bootstrap_sets_schema_version_to_one(engine):
             select(schema_version.c.version).order_by(schema_version.c.version)
         ).scalars()
 
-        assert list(versions) == [1, 2]
+        assert list(versions) == [1, 2, 3]
 
 
 def test_bootstrap_is_idempotent(engine):
@@ -255,7 +259,7 @@ def test_bootstrap_is_idempotent(engine):
     with engine.connect() as connection:
         versions = connection.execute(select(schema_version.c.version)).scalars()
 
-        assert list(versions) == [1, 2]
+        assert list(versions) == [1, 2, 3]
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
 
 
@@ -431,3 +435,172 @@ def test_us_schema_preserves_cross_source_provenance():
 
 def test_european_schema_preserves_cross_source_provenance():
     assert "source_provenance_json" in metadata.tables["european_trades"].c
+
+
+SEC_V3_COLUMNS = {
+    "accession_number",
+    "sec_row_id",
+    "form_type",
+    "cik_issuer",
+    "cik_insider",
+    "period_of_report",
+    "is_amendment",
+    "is_derivative",
+    "document_sha256",
+    "transaction_code",
+    "acquired_disposed",
+    "direct_or_indirect",
+    "sec_detail_json",
+}
+
+SEC_V3_INDEXES = {
+    "ix_us_trades_accession",
+    "ix_us_trades_cik_issuer",
+}
+
+
+def test_bootstrap_v3_adds_sec_columns_and_indexes(engine):
+    bootstrap_database(engine)
+    inspector = inspect(engine)
+
+    actual_columns = {col["name"] for col in inspector.get_columns("us_trades")}
+    assert SEC_V3_COLUMNS <= actual_columns
+
+    actual_indexes = {idx["name"] for idx in inspector.get_indexes("us_trades")}
+    assert SEC_V3_INDEXES <= actual_indexes
+
+
+def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
+    # Bootstrap only to version 2, insert a legacy row, then upgrade to v3.
+    database_file = tmp_path / "v2-to-v3.sqlite3"
+    engine = create_sqlite_engine(database_file)
+    try:
+        bootstrap_database(engine, migrations=MIGRATIONS[:2])
+
+        with engine.begin() as connection:
+            connection.execute(
+                insert(us_trades).values(
+                    canonical_key="legacy-row-key",
+                    ticker="AAPL",
+                    company="Apple Inc",
+                    insider_name="John Doe",
+                    insider_title="CEO",
+                    trade_type="Buy",
+                    trade_date=date(2024, 1, 15),
+                    filing_date=date(2024, 1, 20),
+                    shares=1000.0,
+                    price=150.0,
+                    value=150000.0,
+                    shares_owned_after=5000.0,
+                    source="openinsider",
+                    source_provenance_json="[]",
+                    edgar_url="",
+                    is_congress=False,
+                    congress_member="",
+                )
+            )
+
+        # Now apply v3
+        bootstrap_database(engine)
+
+        with engine.connect() as connection:
+            # schema_version rows include all three
+            versions = list(
+                connection.execute(
+                    select(schema_version.c.version).order_by(schema_version.c.version)
+                ).scalars()
+            )
+            assert versions == [1, 2, 3]
+
+            # Legacy row preserved with v3 column defaults
+            row = (
+                connection.execute(
+                    select(us_trades).where(
+                        us_trades.c.canonical_key == "legacy-row-key"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+
+            assert row["ticker"] == "AAPL"
+            assert row["accession_number"] == ""
+            assert row["sec_row_id"] == ""
+            assert row["form_type"] == ""
+            assert row["cik_issuer"] == ""
+            assert row["cik_insider"] == ""
+            assert row["period_of_report"] is None
+            assert not row["is_amendment"]
+            assert not row["is_derivative"]
+            assert row["document_sha256"] == ""
+            assert row["transaction_code"] == ""
+            assert row["acquired_disposed"] == ""
+            assert row["direct_or_indirect"] == ""
+            assert row["sec_detail_json"] == ""
+    finally:
+        engine.dispose()
+
+
+def test_us_trades_sec_fields_round_trip(engine):
+    bootstrap_database(engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            insert(us_trades).values(
+                canonical_key="sec-native-round-trip",
+                ticker="MSFT",
+                company="Microsoft Corp",
+                insider_name="Jane Smith",
+                insider_title="CFO",
+                trade_type="Sell",
+                trade_date=date(2025, 3, 10),
+                filing_date=date(2025, 3, 12),
+                shares=500.0,
+                price=300.0,
+                value=150000.0,
+                shares_owned_after=2000.0,
+                source="sec",
+                source_provenance_json="[]",
+                edgar_url="https://www.sec.gov/Archives/edgar/data/789019/000078901925000001/",
+                is_congress=False,
+                congress_member="",
+                accession_number="0000789019-25-000001",
+                sec_row_id="0000789019-25-000001-row-1",
+                form_type="4",
+                cik_issuer="0000789019",
+                cik_insider="0000654321",
+                period_of_report=date(2025, 3, 10),
+                is_amendment=False,
+                is_derivative=False,
+                document_sha256="abc123def456" + "0" * 52,
+                transaction_code="S",
+                acquired_disposed="D",
+                direct_or_indirect="D",
+                sec_detail_json='{"footnotes": []}',
+            )
+        )
+
+    with engine.connect() as connection:
+        row = (
+            connection.execute(
+                select(us_trades).where(
+                    us_trades.c.canonical_key == "sec-native-round-trip"
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+    assert row["accession_number"] == "0000789019-25-000001"
+    assert row["sec_row_id"] == "0000789019-25-000001-row-1"
+    assert row["form_type"] == "4"
+    assert row["cik_issuer"] == "0000789019"
+    assert row["cik_insider"] == "0000654321"
+    assert row["period_of_report"] == date(2025, 3, 10)
+    assert row["is_amendment"] is False or not row["is_amendment"]
+    assert row["is_derivative"] is False or not row["is_derivative"]
+    assert row["document_sha256"] == "abc123def456" + "0" * 52
+    assert row["transaction_code"] == "S"
+    assert row["acquired_disposed"] == "D"
+    assert row["direct_or_indirect"] == "D"
+    assert row["sec_detail_json"] == '{"footnotes": []}'

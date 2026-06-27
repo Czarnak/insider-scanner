@@ -157,6 +157,77 @@ insider-scanner-cli eu-scan --watchlist --country UK --min-value 50000 --save
 
 Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` to filter `Buy`/`Sell` trades, `--min-value` for the total reported value, and `--since`/`--until` for date bounds. Use `--watchlist` to scan every configured ISIN, and `--save` to persist the filtered CSV/JSON bundle.
 
+### SEC EDGAR ingestion CLI
+
+Ingest SEC ownership filings (Forms 3/4/5) directly from EDGAR into the local
+database. These commands require a valid `SEC_USER_AGENT` (see SEC fair access
+below) — the default placeholder contact email is rejected, so set it first:
+
+```bash
+# Required: your app/company name plus a real contact email
+export SEC_USER_AGENT="MyApp/1.0 (you@example.com)"   # PowerShell: $env:SEC_USER_AGENT = "MyApp/1.0 (you@example.com)"
+
+# Ingest one day (defaults to today; the SEC daily index lags ~1 business day)
+insider-scanner-cli sec-daily --date 2026-06-15
+insider-scanner-cli sec-daily --date 2026-06-15 --no-cleanup --quiet
+
+# Ingest an inclusive date range (resumable; only uncovered days are fetched)
+insider-scanner-cli sec-catchup --since 2026-06-01 --until 2026-06-15
+```
+
+Ingestion is idempotent: completed days are recorded as covered, so re-running a
+`sec-daily`/`sec-catchup` over already-ingested dates does not duplicate rows.
+Per-date progress is written to stderr unless `--quiet`; recoverable per-filing
+failures are reported in the summary without failing the command. Exit codes:
+`0` success, `1` when `SEC_USER_AGENT` is misconfigured, `2` for an invalid range
+or a `sec-backfill` invocation missing `--confirm-full-backfill`.
+
+#### SEC full bulk backfill
+
+For a one-time historical import of all SEC ownership filings you can download the
+SEC's "submissions" bulk archive and run the dedicated backfill command.
+
+**Download the archive** (multi-GB, refreshed nightly):
+
+```
+https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip
+```
+
+Download it manually — the file is too large for an automated in-process fetch.
+After saving it locally, run the backfill:
+
+```bash
+# Ingest all ownership filings from the bulk archive (resumable)
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill
+
+# Limit to specific CIKs (--cik is repeatable)
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --cik 0000320193 --cik 0001318605 --confirm-full-backfill
+
+# Keep the download cache after a clean run
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --no-cleanup
+```
+
+`--confirm-full-backfill` is a required acknowledgement flag — it cannot be omitted.
+The run is **resumable**: if it is interrupted, re-running the same command
+continues from the last checkpoint without re-ingesting already-processed filings.
+The backfill reuses the same hardened downloader and parser as `sec-daily`.
+
+**SEC fair-access reminders**:
+
+- Set `SEC_USER_AGENT` to a real name and contact email before running
+  (e.g. `export SEC_USER_AGENT="MyApp/1.0 (you@example.com)"`).
+  The placeholder default is rejected by EDGAR.
+- The downloader enforces ≤ 10 requests/second as required by SEC policy.
+- A full backfill touches every ownership filing in EDGAR — expect it to take
+  several hours and generate significant network traffic. Run it once and use
+  `sec-daily` / `sec-catchup` for ongoing ingestion.
+- The SEC daily index lags approximately one business day; filings from the
+  most recent day may not yet appear in the bulk archive.
+
+**GUI**: the desktop application shows the archive download URL and the exact
+`sec-backfill` command in an info panel but does **not** run the backfill itself.
+All backfill execution is CLI-only.
+
 ### Local persistence and paths
 
 Parsed US, Congress, and European trades are stored in a local SQLite database.

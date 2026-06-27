@@ -1,10 +1,180 @@
-"""Tests for CongressTrade dataclass."""
+"""Tests for InsiderTrade and CongressTrade dataclasses."""
 
 from __future__ import annotations
 
 from datetime import date
 
-from insider_scanner.core.models import CongressTrade
+from insider_scanner.core.models import CongressTrade, InsiderTrade
+
+
+class TestInsiderTradeSECFields:
+    """Tests for the SEC EDGAR native fields added to InsiderTrade."""
+
+    def test_sec_fields_defaults(self):
+        t = InsiderTrade(ticker="AAPL")
+        assert t.accession_number == ""
+        assert t.sec_row_id == ""
+        assert t.form_type == ""
+        assert t.cik_issuer == ""
+        assert t.cik_insider == ""
+        assert t.period_of_report is None
+        assert t.is_amendment is False
+        assert t.is_derivative is False
+        assert t.document_sha256 == ""
+        assert t.transaction_code == ""
+        assert t.acquired_disposed == ""
+        assert t.direct_or_indirect == ""
+        assert t.sec_detail_json == ""
+
+    def test_sec_fields_full_construction(self):
+        t = InsiderTrade(
+            ticker="MSFT",
+            company="Microsoft Corp",
+            insider_name="Satya Nadella",
+            insider_title="CEO",
+            trade_type="Sell",
+            trade_date=date(2024, 3, 1),
+            filing_date=date(2024, 3, 3),
+            shares=10000.0,
+            price=420.50,
+            value=4205000.0,
+            shares_owned_after=500000.0,
+            source="edgar",
+            edgar_url="https://www.sec.gov/Archives/edgar/data/789019/000078901924000001/",
+            accession_number="0000789019-24-000001",
+            sec_row_id="0000789019-24-000001_ndtc_1",
+            form_type="4",
+            cik_issuer="789019",
+            cik_insider="1513142",
+            period_of_report=date(2024, 2, 28),
+            is_amendment=True,
+            is_derivative=True,
+            document_sha256="abc123def456",
+            transaction_code="S",
+            acquired_disposed="D",
+            direct_or_indirect="D",
+            sec_detail_json='{"footnotes": []}',
+        )
+        assert t.accession_number == "0000789019-24-000001"
+        assert t.sec_row_id == "0000789019-24-000001_ndtc_1"
+        assert t.form_type == "4"
+        assert t.cik_issuer == "789019"
+        assert t.cik_insider == "1513142"
+        assert t.period_of_report == date(2024, 2, 28)
+        assert t.is_amendment is True
+        assert t.is_derivative is True
+        assert t.document_sha256 == "abc123def456"
+        assert t.transaction_code == "S"
+        assert t.acquired_disposed == "D"
+        assert t.direct_or_indirect == "D"
+        assert t.sec_detail_json == '{"footnotes": []}'
+
+    def test_to_dict_includes_all_sec_keys(self):
+        t = InsiderTrade(
+            ticker="TSLA",
+            accession_number="0001318605-24-000010",
+            sec_row_id="row_001",
+            form_type="4",
+            cik_issuer="1318605",
+            cik_insider="1494730",
+            period_of_report=date(2024, 5, 10),
+            is_amendment=False,
+            is_derivative=False,
+            document_sha256="deadbeef",
+            transaction_code="P",
+            acquired_disposed="A",
+            direct_or_indirect="D",
+            sec_detail_json="{}",
+        )
+        d = t.to_dict()
+        assert d["accession_number"] == "0001318605-24-000010"
+        assert d["sec_row_id"] == "row_001"
+        assert d["form_type"] == "4"
+        assert d["cik_issuer"] == "1318605"
+        assert d["cik_insider"] == "1494730"
+        assert d["period_of_report"] == "2024-05-10"
+        assert d["is_amendment"] is False
+        assert d["is_derivative"] is False
+        assert d["document_sha256"] == "deadbeef"
+        assert d["transaction_code"] == "P"
+        assert d["acquired_disposed"] == "A"
+        assert d["direct_or_indirect"] == "D"
+        assert d["sec_detail_json"] == "{}"
+
+    def test_to_dict_period_of_report_none_serializes_to_empty_string(self):
+        t = InsiderTrade(ticker="AAPL")
+        d = t.to_dict()
+        assert d["period_of_report"] == ""
+
+    def test_to_dict_period_of_report_set_serializes_to_iso_string(self):
+        t = InsiderTrade(ticker="AAPL", period_of_report=date(2024, 1, 15))
+        d = t.to_dict()
+        assert d["period_of_report"] == "2024-01-15"
+
+    def test_roundtrip_with_sec_fields(self):
+        original = InsiderTrade(
+            ticker="NVDA",
+            company="NVIDIA Corp",
+            insider_name="Jensen Huang",
+            insider_title="CEO",
+            trade_type="Sell",
+            trade_date=date(2024, 6, 1),
+            filing_date=date(2024, 6, 3),
+            shares=50000.0,
+            price=900.0,
+            value=45000000.0,
+            shares_owned_after=1000000.0,
+            source="edgar",
+            accession_number="0001045810-24-000099",
+            sec_row_id="0001045810-24-000099_ndtc_2",
+            form_type="4",
+            cik_issuer="1045810",
+            cik_insider="1131928",
+            period_of_report=date(2024, 5, 31),
+            is_amendment=False,
+            is_derivative=False,
+            document_sha256="sha256abc",
+            transaction_code="S",
+            acquired_disposed="D",
+            direct_or_indirect="D",
+            sec_detail_json='{"note": "test"}',
+        )
+        restored = InsiderTrade.from_dict(original.to_dict())
+        assert restored == original
+
+    def test_from_dict_legacy_payload_no_sec_keys(self):
+        """Legacy openinsider/secform4 dicts without SEC keys must load with defaults."""
+        legacy = {
+            "ticker": "AAPL",
+            "company": "Apple Inc",
+            "insider_name": "Tim Cook",
+            "insider_title": "CEO",
+            "trade_type": "Buy",
+            "trade_date": "2023-01-10",
+            "filing_date": "2023-01-12",
+            "shares": 100.0,
+            "price": 130.0,
+            "value": 13000.0,
+            "shares_owned_after": 5000.0,
+            "source": "openinsider",
+            "edgar_url": "",
+            "is_congress": False,
+            "congress_member": "",
+        }
+        t = InsiderTrade.from_dict(legacy)
+        assert t.accession_number == ""
+        assert t.sec_row_id == ""
+        assert t.form_type == ""
+        assert t.cik_issuer == ""
+        assert t.cik_insider == ""
+        assert t.period_of_report is None
+        assert t.is_amendment is False
+        assert t.is_derivative is False
+        assert t.document_sha256 == ""
+        assert t.transaction_code == ""
+        assert t.acquired_disposed == ""
+        assert t.direct_or_indirect == ""
+        assert t.sec_detail_json == ""
 
 
 class TestCongressTradeBasic:
