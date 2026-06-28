@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, dataclass, field, replace
 from typing import cast
 from unittest.mock import Mock, call, patch
 
 import pytest
+import requests
+from requests.adapters import HTTPAdapter
 
 from insider_scanner.core.sec_client import (
     RequestsSecTransport,
@@ -167,22 +170,76 @@ def test_injected_transport_receives_secure_request_options() -> None:
 def test_default_transport_uses_requests_streaming_options() -> None:
     response = StubResponse(chunks=(b"document",))
 
-    with patch(
-        "insider_scanner.core.sec_client.requests.get", return_value=response
-    ) as requests_get:
+    with patch.object(requests.Session, "get", return_value=response) as session_get:
         client = SecClient(user_agent=VALID_USER_AGENT)
         result = fetch_bytes(client)
 
     assert isinstance(client.transport, RequestsSecTransport)
     assert not hasattr(client.transport, "__dict__")
     assert result == b"document"
-    requests_get.assert_called_once_with(
+    session_get.assert_called_once_with(
         VALID_URL,
         headers={"User-Agent": VALID_USER_AGENT},
         timeout=(15.0, 15.0),
         allow_redirects=False,
         stream=True,
     )
+
+
+def test_default_transport_reuses_one_pooled_session_per_thread() -> None:
+    transport = RequestsSecTransport()
+
+    first = transport._session()
+    second = transport._session()
+
+    assert first is second  # same thread reuses one keep-alive session
+    assert isinstance(first, requests.Session)
+
+
+def test_default_transport_session_pools_https_connections() -> None:
+    transport = RequestsSecTransport()
+
+    adapter = transport._session().get_adapter("https://www.sec.gov/x")
+
+    assert isinstance(adapter, HTTPAdapter)
+    # Pool is sized for the bounded concurrent fetch so workers don't thrash it.
+    assert adapter._pool_maxsize >= 8
+
+
+def test_default_transport_session_does_not_persist_cookies() -> None:
+    from email.message import Message
+    from urllib.request import Request
+
+    session = RequestsSecTransport()._session()
+
+    # Simulate the server trying to set a cookie; the block-all policy drops it,
+    # so nothing is retained to echo back on a reused keep-alive connection.
+    headers = Message()
+    headers["Set-Cookie"] = "sid=secret; Domain=www.sec.gov; Path=/"
+    response = Mock()
+    response.info = lambda: headers
+    request = Request("https://www.sec.gov/x")
+
+    session.cookies.extract_cookies(response, request)
+
+    assert len(session.cookies) == 0
+
+
+def test_default_transport_isolates_sessions_across_threads() -> None:
+    transport = RequestsSecTransport()
+    sessions: dict[str, requests.Session] = {}
+
+    def grab(name: str) -> None:
+        sessions[name] = transport._session()
+
+    threads = [threading.Thread(target=grab, args=(n,)) for n in ("a", "b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Each thread gets its own session — no cross-thread session/cookie sharing.
+    assert sessions["a"] is not sessions["b"]
 
 
 def test_relative_sec_redirect_is_validated_then_followed() -> None:

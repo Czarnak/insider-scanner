@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from http.cookiejar import DefaultCookiePolicy
 import logging
 import re
+import threading
 import time
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -68,9 +70,52 @@ class SecTransport(Protocol):
     ) -> _SecResponse: ...
 
 
+# Per-host keep-alive pool size. The bounded concurrent fetch in
+# ``services.sec_downloads`` (DEFAULT_DOWNLOAD_WORKERS) issues several requests
+# at once; sizing the pool to cover that avoids "connection pool is full"
+# churn while staying modest against SEC hosts.
+_SESSION_POOL_MAXSIZE = 16
+
+
+def _build_pooled_session() -> requests.Session:
+    """Return a session whose https adapter reuses pooled keep-alive connections.
+
+    Connection reuse is the only state the session is allowed to keep: a
+    block-all cookie policy preserves the prior stateless behavior so an SEC
+    ``Set-Cookie`` is never stored or echoed back on a reused connection.
+    """
+    session = requests.Session()
+    session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=4, pool_maxsize=_SESSION_POOL_MAXSIZE
+    )
+    session.mount("https://", adapter)
+    return session
+
+
 @dataclass(frozen=True, slots=True)
 class RequestsSecTransport:
-    """Stateless ``requests.get`` streaming transport adapter."""
+    """Streaming ``requests`` transport with per-thread pooled keep-alive sessions.
+
+    Each thread lazily gets its own :class:`requests.Session` (a connection pool
+    that reuses TCP/TLS connections to SEC hosts), so the bounded concurrent
+    fetch pays one handshake per worker instead of one per request. Sessions are
+    never shared across threads, so there is no shared session/cookie-jar state
+    to race: per-request headers and timeout are passed on every call and the
+    session object itself is never mutated. All trust decisions (host allowlist,
+    redirect policy, size/content-type bounds) remain in :class:`SecClient`.
+    """
+
+    _local: threading.local = field(
+        default_factory=threading.local, repr=False, compare=False
+    )
+
+    def _session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = _build_pooled_session()
+            self._local.session = session
+        return session
 
     def get(
         self,
@@ -81,7 +126,7 @@ class RequestsSecTransport:
         allow_redirects: bool,
         stream: bool,
     ) -> requests.Response:
-        return requests.get(
+        return self._session().get(
             url,
             headers=headers,
             timeout=timeout,
