@@ -10,7 +10,7 @@ Does NOT parse transactions.  Downstream modules handle that.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lxml import etree
 
@@ -34,11 +34,23 @@ OWNERSHIP_FORM_TYPES: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "
 
 @dataclass(frozen=True, slots=True)
 class OwnershipDocument:
-    """Extracted ownership XML with filing provenance."""
+    """Extracted ownership XML with filing provenance.
+
+    ``parsed_root`` is an internal optimization carrier: when this document is
+    produced by :func:`extract_ownership_document`, it holds the already
+    hardened-parsed and resource-guarded lxml tree so the downstream parser can
+    skip a redundant second ``etree.fromstring`` of the identical bytes. It is
+    excluded from equality/repr and defaults to ``None`` for documents built
+    directly (e.g. in tests), which the parser then parses itself. It must not
+    be shared across threads — extract and parse run in the same worker thread.
+    """
 
     accession_number: str | None
     document_type: str | None
     xml_text: str
+    parsed_root: "etree._Element | None" = field(
+        default=None, compare=False, repr=False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -216,18 +228,24 @@ def _build_document(
     policy: SecSecurityPolicy,
 ) -> OwnershipDocument:
     """Validate the XML and construct an immutable OwnershipDocument."""
-    _validate_ownership_xml(xml_text, accession_number, policy)
+    root = _validate_ownership_xml(xml_text, accession_number, policy)
     return OwnershipDocument(
         accession_number=accession_number,
         document_type=document_type,
         xml_text=xml_text,
+        parsed_root=root,
     )
 
 
 def _validate_ownership_xml(
     xml_text: str, accession_number: str | None, policy: SecSecurityPolicy
-) -> None:
-    """Enforce XML resource limits, then parse with a hardened lxml parser."""
+) -> "etree._Element":
+    """Enforce XML resource limits, parse with a hardened parser, return the root.
+
+    The validated, resource-guarded root is returned so callers can carry it
+    forward (see :class:`OwnershipDocument.parsed_root`) instead of re-parsing
+    the identical bytes downstream.
+    """
     xml_bytes = xml_text.encode("utf-8")
     guard_xml_pre_parse(xml_bytes, policy, accession_number)
     parser = hardened_xml_parser()
@@ -244,3 +262,4 @@ def _validate_ownership_xml(
     local_name = etree.QName(root.tag).localname
     if local_name != "ownershipDocument":
         raise NonOwnershipDocumentError("Root element is not 'ownershipDocument'.")
+    return root

@@ -664,3 +664,72 @@ def test_security_rejection_message_has_no_field_value() -> None:
             _doc(xml), policy=_small_policy(xml_max_scalar_chars=8)
         )
     assert secret not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Single-parse fast path (extract carries the validated tree into parse)
+# ---------------------------------------------------------------------------
+
+
+def _count_fromstring(monkeypatch) -> dict[str, int]:
+    """Patch the parser module's etree.fromstring to count invocations."""
+    from insider_scanner.core import sec_ownership_parser as parser_mod
+
+    calls = {"n": 0}
+    real = parser_mod.etree.fromstring
+
+    def counting(*args: object, **kwargs: object):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(parser_mod.etree, "fromstring", counting)
+    return calls
+
+
+def test_parse_reuses_tree_from_extract_without_reparsing(monkeypatch) -> None:
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    content = (FIXTURE_DIR / "sec_form4_primary.xml").read_bytes()
+    document = extract_ownership_document(
+        content, accession_number="0000320193-26-000061"
+    )
+    assert document.parsed_root is not None  # extract validated and kept the tree
+
+    calls = _count_fromstring(monkeypatch)
+    filing = parse_ownership_document(document)
+
+    assert calls["n"] == 0  # reused extract's tree; the second parse is gone
+    assert filing.document_type == "4"
+
+
+def test_parse_standalone_document_still_parses_xml(monkeypatch) -> None:
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    # A document built directly (no carried tree) must still parse itself.
+    document = _doc(
+        "<ownershipDocument><documentType>4</documentType></ownershipDocument>"
+    )
+    assert document.parsed_root is None
+
+    calls = _count_fromstring(monkeypatch)
+    filing = parse_ownership_document(document)
+
+    assert calls["n"] == 1  # no carried tree → parser parses the XML itself
+    assert filing.document_type == "4"
+
+
+def test_parse_reused_tree_still_enforces_tree_guard(monkeypatch) -> None:
+    """Reusing extract's tree must NOT bypass parse's own resource guards."""
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    content = (FIXTURE_DIR / "sec_form4_primary.xml").read_bytes()
+    document = extract_ownership_document(
+        content, accession_number="0000320193-26-000061"
+    )
+
+    # A stricter policy at parse time must still reject the (reused) tree.
+    with pytest.raises(SecXmlSecurityError):
+        parse_ownership_document(document, policy=_small_policy(xml_max_elements=1))

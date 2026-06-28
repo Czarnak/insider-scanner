@@ -24,7 +24,14 @@ def test_ownership_document_is_frozen_and_slotted() -> None:
         xml_text="<ownershipDocument/>",
     )
 
-    assert doc.__slots__ == ("accession_number", "document_type", "xml_text")
+    assert doc.__slots__ == (
+        "accession_number",
+        "document_type",
+        "xml_text",
+        "parsed_root",
+    )
+    # Default for a directly-constructed document: no carried tree.
+    assert doc.parsed_root is None
     assert not hasattr(doc, "__dict__")
     with pytest.raises(FrozenInstanceError):
         doc.document_type = "5"  # type: ignore[misc]

@@ -193,20 +193,28 @@ def parse_ownership_document(
 
     Notes
     -----
-    The pre-parse and tree guards are applied here independently of
-    ``extract_ownership_document``: this function is a self-contained untrusted
-    boundary that may be called with any policy, so it re-validates the XML
-    rather than trusting a prior extraction pass.
+    The pre-parse and tree guards are always applied here independently of
+    ``extract_ownership_document``: this function re-validates the XML under its
+    own ``policy`` and never trusts a prior extraction's limits. As an
+    optimization it reuses the already hardened-parsed lxml tree carried on
+    ``document.parsed_root`` (when present) to skip a redundant second parse of
+    the identical bytes; when absent (e.g. a directly constructed document) it
+    parses the bytes itself with the same hardened parser. Either way the
+    pre-parse byte guard and the full tree guard run against this call's policy.
     """
     xml_bytes = document.xml_text.encode("utf-8")
     sha256 = hashlib.sha256(xml_bytes).hexdigest()
 
     guard_xml_pre_parse(xml_bytes, policy, document.accession_number)
-    try:
-        root = etree.fromstring(xml_bytes, hardened_xml_parser())
-    except etree.XMLSyntaxError as exc:
-        acc = document.accession_number
-        raise SecOwnershipParseError(f"XML parse failure (accession={acc})") from exc
+    root = document.parsed_root
+    if root is None:
+        try:
+            root = etree.fromstring(xml_bytes, hardened_xml_parser())
+        except etree.XMLSyntaxError as exc:
+            acc = document.accession_number
+            raise SecOwnershipParseError(
+                f"XML parse failure (accession={acc})"
+            ) from exc
     guard_xml_tree(root, policy, document.accession_number)
 
     ctx = _ParseContext(policy=policy, accession=document.accession_number)
