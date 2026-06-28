@@ -25,17 +25,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from insider_scanner.core.sec_bulk import (
-    SecBulkError, bulk_metadata_to_index_row, iter_ownership_filings,
+    SecBulkError,
+    bulk_metadata_to_index_row,
+    iter_ownership_filings,
 )
 from insider_scanner.core.sec_client import SecClient
 from insider_scanner.core.sec_downloader import purge_stale_cache
 from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_ownership_parser import OwnershipFiling
 from insider_scanner.core.sec_security import (
-    DEFAULT_SEC_SECURITY_POLICY, SecSecurityPolicy,
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
 )
 from insider_scanner.core.sec_trade_mapping import (
-    SecTradeMappingError, ownership_filing_to_trades,
+    SecTradeMappingError,
+    ownership_filing_to_trades,
 )
 from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
 from insider_scanner.persistence.repositories import UpsertResult
@@ -188,7 +192,9 @@ class SecBackfillService:
         if data.get("zip") != zip_path.name:
             return set()  # different archive -> start fresh
         raw = data.get("completed_accessions")
-        return {a for a in raw if isinstance(a, str)} if isinstance(raw, list) else set()
+        return (
+            {a for a in raw if isinstance(a, str)} if isinstance(raw, list) else set()
+        )
 
     def _save_completed(self, zip_path: Path, completed: set[str]) -> None:
         if self._checkpoint_path is None:

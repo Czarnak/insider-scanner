@@ -205,8 +205,8 @@ def _compare_sources(
 def _bucket_rows(
     rows: tuple[ComparisonRow, ...],
 ) -> dict[tuple[str, str, str, str, str, str, str], tuple[ComparisonRow, ...]]:
-    buckets: dict[tuple[str, str, str, str, str, str, str], list[ComparisonRow]] = defaultdict(
-        list
+    buckets: dict[tuple[str, str, str, str, str, str, str], list[ComparisonRow]] = (
+        defaultdict(list)
     )
     for row in rows:
         buckets[_fingerprint(row)].append(row)
@@ -236,6 +236,7 @@ def _row_sort_key(row: ComparisonRow) -> tuple[str, str, str, str, str, str]:
         row.trade_type.casefold(),
         f"{row.shares:.6f}",
     )
+
 
 def _render_text(report: SecComparisonReport, *, markdown: bool) -> str:
     lines = [

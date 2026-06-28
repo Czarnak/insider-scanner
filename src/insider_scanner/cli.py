@@ -115,7 +115,9 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     """Fetch latest insider trades across all tickers."""
     since = getattr(args, "since", None)
     until = getattr(args, "until", None)
-    selected_sources = tuple(getattr(args, "sources", None) or DEFAULT_US_LATEST_SOURCES)
+    selected_sources = tuple(
+        getattr(args, "sources", None) or DEFAULT_US_LATEST_SOURCES
+    )
     trades = services.us.latest(
         count=args.count,
         sources=selected_sources,
@@ -372,9 +374,7 @@ def _comparison_targets_from_args(
         if args.since is not None or args.until is not None:
             raise ValueError("Use --date or --since/--until, not both")
         return tuple(
-            SecComparisonTarget(ticker, day, day)
-            for ticker in tickers
-            for day in dates
+            SecComparisonTarget(ticker, day, day) for ticker in tickers for day in dates
         )
     if args.since is None or args.until is None:
         raise ValueError("Provide --date or both --since and --until")
@@ -407,6 +407,8 @@ def cmd_sec_compare(args: argparse.Namespace, services: ApplicationServices) -> 
     else:
         print(rendered, end="")
     return 0
+
+
 def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
     """Print a human-readable summary of one ingestion run to stdout."""
     interval = summary.interval
@@ -501,9 +503,7 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
         return 2
 
     try:
-        ciks = (
-            frozenset(edgar.normalize_cik(c) for c in args.cik) if args.cik else None
-        )
+        ciks = frozenset(edgar.normalize_cik(c) for c in args.cik) if args.cik else None
     except ValueError as error:
         print(f"Invalid --cik value: {error}", file=sys.stderr)
         return 2

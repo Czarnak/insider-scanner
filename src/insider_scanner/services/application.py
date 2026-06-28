@@ -60,6 +60,7 @@ class ApplicationServices:
     def make_sec_comparison(self) -> SecComparisonService:
         """Construct a local DB comparison service for SEC validation reports."""
         return SecComparisonService(self.persistence)
+
     def make_sec_backfill(
         self,
         *,

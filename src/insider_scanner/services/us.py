@@ -84,7 +84,9 @@ class UsScanService:
             )
         requested = validate_range(start_date, end_date)
         selected = validate_sources(sources, self._bounded_sources_available())
-        adapter_sources = tuple(source for source in selected if source in self._adapters)
+        adapter_sources = tuple(
+            source for source in selected if source in self._adapters
+        )
 
         for source in adapter_sources:
             for gap in self._persistence.coverage.gaps(

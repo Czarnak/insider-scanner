@@ -5,7 +5,9 @@ import pytest
 
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.sec_backfill import (
-    SecBackfillService, SecBackfillSummary, SecBackfillConfirmationError,
+    SecBackfillService,
+    SecBackfillSummary,
+    SecBackfillConfirmationError,
 )
 from tests.test_sec_downloads import make_client, make_transport, VALID_FILING
 from tests.test_sec_bulk import FIXTURE_ZIP  # reuse the 4-record fixture
@@ -35,8 +37,11 @@ def _service(persistence, tmp_path, transport=None, **kw) -> SecBackfillService:
 
 def test_run_without_confirm_raises_and_does_no_io(persistence, tmp_path):
     fetched: list[str] = []
-    svc = _service(persistence, tmp_path,
-                   make_transport(filing_bytes=VALID_FILING, fetched=fetched))
+    svc = _service(
+        persistence,
+        tmp_path,
+        make_transport(filing_bytes=VALID_FILING, fetched=fetched),
+    )
     with pytest.raises(SecBackfillConfirmationError):
         svc.run(FIXTURE_ZIP, confirm=False)
     assert fetched == []
@@ -53,9 +58,11 @@ def test_run_processes_all_fixture_records(persistence, tmp_path):
 
 def test_rerun_skips_completed_accessions_via_checkpoint(persistence, tmp_path):
     seen = {"n": 0}
+
     def cancel_after_one() -> bool:
         seen["n"] += 1
         return seen["n"] > 1
+
     svc = _service(persistence, tmp_path)
     svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
     assert (tmp_path / "backfill.json").exists()
@@ -82,7 +89,9 @@ def test_cleanup_can_be_disabled(persistence, tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_persistence_error_is_not_checkpointed_and_is_retried(persistence, tmp_path, monkeypatch):
+def test_persistence_error_is_not_checkpointed_and_is_retried(
+    persistence, tmp_path, monkeypatch
+):
     def _boom(trades):
         raise PersistenceError("transient db failure")
 
@@ -102,7 +111,9 @@ def test_persistence_error_is_not_checkpointed_and_is_retried(persistence, tmp_p
     assert summary2.transactions_inserted > 0
 
 
-def test_mapping_error_is_checkpointed_and_skipped_on_resume(persistence, tmp_path, monkeypatch):
+def test_mapping_error_is_checkpointed_and_skipped_on_resume(
+    persistence, tmp_path, monkeypatch
+):
     def _raise(filing, row):
         raise SecTradeMappingError("unmappable")
 

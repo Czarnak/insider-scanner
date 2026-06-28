@@ -241,7 +241,6 @@ def test_us_unbounded_scan_uses_latest_refresh_without_infinite_coverage(persist
     assert persistence.coverage.get("us", "AAPL", "openinsider") == ()
 
 
-
 def test_us_scan_can_read_sec_edgar_from_local_db_without_adapter(persistence):
     adapter = BoundedAdapter(lambda *_: [_us(source="secform4")])
     persistence.us_trades.upsert(
@@ -318,6 +317,7 @@ def test_us_latest_can_read_sec_edgar_from_local_db_without_latest_adapter(persi
     assert [trade.insider_name for trade in trades] == ["Newest SEC Insider"]
     assert latest.calls == []
 
+
 def test_us_latest_rejects_bounded_only_sources_without_dates(persistence):
     service = UsScanService(
         persistence,
@@ -327,6 +327,8 @@ def test_us_latest_rejects_bounded_only_sources_without_dates(persistence):
 
     with pytest.raises(ValueError, match="unknown source"):
         service.latest(count=1, sources=("secform4",))
+
+
 def test_us_coverage_is_per_source_and_empty_success_closes_gap(persistence):
     sec = BoundedAdapter(lambda *_: [])
     oi = BoundedAdapter(

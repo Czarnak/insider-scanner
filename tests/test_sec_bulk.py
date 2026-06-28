@@ -715,10 +715,20 @@ def test_malformed_metadata_error_does_not_leak_payload_or_logs(
 # ---------------------------------------------------------------------------
 
 
-def _meta(cik="0000320193", form="4", d=date(2026, 6, 13),
-          acc="0000320193-26-000061", primary="form4.xml"):
-    return BulkFilingMetadata(cik=cik, form_type=form, filing_date=d,
-                              accession_number=acc, primary_document=primary)
+def _meta(
+    cik="0000320193",
+    form="4",
+    d=date(2026, 6, 13),
+    acc="0000320193-26-000061",
+    primary="form4.xml",
+):
+    return BulkFilingMetadata(
+        cik=cik,
+        form_type=form,
+        filing_date=d,
+        accession_number=acc,
+        primary_document=primary,
+    )
 
 
 def test_synthesizes_archive_path_from_cik_and_accession():
@@ -743,6 +753,9 @@ def test_malformed_accession_is_rejected():
 
 
 def test_cik_filter_limits_yielded_records():
-    results = list(iter_ownership_filings(
-        FIXTURE_ZIP, cache_root=FIXTURE_DIR, ciks=frozenset({"0001318605"})))
+    results = list(
+        iter_ownership_filings(
+            FIXTURE_ZIP, cache_root=FIXTURE_DIR, ciks=frozenset({"0001318605"})
+        )
+    )
     assert [r.cik for r in results] == ["0001318605"]

@@ -111,7 +111,6 @@ def test_compare_reports_matched_and_unmatched_rows_by_legacy_source(persistence
     assert openinsider.legacy_only == ()
 
 
-
 def test_compare_treats_different_filing_dates_as_unmatched(persistence):
     persistence.us_trades.upsert(
         [
@@ -165,6 +164,8 @@ def test_compare_treats_different_values_as_unmatched(persistence):
     assert summary.matched_count == 0
     assert [row.value for row in summary.sec_only] == [2_000.0]
     assert [row.value for row in summary.legacy_only] == [2_500.0]
+
+
 def test_compare_validates_targets_and_legacy_sources(persistence):
     service = SecComparisonService(persistence)
 

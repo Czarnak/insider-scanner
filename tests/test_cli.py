@@ -137,6 +137,7 @@ class TestBuildParser:
         assert args.output == Path("report.json")
         assert args.func is cli.cmd_sec_compare
 
+
 class TestCmdEuScan:
     def test_requires_isin_or_watchlist(self, capsys):
         cli.cmd_eu_scan(
@@ -493,6 +494,7 @@ class TestCmdSecCompare:
 
         assert code == 2
         assert "Provide --date or both --since and --until" in capsys.readouterr().err
+
     def test_invalid_legacy_source_returns_2(self, capsys):
         class FakeComparisonService:
             def compare(self, *, targets, legacy_sources):
@@ -517,6 +519,7 @@ class TestCmdSecCompare:
 
         assert code == 2
         assert "legacy_sources must not include sec_edgar" in capsys.readouterr().err
+
 
 class TestCmdSecDaily:
     def test_builds_service_and_ingests_requested_date(self, monkeypatch, capsys):
@@ -768,7 +771,9 @@ def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
-    monkeypatch.setattr(cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf.json"))
+    monkeypatch.setattr(
+        cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf.json")
+    )
 
     rc = cli.run(
         [

@@ -1,4 +1,5 @@
 """Static, CLI-only informational panel for SEC full bulk backfill."""
+
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
