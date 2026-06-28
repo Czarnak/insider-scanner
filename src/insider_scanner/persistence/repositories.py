@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, UTC
+from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import Table, and_, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -65,47 +66,129 @@ class UpsertResult:
         )
 
 
+# SQLite's bind-variable ceiling is large (>30k on modern builds); chunk the
+# canonical-key prefetch well under it so a single oversized batch can never
+# exceed the limit.
+_IN_CLAUSE_LIMIT = 500
+
+
+def _chunked(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
+def _batch_upsert(
+    engine: Engine,
+    table: Table,
+    trades: Iterable[Any],
+    *,
+    operation: str,
+    canonical_key: Callable[[Any], str],
+    from_row: Callable[[Any], Any],
+    merge: Callable[[Any, Any], Any],
+    to_values: Callable[[Any, set[str] | None], dict[str, Any]],
+    provenance_of: Callable[[Any], frozenset[str]] | None,
+) -> UpsertResult:
+    """Idempotent batch upsert with one bulk dedup lookup and batched writes.
+
+    Behaviorally identical to the previous per-row SELECT-then-write loop:
+    existing rows are pre-loaded with a single ``canonical_key IN (...)`` query,
+    an in-memory overlay replays the same progressive merge so intra-batch
+    duplicates fold exactly as before, and writes are flushed as one
+    ``executemany`` insert plus grouped updates inside a single immediate
+    transaction. ``provenance_of`` is ``None`` for sources without cross-source
+    provenance (Congress); otherwise the merged provenance set is unioned with
+    the incoming trade's source.
+    """
+    trade_list = list(trades)
+    if not trade_list:
+        return UpsertResult()
+
+    keys = [canonical_key(trade) for trade in trade_list]
+    provenance_aware = provenance_of is not None
+    try:
+        with immediate_transaction(engine) as connection:
+            # One bulk lookup instead of one SELECT per row (eliminates N+1).
+            overlay: dict[str, dict[str, Any]] = {}
+            for chunk in _chunked(list(dict.fromkeys(keys)), _IN_CLAUSE_LIMIT):
+                existing_rows = connection.execute(
+                    select(table).where(table.c.canonical_key.in_(chunk))
+                ).mappings()
+                for row in existing_rows:
+                    overlay[row["canonical_key"]] = dict(row)
+
+            disposition: dict[str, str] = {}
+            pending: dict[str, dict[str, Any]] = {}
+            for trade, key in zip(trade_list, keys):
+                current = overlay.get(key)
+                if current is None:
+                    values = to_values(trade, None)
+                    overlay[key] = values
+                    pending[key] = values
+                    disposition[key] = "insert"
+                    continue
+
+                existing = from_row(current)
+                merged = merge(existing, trade)
+                provenance: set[str] | None = None
+                if provenance_aware:
+                    assert provenance_of is not None
+                    existing_provenance = set(provenance_of(current))
+                    provenance = existing_provenance | {trade.source}
+                    unchanged = merged == existing and provenance == existing_provenance
+                else:
+                    unchanged = merged == existing
+                if unchanged:
+                    disposition.setdefault(key, "skip")
+                    continue
+
+                values = to_values(merged, provenance)
+                overlay[key] = values
+                pending[key] = values
+                if disposition.get(key) != "insert":
+                    disposition[key] = "update"
+
+            insert_rows = [
+                pending[key] for key, kind in disposition.items() if kind == "insert"
+            ]
+            if insert_rows:
+                connection.execute(insert(table), insert_rows)
+
+            now = datetime.now(UTC)
+            for key, kind in disposition.items():
+                if kind != "update":
+                    continue
+                connection.execute(
+                    table.update()
+                    .where(table.c.canonical_key == key)
+                    .values(**{**pending[key], "updated_at": now})
+                )
+
+            return UpsertResult(
+                inserted=sum(1 for kind in disposition.values() if kind == "insert"),
+                updated=sum(1 for kind in disposition.values() if kind == "update"),
+                skipped=sum(1 for kind in disposition.values() if kind == "skip"),
+            )
+    except SQLAlchemyError as error:
+        raise _wrap(operation, error) from error
+
+
 class UsTradeRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
     def upsert(self, trades: Iterable[InsiderTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = us_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(us_trades).where(us_trades.c.canonical_key == key)
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None:
-                        connection.execute(
-                            insert(us_trades).values(us_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = us_from_row(existing_row)
-                    existing_provenance = set(us_provenance(existing_row))
-                    merged = merge_trade_pair(existing, trade)
-                    provenance = existing_provenance | {trade.source}
-                    if merged == existing and provenance == existing_provenance:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = us_to_values(merged, provenance)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        us_trades.update()
-                        .where(us_trades.c.canonical_key == key)
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("US trade upsert", error) from error
-        return result
+        return _batch_upsert(
+            self._engine,
+            us_trades,
+            trades,
+            operation="US trade upsert",
+            canonical_key=us_canonical_key,
+            from_row=us_from_row,
+            merge=merge_trade_pair,
+            to_values=lambda trade, provenance: us_to_values(trade, provenance),
+            provenance_of=us_provenance,
+        )
 
     def query(
         self,
@@ -198,45 +281,17 @@ class CongressTradeRepository:
         self._engine = engine
 
     def upsert(self, trades: Iterable[CongressTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = congress_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(congress_trades).where(
-                                congress_trades.c.canonical_key == key
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None:
-                        connection.execute(
-                            insert(congress_trades).values(congress_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = congress_from_row(existing_row)
-                    merged = coalesce_congress_trades(
-                        existing,
-                        trade,
-                    )
-                    if merged == existing:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = congress_to_values(merged)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        congress_trades.update()
-                        .where(congress_trades.c.canonical_key == key)
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("Congress trade upsert", error) from error
-        return result
+        return _batch_upsert(
+            self._engine,
+            congress_trades,
+            trades,
+            operation="Congress trade upsert",
+            canonical_key=congress_canonical_key,
+            from_row=congress_from_row,
+            merge=coalesce_congress_trades,
+            to_values=lambda trade, _provenance: congress_to_values(trade),
+            provenance_of=None,
+        )
 
     def query(
         self,
@@ -288,44 +343,17 @@ class EuropeanTradeRepository:
         self._engine = engine
 
     def upsert(self, trades: Iterable[EuropeanInsiderTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = european_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(european_trades).where(
-                                european_trades.c.canonical_key == key
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None:
-                        connection.execute(
-                            insert(european_trades).values(european_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = european_from_row(existing_row)
-                    existing_provenance = set(european_provenance(existing_row))
-                    merged = coalesce_european_trades(existing, trade)
-                    provenance = existing_provenance | {trade.source}
-                    if merged == existing and provenance == existing_provenance:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = european_to_values(merged, provenance)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        european_trades.update()
-                        .where(european_trades.c.canonical_key == key)
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("European trade upsert", error) from error
-        return result
+        return _batch_upsert(
+            self._engine,
+            european_trades,
+            trades,
+            operation="European trade upsert",
+            canonical_key=european_canonical_key,
+            from_row=european_from_row,
+            merge=coalesce_european_trades,
+            to_values=lambda trade, provenance: european_to_values(trade, provenance),
+            provenance_of=european_provenance,
+        )
 
     def query(
         self,

@@ -13,7 +13,8 @@ hardening) continues to apply unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -58,6 +59,14 @@ _log = get_logger("sec_downloads")
 
 _CHECKPOINT_VERSION = 1
 _COUNTER_KEYS = ("discovered", "downloaded", "parsed", "skipped", "failed")
+
+# A successfully parsed filing paired with its index row, handed to the sinks.
+ParsedFiling = tuple["sec_index.SecMasterIndexRow", "OwnershipFiling"]
+
+# Bounded concurrency for per-filing fetch+parse within a single date. SEC's
+# rate limiter (shared, thread-safe) still caps the global request rate; threads
+# only let network round-trips overlap so throughput approaches that ceiling.
+DEFAULT_DOWNLOAD_WORKERS = 8
 
 # Errors that are recoverable per-filing: log, count as failed, keep going.
 _RECOVERABLE = (
@@ -114,11 +123,13 @@ def download_filings_in_range(
     on_progress: Callable[[SecDownloadProgress], None] | None = None,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
+    on_date_parsed: Callable[[date, Sequence[ParsedFiling]], None] | None = None,
     cancelled: Callable[[], bool] = not_cancelled,
     continue_on_error: bool = True,
     cleanup: bool = True,
     retain_failed_downloads: bool = False,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+    max_workers: int = DEFAULT_DOWNLOAD_WORKERS,
 ) -> SecDownloadReport:
     """Download + parse every ownership filing across an inclusive date range.
 
@@ -129,6 +140,8 @@ def download_filings_in_range(
         raise TypeError("client must be exactly SecClient")
     if not isinstance(cache_root, Path):
         raise TypeError("cache_root must be a pathlib.Path")
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1")
     interval = validate_range(start_date, end_date)
     all_dates = _dates_in(interval)
 
@@ -150,6 +163,8 @@ def download_filings_in_range(
             retain_failed_downloads=retain_failed_downloads,
             policy=policy,
             on_filing_parsed=on_filing_parsed,
+            on_date_parsed=on_date_parsed,
+            max_workers=max_workers,
         )
         if outcome is None:  # cancelled mid-date — leave the date uncovered
             interrupted = True
@@ -177,6 +192,153 @@ def download_filings_in_range(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _FilingOutcome:
+    """Result of fetching + parsing one filing — no DB writes, no cache writes.
+
+    This is the unit run concurrently across a date's filings. It performs only
+    the network fetch and the (read-only) XML extraction/parse, so it touches no
+    shared mutable state: ``downloaded``/``skipped`` record how the bytes were
+    obtained, ``failed`` marks a fetch/parse failure, ``pending``/``filing`` are
+    set on a successful parse (awaiting the serial cache promote), and
+    ``to_quarantine`` carries failed-parse bytes for the serial diagnostic
+    write. Cache promotion and quarantine — the only filesystem mutations — are
+    applied later on the main thread to keep them race-free.
+    """
+
+    downloaded: bool
+    skipped: bool
+    failed: bool
+    pending: PendingSecFiling | None = None
+    filing: OwnershipFiling | None = None
+    to_quarantine: PendingSecFiling | None = None
+
+
+def _fetch_and_parse(
+    row: sec_index.SecMasterIndexRow,
+    *,
+    client: SecClient,
+    cache_root: Path,
+    policy: SecSecurityPolicy,
+) -> _FilingOutcome:
+    """Fetch + extract + parse one filing (concurrency-safe; no FS/DB writes).
+
+    The expensive, latency-bound work (network round-trip) and the CPU-bound XML
+    parse run here so they can overlap across threads. The only filesystem
+    mutations — promoting validated bytes into the cache and the diagnostic
+    quarantine — are deferred to :func:`_promote_and_count` on the main thread.
+    """
+    try:
+        pending = fetch_filing(row, client=client, cache_root=cache_root)
+    except _RECOVERABLE as exc:
+        _log_recoverable_level(
+            "SEC filing failed stage=fetch cik=%s reason=%s", row.cik, exc
+        )
+        return _FilingOutcome(downloaded=False, skipped=False, failed=True)
+
+    downloaded = not pending.from_cache
+    skipped = pending.from_cache
+
+    accession = _accession_from_path(row.archive_path)
+    try:
+        document = extract_ownership_document(
+            pending.content, accession_number=accession, policy=policy
+        )
+        filing = parse_ownership_document(document, policy=policy)
+    except _RECOVERABLE as exc:
+        _log_recoverable_level(
+            "SEC filing failed stage=parse cik=%s reason=%s", row.cik, exc
+        )
+        return _FilingOutcome(
+            downloaded=downloaded, skipped=skipped, failed=True, to_quarantine=pending
+        )
+
+    return _FilingOutcome(
+        downloaded=downloaded,
+        skipped=skipped,
+        failed=False,
+        pending=pending,
+        filing=filing,
+    )
+
+
+def _promote_and_count(
+    outcome: _FilingOutcome,
+    *,
+    counters: dict[str, int],
+    cache_root: Path,
+    retain_failed_downloads: bool,
+) -> ParsedFiling | None:
+    """Apply an outcome's counters and serial filesystem effects on the main thread.
+
+    Promotion of validated bytes into the cache happens here (serially) so the
+    concurrent workers never perform colliding cache writes. Returns the
+    ``(row, filing)`` pair when the filing was parsed and promoted, else None.
+    """
+    if outcome.downloaded:
+        counters["downloaded"] += 1
+    if outcome.skipped:
+        counters["skipped"] += 1
+    if outcome.failed:
+        counters["failed"] += 1
+        if outcome.to_quarantine is not None:
+            _maybe_quarantine(
+                outcome.to_quarantine,
+                cache_root=cache_root,
+                enabled=retain_failed_downloads,
+            )
+        return None
+
+    pending = outcome.pending
+    filing = outcome.filing
+    if pending is None or filing is None:
+        # Unreachable: a non-failed outcome always carries both. Guarded
+        # explicitly (not asserted) so behavior is defined under `python -O`.
+        return None
+    try:
+        promote_validated_filing(pending, cache_root=cache_root)
+    except SecDownloadError as exc:
+        counters["failed"] += 1
+        _log_recoverable_level(
+            "SEC filing failed stage=promote cik=%s reason=%s", pending.row.cik, exc
+        )
+        return None
+    counters["parsed"] += 1
+    return (pending.row, filing)
+
+
+def _collect_outcomes(
+    rows: Sequence[sec_index.SecMasterIndexRow],
+    *,
+    client: SecClient,
+    cache_root: Path,
+    policy: SecSecurityPolicy,
+    max_workers: int,
+) -> list[_FilingOutcome]:
+    """Fetch + parse every filing for a date, concurrently when worthwhile.
+
+    Results are returned in the original index order. The shared, thread-safe
+    rate limiter keeps total request rate under SEC's ceiling; concurrency only
+    overlaps network round-trips so throughput approaches that ceiling instead
+    of being serialized by per-request latency.
+    """
+    workers = min(max_workers, len(rows))
+    if workers <= 1:
+        return [
+            _fetch_and_parse(row, client=client, cache_root=cache_root, policy=policy)
+            for row in rows
+        ]
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        return list(
+            executor.map(
+                lambda row: _fetch_and_parse(
+                    row, client=client, cache_root=cache_root, policy=policy
+                ),
+                rows,
+            )
+        )
+
+
 def _process_date(
     day: date,
     *,
@@ -188,12 +350,14 @@ def _process_date(
     policy: SecSecurityPolicy,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
+    on_date_parsed: Callable[[date, Sequence[ParsedFiling]], None] | None = None,
+    max_workers: int = DEFAULT_DOWNLOAD_WORKERS,
 ) -> bool | None:
     """Process one calendar day.
 
     Returns True when the date is fully handled (including an empty filing day),
     False on a date-level failure (so a resume retries it), or None if cancelled
-    partway through the day.
+    before the day's filings were processed.
     """
     url = edgar.build_daily_master_index_url(day)
     try:
@@ -211,24 +375,63 @@ def _process_date(
 
     rows = sec_index.parse_master_index(index_text)
     counters["discovered"] += len(rows)
-    any_sink_failure = False
-    for row in rows:
-        if cancelled():
-            return None
-        ok = process_filing_row(
-            row,
-            client=client,
-            cache_root=cache_root,
+    if not rows:
+        return True
+    if cancelled():
+        return None
+
+    outcomes = _collect_outcomes(
+        rows,
+        client=client,
+        cache_root=cache_root,
+        policy=policy,
+        max_workers=max_workers,
+    )
+    # A cancel that arrived during the concurrent fetch leaves the date uncovered
+    # (nothing is promoted or persisted) so a resume retries it. In-flight fetches
+    # for this date still complete, but no further date is started.
+    if cancelled():
+        return None
+
+    # Counters + cache promotion + quarantine run serially here (not in workers).
+    parsed: list[ParsedFiling] = []
+    for outcome in outcomes:
+        result = _promote_and_count(
+            outcome,
             counters=counters,
+            cache_root=cache_root,
             retain_failed_downloads=retain_failed_downloads,
-            policy=policy,
-            on_filing_parsed=on_filing_parsed,
         )
-        if not ok:
-            any_sink_failure = True
-    if any_sink_failure:
-        return False
-    return True
+        if result is not None:
+            parsed.append(result)
+
+    date_failed = False
+    # Per-filing sink (serial, on this thread — preserves the streaming contract).
+    if on_filing_parsed is not None:
+        for filing_row, filing in parsed:
+            try:
+                on_filing_parsed(filing_row, filing)
+            except (*_RECOVERABLE, PersistenceError) as exc:
+                counters["failed"] += 1
+                _log_recoverable_level(
+                    "SEC filing failed stage=persist cik=%s reason=%s",
+                    filing_row.cik,
+                    exc,
+                )
+                date_failed = True
+
+    # Per-date batch sink: one persistence transaction for the whole date.
+    if on_date_parsed is not None and parsed:
+        try:
+            on_date_parsed(day, parsed)
+        except (*_RECOVERABLE, PersistenceError) as exc:
+            counters["failed"] += len(parsed)
+            _log_recoverable_level(
+                "SEC date persist failed date=%s reason=%s", day.isoformat(), exc
+            )
+            date_failed = True
+
+    return False if date_failed else True
 
 
 def process_filing_row(
@@ -242,59 +445,30 @@ def process_filing_row(
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
 ) -> bool:
-    """Process a single filing.
+    """Process a single filing (serial, per-filing streaming entrypoint).
 
     Returns True in all normal code paths (fetch/parse/promote failures keep the
     existing behavior — the date still completes). Returns False only when the
     on_filing_parsed sink raises, signalling a date-level retry.
     """
-    try:
-        pending = fetch_filing(row, client=client, cache_root=cache_root)
-    except _RECOVERABLE as exc:
-        counters["failed"] += 1
-        _log_recoverable_level(
-            "SEC filing failed stage=fetch cik=%s reason=%s", row.cik, exc
-        )
+    outcome = _fetch_and_parse(row, client=client, cache_root=cache_root, policy=policy)
+    result = _promote_and_count(
+        outcome,
+        counters=counters,
+        cache_root=cache_root,
+        retain_failed_downloads=retain_failed_downloads,
+    )
+    if result is None:
         return True
 
-    if pending.from_cache:
-        counters["skipped"] += 1
-    else:
-        counters["downloaded"] += 1
-
-    accession = _accession_from_path(row.archive_path)
-    try:
-        document = extract_ownership_document(
-            pending.content, accession_number=accession, policy=policy
-        )
-        filing = parse_ownership_document(document, policy=policy)
-    except _RECOVERABLE as exc:
-        counters["failed"] += 1
-        _log_recoverable_level(
-            "SEC filing failed stage=parse cik=%s reason=%s", row.cik, exc
-        )
-        _maybe_quarantine(
-            pending, cache_root=cache_root, enabled=retain_failed_downloads
-        )
-        return True
-
-    try:
-        promote_validated_filing(pending, cache_root=cache_root)
-    except SecDownloadError as exc:
-        counters["failed"] += 1
-        _log_recoverable_level(
-            "SEC filing failed stage=promote cik=%s reason=%s", row.cik, exc
-        )
-        return True
-    counters["parsed"] += 1
-
+    filing_row, filing = result
     if on_filing_parsed is not None:
         try:
-            on_filing_parsed(row, filing)
+            on_filing_parsed(filing_row, filing)
         except (*_RECOVERABLE, PersistenceError) as exc:
             counters["failed"] += 1
             _log_recoverable_level(
-                "SEC filing failed stage=persist cik=%s reason=%s", row.cik, exc
+                "SEC filing failed stage=persist cik=%s reason=%s", filing_row.cik, exc
             )
             return False
 

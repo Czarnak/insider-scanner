@@ -24,14 +24,13 @@ The persist sink distinguishes two failure classes:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.sec_client import SecClient
-from insider_scanner.core.sec_index import SecMasterIndexRow
-from insider_scanner.core.sec_ownership_parser import OwnershipFiling
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
@@ -45,6 +44,7 @@ from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.common import not_cancelled, validate_range
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_downloads import (
+    ParsedFiling,
     SecDownloadProgress,
     SecDownloadReport,
     download_filings_in_range,
@@ -201,7 +201,7 @@ class SecDailyIngestionService:
         self,
         gap: DateInterval,
         *,
-        sink: Callable[[SecMasterIndexRow, OwnershipFiling], None],
+        sink: Callable[[date, Sequence[ParsedFiling]], None],
         on_progress: Callable[[SecDownloadProgress], None],
         cancelled: Callable[[], bool],
     ) -> SecDownloadReport:
@@ -215,33 +215,40 @@ class SecDailyIngestionService:
             continue_on_error=self._continue_on_error,
             checkpoint_path=self._checkpoint_path,
             cancelled=cancelled,
-            on_filing_parsed=sink,
+            on_date_parsed=sink,
             on_progress=on_progress,
         )
 
     def _make_sink(
         self, state: _RunState
-    ) -> Callable[[SecMasterIndexRow, OwnershipFiling], None]:
-        """Build the per-run persist sink closure.
+    ) -> Callable[[date, Sequence[ParsedFiling]], None]:
+        """Build the per-run, per-date batch persist sink closure.
 
-        ``SecTradeMappingError`` is swallowed (filing-level skip). Any
+        All of a date's parsed filings are mapped to trades and persisted in a
+        single ``upsert`` (one transaction per date, not per filing).
+        ``SecTradeMappingError`` is swallowed per filing (filing-level skip); a
+        malformed filing is logged, counted, and dropped from the batch. Any
         :class:`PersistenceError` from ``upsert`` propagates so the downloader
         treats it as a date-level retry.
         """
 
-        def _sink(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
-            try:
-                trades = ownership_filing_to_trades(filing, row)
-            except SecTradeMappingError as exc:
-                state.mapping_failures += 1
-                _log.warning(
-                    "SEC daily mapping failed accession=%s reason=%s",
-                    _safe_for_log(filing.accession_number),
-                    type(exc).__name__,
-                )
-                return
-            result = self._persistence.us_trades.upsert(trades)
-            state.upserts = state.upserts + result
+        def _sink(_day: date, parsed: Sequence[ParsedFiling]) -> None:
+            batch: list[InsiderTrade] = []
+            for row, filing in parsed:
+                try:
+                    trades = ownership_filing_to_trades(filing, row)
+                except SecTradeMappingError as exc:
+                    state.mapping_failures += 1
+                    _log.warning(
+                        "SEC daily mapping failed accession=%s reason=%s",
+                        _safe_for_log(filing.accession_number),
+                        type(exc).__name__,
+                    )
+                    continue
+                batch.extend(trades)
+            if batch:
+                result = self._persistence.us_trades.upsert(batch)
+                state.upserts = state.upserts + result
 
         return _sink
 

@@ -60,6 +60,17 @@ def create_sqlite_engine(
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            # Write-throughput + concurrency pragmas. WAL lets readers (the GUI)
+            # proceed during ingestion writes; synchronous=NORMAL is durable under
+            # WAL (safe across app crashes, only a power-loss risk to the last
+            # commits) and removes the per-commit full fsync that dominates the
+            # ingestion write path. cache_size is negative => KiB (~64 MB).
+            # mmap is intentionally NOT enabled: on Windows some antivirus
+            # products lock memory-mapped pages and can surface SQLITE_IOERR.
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.execute("PRAGMA cache_size=-65536")
         finally:
             cursor.close()
 

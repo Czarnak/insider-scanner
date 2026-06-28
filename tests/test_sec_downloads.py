@@ -494,6 +494,129 @@ def test_on_filing_parsed_sink_failure_date_retried_on_next_run(
     assert second.parsed == 2
 
 
+# ---------------------------------------------------------------------------
+# on_date_parsed (per-date batch) hook + concurrency tests
+# ---------------------------------------------------------------------------
+
+
+def test_on_date_parsed_receives_all_filings_for_the_date_once(tmp_path: Path) -> None:
+    batches: list[tuple[date, list[tuple[object, object]]]] = []
+
+    def hook(day: date, parsed: object) -> None:
+        batches.append((day, list(parsed)))  # type: ignore[arg-type]
+
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_date_parsed=hook,
+    )
+
+    assert report.parsed == 2
+    assert len(batches) == 1  # exactly one batch call for the date
+    day, parsed = batches[0]
+    assert day == DAY
+    assert len(parsed) == 2
+    assert all(isinstance(row, SecMasterIndexRow) for row, _ in parsed)
+    assert all(isinstance(filing, OwnershipFiling) for _, filing in parsed)
+
+
+def test_on_date_parsed_persistence_error_fails_whole_date(tmp_path: Path) -> None:
+    def hook(day: date, parsed: object) -> None:
+        raise PersistenceError("batch persist failed")
+
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_date_parsed=hook,
+    )
+
+    # The whole date's filings are charged as failed and the date stays uncovered.
+    assert report.failed == 2
+    assert report.dates_completed == 0
+
+
+def test_on_date_parsed_not_called_for_empty_day(tmp_path: Path) -> None:
+    calls: list[object] = []
+
+    download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport(index_status=404)),
+        cache_root=tmp_path,
+        on_date_parsed=lambda day, parsed: calls.append((day, parsed)),
+    )
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("workers", [1, 2, 8])
+def test_counters_are_independent_of_worker_count(tmp_path: Path, workers: int) -> None:
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        max_workers=workers,
+    )
+
+    assert (report.discovered, report.downloaded, report.parsed) == (2, 2, 2)
+    assert (report.skipped, report.failed) == (0, 0)
+    assert report.dates_completed == 1
+
+
+def test_concurrent_fetch_parses_every_filing(tmp_path: Path) -> None:
+    fetched: list[str] = []
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport(fetched=fetched)),
+        cache_root=tmp_path,
+        max_workers=8,
+    )
+
+    # One index fetch + one document fetch per discovered filing.
+    assert sum(1 for url in fetched if url.endswith(".idx")) == 1
+    assert sum(1 for url in fetched if not url.endswith(".idx")) == 2
+    assert report.parsed == 2
+
+
+def test_invalid_max_workers_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_workers must be at least 1"):
+        download_filings_in_range(
+            start_date=DAY,
+            end_date=DAY,
+            client=make_client(make_transport()),
+            cache_root=tmp_path,
+            max_workers=0,
+        )
+
+
+def test_cancel_during_concurrent_fetch_leaves_date_uncovered(tmp_path: Path) -> None:
+    fetched: list[str] = []
+    client = make_client(make_transport(fetched=fetched))
+
+    # Becomes True only once a filing document (not the .idx index) has been
+    # fetched — i.e. mid-date, during the concurrent fetch phase.
+    def cancelled() -> bool:
+        return any(not url.endswith(".idx") for url in fetched)
+
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=client,
+        cache_root=tmp_path,
+        cancelled=cancelled,
+    )
+
+    # The date is left uncovered for a resume; nothing was promoted/persisted.
+    assert report.dates_completed == 0
+    assert report.parsed == 0
+
+
 def test_process_filing_row_is_public_and_parses_one_filing(tmp_path):
     from insider_scanner.services.sec_downloads import process_filing_row, new_counters
     from insider_scanner.core.sec_index import SecMasterIndexRow
