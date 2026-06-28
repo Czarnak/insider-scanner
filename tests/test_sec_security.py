@@ -80,7 +80,7 @@ def test_default_resource_profiles_have_expected_media_types_and_limits() -> Non
     policy = DEFAULT_SEC_SECURITY_POLICY
 
     assert policy.limits_for(SecResourceProfile.DAILY_INDEX) == SecResourceLimits(
-        frozenset({"text/plain"}), 32 * MIB
+        frozenset({"text/plain", "application/octet-stream"}), 32 * MIB
     )
     assert policy.limits_for(SecResourceProfile.JSON_METADATA) == SecResourceLimits(
         frozenset({"application/json", "text/plain"}), 32 * MIB
