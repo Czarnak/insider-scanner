@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from sqlite3 import SQLITE_BUSY
+from sqlite3 import Error as SQLiteError
+from time import monotonic, sleep
 from typing import Any
 
 from sqlalchemy import QueuePool, create_engine, event
@@ -75,9 +78,31 @@ def create_sqlite_engine(
         dbapi_connection.isolation_level = None
         cursor = dbapi_connection.cursor()
         try:
-            mode = cursor.execute("PRAGMA journal_mode").fetchone()[0]
-            if mode.casefold() != "wal":
-                cursor.execute("PRAGMA journal_mode=WAL")
+            # Simultaneous first opens can both observe DELETE. SQLite may
+            # reject that journal-mode lock upgrade immediately, bypassing its
+            # busy handler. Retry BUSY explicitly within the caller's budget;
+            # disabling the native wait prevents each attempt restarting it.
+            cursor.execute("PRAGMA busy_timeout=0")
+            deadline = monotonic() + busy_timeout_ms / 1_000
+            while True:
+                try:
+                    mode = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+                    if mode.casefold() != "wal":
+                        mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                    if mode.casefold() != "wal":
+                        raise PersistenceError(
+                            f"SQLite WAL initialization returned journal mode {mode!r}"
+                        )
+                    break
+                except SQLiteError as error:
+                    code = getattr(error, "sqlite_errorcode", None)
+                    remaining = deadline - monotonic()
+                    if code is None or code & 0xFF != SQLITE_BUSY or remaining <= 0:
+                        raise PersistenceError(
+                            "SQLite WAL initialization failed within "
+                            f"{busy_timeout_ms} ms: {type(error).__name__}: {error}"
+                        ) from error
+                    sleep(min(0.01, remaining))
         finally:
             cursor.close()
 
