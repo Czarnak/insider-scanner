@@ -143,12 +143,15 @@ analysis workflows available under **Tools**.
 ### CLI
 
 ```bash
-# Scan a specific ticker
+# Scan a specific ticker (defaults to the last six calendar months)
 insider-scanner-cli scan AAPL
 insider-scanner-cli scan AAPL --type Buy --min-value 1000000 --save
 
 # Scan with date range
 insider-scanner-cli scan AAPL --since 2025-01-01 --until 2025-06-30
+
+# Fetch the interval again, bypassing stored coverage and HTTP caches
+insider-scanner-cli scan AAPL --since 2025-01-01 --until 2025-06-30 --no-cache
 
 # Fetch latest insider trades
 insider-scanner-cli latest --count 50 --save
@@ -188,7 +191,7 @@ below), so set it first:
 # Required: your app/company name plus a real contact email
 export SEC_USER_AGENT="MyApp/1.0 (you@example.com)"   # PowerShell: $env:SEC_USER_AGENT = "MyApp/1.0 (you@example.com)"
 
-# Ingest one day (defaults to today; the SEC daily index lags ~1 business day)
+# Ingest one day (defaults to the previous weekday in US Eastern time)
 insider-scanner-cli sec-daily --date 2026-06-15
 insider-scanner-cli sec-daily --date 2026-06-15 --no-cleanup --quiet
 
@@ -198,6 +201,10 @@ insider-scanner-cli sec-catchup --since 2026-06-01 --until 2026-06-15
 
 Ingestion is idempotent: completed days are recorded as covered, so re-running a
 `sec-daily`/`sec-catchup` over already-ingested dates does not duplicate rows.
+Today's index remains provisional: available filings are retained, but the date
+stays uncovered and the summary warns that it needs another run. A missing index
+for today is also retryable. Future dates are rejected; a missing index for an
+elapsed date, such as a weekend or holiday, is treated as an empty day.
 Per-date progress is written to stderr unless `--quiet`; recoverable per-filing
 failures are reported in the summary without failing the command. Exit codes:
 `0` success, `1` when `SEC_USER_AGENT` is misconfigured or SEC access is blocked,
@@ -284,6 +291,29 @@ responses, including recognized empty responses, record source/date coverage or
 latest-refresh state. OpenInsider's 100-row ticker limit and the Senate's
 1,000-result search limit produce incomplete outcomes when reached; these limits
 do not prove that the full requested interval was fetched.
+
+Ticker scans without dates fetch the requested ticker through each selected
+source over the last six calendar months. US and Congress scans reject future
+end dates and leave today outside permanent coverage. They revisit the latest
+seven filing/publication dates after the one-hour cache TTL, while reusing
+complete historical coverage. This window concerns filing dates, independent of
+how long after a trade it was disclosed. Use `--no-cache` on `scan` or `latest`
+to force another fetch; an older corrected filing requires an explicit bounded
+scan with `--no-cache`. SEC EDGAR source rows are read from the local database;
+use the SEC ingestion commands to refresh them.
+
+House indexes for the current and previous year expire after one hour. Disabling
+the House adapter cache refreshes both indexes and PDFs. Senate requests always
+contact eFD; a detected return to its agreement page triggers one session renewal
+and retry. The Senate end-date payload includes the entire final day. These
+defensive cases are covered with simulated responses; eFD's timestamp comparison
+and real session expiry frequency have not been verified against the live site.
+
+Migration 5 resets legacy US/Congress coverage because older compaction overwrote
+the timestamps needed to prove a date was complete. All stored trades are
+retained. The SEC downloader also invalidates legacy completion checkpoints.
+The next scan or SEC catch-up fetches the requested history again and rebuilds
+coverage under the new rules, which can make that first run slower.
 
 Python scraper and scan APIs return a list-compatible `FetchResult` with
 `status`, `issues`, and `complete` metadata. Status distinguishes complete,
