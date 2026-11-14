@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import stat
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +18,10 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
+from insider_scanner.utils.atomic_file import atomic_write_bytes
+from insider_scanner.utils.logging import get_logger
+
+_log = get_logger("sec_downloader")
 
 _CACHE_NAMESPACE = "validated-v1"
 _CACHE_SUFFIX = ".filing"
@@ -157,36 +159,45 @@ def purge_stale_cache(
     """
     if not isinstance(cache_root, Path):
         raise TypeError("cache_root must be a pathlib.Path")
-    _validate_cache_root(cache_root)
+    try:
+        _validate_cache_root(cache_root)
+    except SecDownloadIoError:
+        _log.warning("SEC cache cleanup could not inspect the cache root")
+        return 0
     threshold = (
         policy.cache_freshness_seconds if max_age_seconds is None else max_age_seconds
     )
     if threshold < 0:
         raise ValueError("max_age_seconds must not be negative")
     namespace = cache_root / _CACHE_NAMESPACE
-    if namespace.is_symlink():
-        raise SecDownloadSecurityError()
-    if not namespace.is_dir():
+    try:
+        if namespace.is_symlink():
+            raise SecDownloadSecurityError()
+        if not namespace.is_dir():
+            return 0
+    except OSError:
+        _log.warning("SEC cache cleanup could not inspect the namespace")
         return 0
 
     now = time.time()
     removed = 0
-    for entry in namespace.iterdir():
-        if entry.is_symlink() or not resolves_within(entry, cache_root):
-            continue
-        try:
-            metadata = entry.stat(follow_symlinks=False)
-        except FileNotFoundError:
-            continue
-        if not stat.S_ISREG(metadata.st_mode):
-            continue
-        if now - metadata.st_mtime <= threshold:
-            continue
-        try:
-            entry.unlink()
-        except OSError:
-            continue
-        removed += 1
+    try:
+        for entry in namespace.iterdir():
+            try:
+                if entry.is_symlink() or not resolves_within(entry, cache_root):
+                    continue
+                metadata = entry.stat(follow_symlinks=False)
+                if not stat.S_ISREG(metadata.st_mode):
+                    continue
+                if now - metadata.st_mtime <= threshold:
+                    continue
+                entry.unlink()
+            except OSError:
+                # A locked or vanished entry must not abandon the other files.
+                continue
+            removed += 1
+    except OSError:
+        _log.warning("SEC cache cleanup could not enumerate the namespace")
     return removed
 
 
@@ -213,11 +224,11 @@ def quarantine_failed_download(
     digest = hashlib.sha256(pending.row.archive_path.encode("utf-8")).hexdigest()
     diagnostics_dir = cache_root / _DIAGNOSTICS_NAMESPACE
     target = diagnostics_dir / f"{digest}{_DIAGNOSTICS_SUFFIX}"
-    if not resolves_within(target, cache_root):
-        raise SecDownloadSecurityError()
-    if diagnostics_dir.is_symlink() or target.is_symlink():
-        raise SecDownloadSecurityError()
     try:
+        if not resolves_within(target, cache_root):
+            raise SecDownloadSecurityError()
+        if diagnostics_dir.is_symlink() or target.is_symlink():
+            raise SecDownloadSecurityError()
         _prepare_cache_directory(diagnostics_dir, cache_root)
         _write_atomically(target, pending.content)
     except SecDownloadError:
@@ -240,10 +251,13 @@ def _validate_inputs(
 
 
 def _validate_cache_root(cache_root: Path) -> None:
-    if cache_root.is_symlink():
-        raise SecDownloadSecurityError()
-    if cache_root.exists() and not cache_root.is_dir():
-        raise SecDownloadSecurityError()
+    try:
+        if cache_root.is_symlink():
+            raise SecDownloadSecurityError()
+        if cache_root.exists() and not cache_root.is_dir():
+            raise SecDownloadSecurityError()
+    except OSError as exc:
+        raise SecDownloadIoError() from exc
 
 
 def _content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
@@ -252,29 +266,38 @@ def _content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
 
 
 def _validate_content_path(content_path: Path, cache_root: Path) -> None:
-    if not resolves_within(content_path, cache_root):
-        raise SecDownloadSecurityError()
-    namespace = cache_root / _CACHE_NAMESPACE
-    if namespace.is_symlink() or content_path.is_symlink():
-        raise SecDownloadSecurityError()
+    try:
+        if not resolves_within(content_path, cache_root):
+            raise SecDownloadSecurityError()
+        namespace = cache_root / _CACHE_NAMESPACE
+        if namespace.is_symlink() or content_path.is_symlink():
+            raise SecDownloadSecurityError()
+    except OSError as exc:
+        raise SecDownloadIoError() from exc
 
 
 def _read_fresh_cache(
     content_path: Path, freshness_seconds: float, max_bytes: int
 ) -> bytes | None:
     try:
-        metadata = content_path.stat(follow_symlinks=False)
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(metadata.st_mode):
-        raise SecDownloadSecurityError()
-    if metadata.st_size > max_bytes:
-        content_path.unlink()
-        raise SecDownloadSecurityError(SecSecurityReason.RESPONSE_SIZE)
-    if time.time() - metadata.st_mtime > freshness_seconds:
-        content_path.unlink()
-        return None
-    return content_path.read_bytes()
+        try:
+            metadata = content_path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISREG(metadata.st_mode):
+            raise SecDownloadSecurityError()
+        if metadata.st_size > max_bytes:
+            try:
+                content_path.unlink()
+            except OSError:
+                pass
+            raise SecDownloadSecurityError(SecSecurityReason.RESPONSE_SIZE)
+        if time.time() - metadata.st_mtime > freshness_seconds:
+            content_path.unlink()
+            return None
+        return content_path.read_bytes()
+    except OSError as exc:
+        raise SecDownloadIoError() from exc
 
 
 def _require_regular_file(content_path: Path) -> None:
@@ -282,6 +305,8 @@ def _require_regular_file(content_path: Path) -> None:
         metadata = content_path.stat(follow_symlinks=False)
     except FileNotFoundError as exc:
         raise SecDownloadSecurityError() from exc
+    except OSError as exc:
+        raise SecDownloadIoError() from exc
     if not stat.S_ISREG(metadata.st_mode):
         raise SecDownloadSecurityError()
 
@@ -295,20 +320,4 @@ def _prepare_cache_directory(directory: Path, cache_root: Path) -> None:
 
 
 def _write_atomically(content_path: Path, content: bytes) -> None:
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=".sec-filing-", suffix=".tmp", dir=content_path.parent
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temp_path.replace(content_path)
-    except BaseException:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        temp_path.unlink(missing_ok=True)
-        raise
+    atomic_write_bytes(content_path, content)

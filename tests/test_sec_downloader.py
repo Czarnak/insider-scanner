@@ -310,7 +310,10 @@ def test_failed_atomic_promotion_is_sanitized_and_removes_temp(tmp_path: Path) -
     pending = fetch_filing(make_row(), client=client, cache_root=tmp_path)
 
     with (
-        patch.object(Path, "replace", side_effect=OSError("disk failure")),
+        patch(
+            "insider_scanner.utils.atomic_file.os.replace",
+            side_effect=OSError("disk failure"),
+        ),
         pytest.raises(SecDownloadIoError) as exc_info,
     ):
         promote_validated_filing(pending, cache_root=tmp_path)
@@ -318,7 +321,7 @@ def test_failed_atomic_promotion_is_sanitized_and_removes_temp(tmp_path: Path) -
     assert isinstance(exc_info.value.__cause__, OSError)
     assert "disk failure" not in str(exc_info.value)
     assert str(tmp_path) not in str(exc_info.value)
-    assert list((tmp_path / "validated-v1").glob(".sec-filing-*.tmp")) == []
+    assert list((tmp_path / "validated-v1").glob("*.tmp")) == []
     assert not pending.content_path.exists()
 
 
