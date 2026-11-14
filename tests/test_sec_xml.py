@@ -117,3 +117,50 @@ def test_tree_counts_attribute_bytes_toward_total_text() -> None:
     root = etree.fromstring(b'<r a="aaaaaaaaaaaaaaaa"/>', hardened_xml_parser())
     with pytest.raises(SecXmlSecurityError):
         guard_xml_tree(root, _policy(xml_max_text_bytes=8))
+
+
+@pytest.mark.parametrize("literal", [b"<!DOCTYPE html>", b"<!ENTITY example>"])
+@pytest.mark.parametrize("wrapper", [b"<!--%s-->", b"<![CDATA[%s]]>"])
+def test_declaration_literals_are_harmless(literal, wrapper):
+    source = b"<x>" + wrapper % literal + b"</x>"
+    guard_xml_pre_parse(source, DEFAULT_SEC_SECURITY_POLICY)
+    guard_xml_tree(
+        etree.fromstring(source, hardened_xml_parser()), DEFAULT_SEC_SECURITY_POLICY
+    )
+
+
+def test_literal_before_real_dtd_does_not_hide_declaration():
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_pre_parse(
+            b'<!--<!DOCTYPE harmless>--><!DOCTYPE x SYSTEM "https://evil.example/dtd"><x/>',
+            DEFAULT_SEC_SECURITY_POLICY,
+        )
+
+
+@pytest.mark.parametrize(
+    "encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
+)
+def test_bomless_wide_encoding_cannot_bypass_declaration_scan(encoding):
+    source = '<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>'.encode(encoding)
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_pre_parse(source, DEFAULT_SEC_SECURITY_POLICY)
+
+
+@pytest.mark.parametrize("text", ["a", "é", "😀"])
+def test_tree_exact_utf8_text_boundary_includes_attributes_tails_and_comments(text):
+    root = etree.fromstring(
+        f'<x a="{text}">{text}<y/>{text}<!--{text}--><?pi {text}?></x>'.encode()
+    )
+    exact_bytes = 5 * len(text.encode())
+    guard_xml_tree(root, _policy(xml_max_text_bytes=exact_bytes))
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_tree(root, _policy(xml_max_text_bytes=exact_bytes - 1))
+
+
+def test_tree_exact_element_and_depth_boundaries_include_comments():
+    root = etree.fromstring(b"<x><y><!--comment--></y></x>")
+    guard_xml_tree(root, _policy(xml_max_elements=3, xml_max_depth=3))
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_tree(root, _policy(xml_max_elements=2))
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_tree(root, _policy(xml_max_depth=2))
