@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from sqlite3 import SQLITE_BUSY
+from sqlite3 import SQLITE_BUSY, SQLITE_LOCKED
 from sqlite3 import Error as SQLiteError
 from time import monotonic, sleep
 from typing import Any
@@ -101,7 +101,9 @@ def create_sqlite_engine(
                     if code is None or code & 0xFF != SQLITE_BUSY or remaining <= 0:
                         raise PersistenceError(
                             "SQLite WAL initialization failed within "
-                            f"{busy_timeout_ms} ms: {type(error).__name__}: {error}"
+                            f"{busy_timeout_ms} ms: {type(error).__name__}: {error}",
+                            retryable=code is not None
+                            and code & 0xFF in (SQLITE_BUSY, SQLITE_LOCKED),
                         ) from error
                     sleep(min(0.01, remaining))
         finally:

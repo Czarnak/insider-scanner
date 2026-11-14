@@ -55,6 +55,7 @@ def test_initial_wal_lock_failure_honors_busy_budget(tmp_path, timeout_ms):
                 engine.connect()
             elapsed = monotonic() - started
             assert is_access_denied(exc.value)
+            assert exc.value.retryable
             assert f"{timeout_ms} ms" in str(exc.value)
             assert elapsed < 1
             if timeout_ms:
@@ -79,6 +80,7 @@ def test_initial_wal_nonbusy_failure_does_not_spend_the_retry_budget(tmp_path):
             engine.connect()
         assert monotonic() - started < 1
         assert not is_access_denied(exc.value)
+        assert not exc.value.retryable
     finally:
         engine.dispose()
 
