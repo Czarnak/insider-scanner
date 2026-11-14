@@ -822,7 +822,7 @@ def run(
                     "CLI service shutdown failed: exception=%s",
                     type(error).__name__,
                 )
-                print("Could not close application services cleanly.", file=sys.stderr)
+                print("Could not close local database cleanly.", file=sys.stderr)
                 if result == 0:
                     result = 1
     return result
