@@ -126,10 +126,14 @@ def test_invalid_utf8_is_a_miss(tmp_path):
 
 
 def test_deeply_nested_json_is_a_miss(tmp_path):
-    (tmp_path / "key.response-cache").write_text(
-        "[" * 1500 + "0" + "]" * 1500, encoding="utf-8"
-    )
+    payload = "[" * 200000 + "0" + "]" * 200000
+    # Python 3.14 accepts the shallower nesting rejected by older interpreters.
+    # Prove this fixture reaches the decoder's recursion boundary on this host.
+    with pytest.raises(RecursionError):
+        json.loads(payload)
+    (tmp_path / "key.response-cache").write_text(payload, encoding="utf-8")
     assert get_cached(tmp_path, "key") is None
+    assert prune_expired_cache(tmp_path) == 1
 
 
 def test_envelope_without_lifetime_is_a_miss(tmp_path, monkeypatch):
