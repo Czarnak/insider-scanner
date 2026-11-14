@@ -80,7 +80,7 @@ def test_upgrade_preserves_trades_and_invalidates_only_affected_source_state(
         refresh.set(domain, identifier, source, "latest:200", REFRESHED_AT)
     before = _rows(engine, us_trades)
 
-    bootstrap_database(engine)
+    bootstrap_database(engine, migrations=MIGRATIONS[:4])
 
     assert _rows(engine, us_trades) == before
     for index, (domain, identifier, source) in enumerate(identities):
@@ -94,7 +94,7 @@ def test_upgrade_preserves_trades_and_invalidates_only_affected_source_state(
     # Migration history prevents repeated invalidation after a successful scan.
     coverage.add("us", "AAPL", "openinsider", INTERVAL)
     refresh.set("us", "*", "openinsider", "latest:200", REFRESHED_AT)
-    bootstrap_database(engine)
+    bootstrap_database(engine, migrations=MIGRATIONS[:4])
     assert coverage.get("us", "AAPL", "openinsider") == (INTERVAL,)
     assert refresh.get("us", "*", "openinsider", "latest:200") == REFRESHED_AT
 
@@ -107,7 +107,7 @@ def test_upgrade_without_missing_openinsider_dates_keeps_coverage(legacy_databas
     coverage = CoverageRepository(engine)
     coverage.add("us", "*", "openinsider", INTERVAL)
 
-    bootstrap_database(engine)
+    bootstrap_database(engine, migrations=MIGRATIONS[:4])
 
     assert coverage.get("us", "*", "openinsider") == (INTERVAL,)
 
@@ -138,7 +138,7 @@ def test_upgrade_repairs_only_missing_amount_bounds_without_changing_identity(
     CongressTradeRepository(engine).upsert([trade])
     before = _rows(engine, congress_trades)[0]
 
-    bootstrap_database(engine)
+    bootstrap_database(engine, migrations=MIGRATIONS[:4])
 
     after = _rows(engine, congress_trades)[0]
     assert after == {**before, "amount_low": expected[0], "amount_high": expected[1]}
