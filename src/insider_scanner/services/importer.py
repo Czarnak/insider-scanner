@@ -310,15 +310,15 @@ def _persist_batch(
         return UpsertResult(), {index: "persistence_error" for index, _ in records}
 
     failures: dict[int, str] = {}
-    for error in result.errors:
-        index = records[error.index][0]
+    for row_error in result.errors:
+        index = records[row_error.index][0]
         failures[index] = "persistence_error"
         log.error(
             "Legacy record persistence failed: path=%s index=%d type=%s reason=%s",
             path,
             index,
             record_type,
-            error.message,
+            row_error.message,
         )
     return result, failures
 
