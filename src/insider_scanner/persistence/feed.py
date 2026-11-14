@@ -39,6 +39,7 @@ MAX_PAGE_SIZE = 500
 MAX_SEARCH_LENGTH = 100
 STALE_AFTER = timedelta(hours=24)
 
+
 class FeedMarket(StrEnum):
     """Source market represented by a normalized feed record."""
 
