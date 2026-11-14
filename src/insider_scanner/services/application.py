@@ -17,6 +17,7 @@ from insider_scanner.services.sec_backfill import SecBackfillService
 from insider_scanner.services.sec_comparison import SecComparisonService
 from insider_scanner.services.sec_daily import SecDailyIngestionService
 from insider_scanner.services.us import UsScanService
+from insider_scanner.utils.http import close_http_sessions
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,10 @@ class ApplicationServices:
     european: EuropeanScanService
 
     def close(self) -> None:
-        self.persistence.close()
+        try:
+            self.persistence.close()
+        finally:
+            close_http_sessions()
 
     def make_sec_daily(
         self,

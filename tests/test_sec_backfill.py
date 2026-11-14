@@ -129,3 +129,35 @@ def test_mapping_error_is_checkpointed_and_skipped_on_resume(
     resume = _service(persistence, tmp_path)
     second = resume.run(FIXTURE_ZIP, confirm=True)
     assert second.skipped_resume >= 1
+
+
+def test_blocked_backfill_stops_and_preserves_completed_checkpoint(
+    persistence, tmp_path
+):
+    import json
+    import shutil
+
+    from insider_scanner.core.sec_client import SecBlockedError
+    from tests.sec_stubs import StubResponse
+
+    transport = make_transport()
+    original_get = transport.get.side_effect
+    fetched = []
+
+    def get(url, **kwargs):
+        fetched.append(url)
+        if len(fetched) > 1:
+            return StubResponse(status_code=403)
+        return original_get(url, **kwargs)
+
+    transport.get.side_effect = get
+    archive = tmp_path / "submissions.zip"
+    shutil.copyfile(FIXTURE_ZIP, archive)
+    service = _service(persistence, tmp_path, transport)
+    with pytest.raises(SecBlockedError):
+        service.run(archive, confirm=True)
+
+    checkpoint = json.loads((tmp_path / "backfill.json").read_text(encoding="utf-8"))
+    assert len(checkpoint["completed_accessions"]) == 1
+    assert len(fetched) == 3
+    archive.rename(tmp_path / "closed-archive.zip")  # ZIP handle closed on abort

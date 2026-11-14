@@ -455,3 +455,75 @@ def test_process_filing_row_is_public_and_parses_one_filing(tmp_path):
     assert ok is True
     assert counters["parsed"] == 1
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("blocked_stage", ["index", "filing"])
+def test_blocked_download_aborts_before_date_completion(tmp_path, blocked_stage):
+    from insider_scanner.core.sec_client import SecBlockedError
+
+    client = make_client(make_transport())
+    snapshots = []
+    checkpoint = tmp_path / "checkpoint.json"
+    blocker = (
+        patch.object(SecClient, "fetch_text", side_effect=SecBlockedError(600))
+        if blocked_stage == "index"
+        else patch(
+            "insider_scanner.services.sec_downloads.fetch_filing",
+            side_effect=SecBlockedError(600),
+        )
+    )
+    with blocker as fetch, pytest.raises(SecBlockedError):
+        download_filings_in_range(
+            start_date=DAY,
+            end_date=date(2026, 6, 16),
+            client=client,
+            cache_root=tmp_path / "cache",
+            checkpoint_path=checkpoint,
+            on_progress=snapshots.append,
+        )
+
+    assert fetch.call_count == 1
+    assert snapshots == []
+    assert not checkpoint.exists()
+
+
+def test_blocked_catchup_preserves_previous_coverage_and_checkpoint(
+    persistence, tmp_path
+):
+    import json
+
+    from insider_scanner.core.sec_client import SecBlockedError
+    from insider_scanner.persistence.coverage import DateInterval
+    from insider_scanner.services.sec_daily import (
+        SEC_DAILY_IDENTIFIER,
+        SecDailyIngestionService,
+    )
+    from tests.sec_stubs import NEXT_DAY, StubResponse
+
+    transport = make_transport()
+    original_get = transport.get.side_effect
+    fetched = []
+
+    def get(url, **kwargs):
+        fetched.append(url)
+        if "master.20260616.idx" in url:
+            return StubResponse(status_code=403)
+        return original_get(url, **kwargs)
+
+    transport.get.side_effect = get
+    checkpoint = tmp_path / "checkpoint.json"
+    service = SecDailyIngestionService(
+        persistence,
+        client=make_client(transport),
+        cache_root=tmp_path / "cache",
+        checkpoint_path=checkpoint,
+    )
+    with pytest.raises(SecBlockedError):
+        service.ingest_range(DAY, NEXT_DAY)
+
+    state = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert state["completed_dates"] == [DAY.isoformat()]
+    assert persistence.coverage.gaps(
+        "us", SEC_DAILY_IDENTIFIER, "sec_edgar", DateInterval(DAY, NEXT_DAY)
+    ) == (DateInterval(NEXT_DAY, NEXT_DAY),)
+    assert len(fetched) == 5  # successful date, then two block responses

@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable
+from contextlib import closing
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from insider_scanner.core import edgar
 from insider_scanner.core.prices import get_price_history
+from insider_scanner.core.sec_client import SecBlockedError
 from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
@@ -304,13 +306,13 @@ def _build_sec_client() -> SecClient | None:
     any network work begins.
     """
     from insider_scanner.core.sec_client import SecClient, SecConfigurationError
-    from insider_scanner.utils.config import SEC_USER_AGENT
+    from insider_scanner.utils.config import get_sec_user_agent
 
     try:
         # Only ``user_agent`` is caller-supplied here; the security and retry
         # policies use validated defaults, so a SecConfigurationError raised by
         # this call can only be the user-agent rule.
-        return SecClient(user_agent=SEC_USER_AGENT)
+        return SecClient(user_agent=get_sec_user_agent())
     except SecConfigurationError:
         print(
             "SEC_USER_AGENT is not set for SEC fair access. Set it to your app or "
@@ -433,16 +435,17 @@ def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> in
     client = _build_sec_client()
     if client is None:
         return 1
-    service = services.make_sec_daily(
-        client=client,
-        cache_root=_sec_cache_root(),
-        cleanup=not args.no_cleanup,
-        checkpoint_path=None,
-    )
-    day = args.date or date.today()
-    summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
-    _print_sec_summary(summary)
-    return 0
+    with closing(client):
+        service = services.make_sec_daily(
+            client=client,
+            cache_root=_sec_cache_root(),
+            cleanup=not args.no_cleanup,
+            checkpoint_path=None,
+        )
+        day = args.date or date.today()
+        summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
+        _print_sec_summary(summary)
+        return 0
 
 
 def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> int:
@@ -457,17 +460,18 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
     client = _build_sec_client()
     if client is None:
         return 1
-    service = services.make_sec_daily(
-        client=client,
-        cache_root=_sec_cache_root(),
-        cleanup=not args.no_cleanup,
-        checkpoint_path=_sec_checkpoint_path(),
-    )
-    summary = service.ingest_range(
-        args.since, args.until, on_progress=_make_cli_progress(args.quiet)
-    )
-    _print_sec_summary(summary)
-    return 0
+    with closing(client):
+        service = services.make_sec_daily(
+            client=client,
+            cache_root=_sec_cache_root(),
+            cleanup=not args.no_cleanup,
+            checkpoint_path=_sec_checkpoint_path(),
+        )
+        summary = service.ingest_range(
+            args.since, args.until, on_progress=_make_cli_progress(args.quiet)
+        )
+        _print_sec_summary(summary)
+        return 0
 
 
 def _print_backfill_summary(summary: SecBackfillSummary) -> None:
@@ -511,16 +515,17 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
     client = _build_sec_client()
     if client is None:
         return 1
-    service = services.make_sec_backfill(
-        client=client,
-        cache_root=_sec_cache_root(),
-        cleanup=not args.no_cleanup,
-        checkpoint_path=_sec_backfill_checkpoint_path(),
-    )
-    print(f"Starting full bulk backfill from {zip_path} (resumable).")
-    summary = service.run(zip_path, confirm=True, ciks=ciks)
-    _print_backfill_summary(summary)
-    return 0
+    with closing(client):
+        service = services.make_sec_backfill(
+            client=client,
+            cache_root=_sec_cache_root(),
+            cleanup=not args.no_cleanup,
+            checkpoint_path=_sec_backfill_checkpoint_path(),
+        )
+        print(f"Starting full bulk backfill from {zip_path} (resumable).")
+        summary = service.run(zip_path, confirm=True, ciks=ciks)
+        _print_backfill_summary(summary)
+        return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -801,21 +806,25 @@ def run(
         command_result = args.func(args, services)
         if isinstance(command_result, int):
             result = command_result
+    except SecBlockedError as error:
+        print(str(error), file=sys.stderr)
+        result = 1
     except Exception:
         log.exception("CLI command failed")
         print("Command failed. See logs for details.", file=sys.stderr)
         result = 1
-    if services is not None:
-        try:
-            services.close()
-        except Exception as error:  # noqa: BLE001 - report shutdown failure without losing command status
-            log.error(
-                "CLI service shutdown failed: exception=%s",
-                type(error).__name__,
-            )
-            print("Could not close local database cleanly.", file=sys.stderr)
-            if result == 0:
-                result = 1
+    finally:
+        if services is not None:
+            try:
+                services.close()
+            except Exception as error:  # noqa: BLE001 - report shutdown failure without losing command status
+                log.error(
+                    "CLI service shutdown failed: exception=%s",
+                    type(error).__name__,
+                )
+                print("Could not close application services cleanly.", file=sys.stderr)
+                if result == 0:
+                    result = 1
     return result
 
 

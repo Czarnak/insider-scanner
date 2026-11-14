@@ -21,6 +21,7 @@ from pathlib import Path
 from insider_scanner.core import edgar, sec_index
 from insider_scanner.core._sec_xml import SecXmlSecurityError
 from insider_scanner.core.sec_client import (
+    SecBlockedError,
     SecClient,
     SecClientError,
     SecClientSecurityError,
@@ -201,6 +202,8 @@ def _process_date(
     except SecFilingNotFoundError:
         _log.info("SEC daily index absent stage=index date=%s", day.isoformat())
         return True
+    except SecBlockedError:
+        raise
     except _RECOVERABLE as exc:
         _log_recoverable_level(
             "SEC daily index failed stage=index date=%s reason=%s",
@@ -248,6 +251,8 @@ def process_filing_row(
     """
     try:
         pending = fetch_filing(row, client=client, cache_root=cache_root)
+    except SecBlockedError:
+        raise
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
@@ -266,6 +271,8 @@ def process_filing_row(
             pending.content, accession_number=accession, policy=policy
         )
         filing = parse_ownership_document(document, policy=policy)
+    except SecBlockedError:
+        raise
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
@@ -289,6 +296,8 @@ def process_filing_row(
     if on_filing_parsed is not None:
         try:
             on_filing_parsed(row, filing)
+        except SecBlockedError:
+            raise
         except (*_RECOVERABLE, PersistenceError) as exc:
             counters["failed"] += 1
             _log_recoverable_level(

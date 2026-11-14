@@ -10,7 +10,11 @@ from typing import cast
 from unittest.mock import Mock
 
 from insider_scanner.core.sec_client import SecClient, SecTransport
-from insider_scanner.core.sec_fair_access import RateLimiter
+from insider_scanner.core.sec_fair_access import (
+    RateLimiter,
+    SecCircuitBreaker,
+    SecRetryPolicy,
+)
 
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 
@@ -76,6 +80,8 @@ def make_client(transport: Mock) -> SecClient:
         user_agent=VALID_USER_AGENT,
         transport=cast(SecTransport, transport),
         rate_limiter=RateLimiter(min_interval_seconds=0.0),
+        circuit_breaker=SecCircuitBreaker(),
+        retry_policy=SecRetryPolicy(base_delay_seconds=0.0),
     )
 
 
