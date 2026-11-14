@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from enum import Enum
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from insider_scanner.core import edgar, sec_index
 from insider_scanner.core._sec_xml import SecXmlSecurityError
@@ -62,7 +63,15 @@ from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_downloads")
 
-_CHECKPOINT_VERSION = 1
+
+def sec_today() -> date:
+    """Return the filing calendar date at the SEC's US Eastern location."""
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
+
+# Version 1 could mark an unpublished index complete. Its dates and aggregate
+# counters cannot establish completion after the filing calendar day ended.
+_CHECKPOINT_VERSION = 2
 _COUNTER_KEYS = (
     "discovered",
     "downloaded",
@@ -158,6 +167,7 @@ def download_filings_in_range(
     cleanup: bool = True,
     retain_failed_downloads: bool = False,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+    clock: Callable[[], date] = sec_today,
 ) -> SecDownloadReport:
     """Download + parse every ownership filing across an inclusive date range.
 
@@ -169,9 +179,14 @@ def download_filings_in_range(
     if not isinstance(cache_root, Path):
         raise TypeError("cache_root must be a pathlib.Path")
     interval = validate_range(start_date, end_date)
+    today = clock()
+    if interval.end > today:
+        raise ValueError("end_date must not be in the future")
     all_dates = _dates_in(interval)
 
     completed, counters = _load_checkpoint(checkpoint_path, interval)
+    # Old checkpoints could record an index fetched before its day ended.
+    completed = {day for day in completed if day < today}
     interrupted = False
     stopped_on_error = False
     outcomes: list[SecFilingOutcome] = []
@@ -192,6 +207,7 @@ def download_filings_in_range(
             policy=policy,
             on_filing_parsed=on_filing_parsed,
             outcomes=outcomes,
+            today=today,
         )
         if outcome is None:  # cancelled mid-date — leave the date uncovered
             interrupted = True
@@ -234,6 +250,7 @@ def _process_date(
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
     outcomes: list[SecFilingOutcome] | None = None,
+    today: date,
 ) -> bool | None:
     """Process one calendar day.
 
@@ -246,6 +263,17 @@ def _process_date(
         index_text = client.fetch_text(url, profile=SecResourceProfile.DAILY_INDEX)
     except SecFilingNotFoundError:
         _log.info("SEC daily index absent stage=index date=%s", day.isoformat())
+        if day >= today:
+            if outcomes is not None:
+                outcomes.append(
+                    SecFilingOutcome(
+                        None,
+                        SecFilingStatus.RETRYABLE_FAILURE,
+                        "index",
+                        "index_not_published",
+                    )
+                )
+            return False
         return True
     except SecBlockedError:
         raise
@@ -282,6 +310,19 @@ def _process_date(
             outcomes.append(outcome)
         if not outcome.complete:
             any_retryable_failure = True
+    if day >= today:
+        # Persist useful rows from an available current-day index, but retry the
+        # date after it ends because the index can still acquire filings.
+        if outcomes is not None:
+            outcomes.append(
+                SecFilingOutcome(
+                    None,
+                    SecFilingStatus.RETRYABLE_FAILURE,
+                    "index",
+                    "index_not_final",
+                )
+            )
+        return False
     return not any_retryable_failure
 
 

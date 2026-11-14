@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from insider_scanner.core.sec_client import SecClient
@@ -38,7 +38,7 @@ from insider_scanner.core.sec_trade_mapping import (
     SecTradeMappingError,
     ownership_filing_to_trades,
 )
-from insider_scanner.persistence.coverage import DateInterval
+from insider_scanner.persistence.coverage import DateInterval, normalize_intervals
 from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.common import not_cancelled, validate_range
 from insider_scanner.services.context import PersistenceContext
@@ -47,6 +47,7 @@ from insider_scanner.services.sec_downloads import (
     SecDownloadReport,
     SecFilingOutcome,
     download_filings_in_range,
+    sec_today,
 )
 from insider_scanner.utils.logging import get_logger
 
@@ -123,9 +124,7 @@ class SecDailyIngestionService:
         self._client = client
         self._cache_root = cache_root
         self._policy = policy
-        # ``clock`` is reserved for future use (e.g. defaulting ranges to "today").
-        # It is stored but currently unused by the ingestion logic.
-        self._clock = clock
+        self._clock = clock or sec_today
         self._cleanup = cleanup
         self._continue_on_error = continue_on_error
         self._checkpoint_path = checkpoint_path
@@ -155,6 +154,9 @@ class SecDailyIngestionService:
         coverage is recorded, so a failing user callback can never lose coverage.
         """
         requested = validate_range(start, end)
+        today = self._clock()
+        if requested.end > today:
+            raise ValueError("end_date must not be in the future")
         dates_total = _day_count(requested)
 
         state = _RunState()
@@ -164,6 +166,8 @@ class SecDailyIngestionService:
         gaps = self._persistence.coverage.gaps(
             _COVERAGE_DOMAIN, SEC_DAILY_IDENTIFIER, _COVERAGE_SOURCE, requested
         )
+        if requested.start <= today <= requested.end:
+            gaps = normalize_intervals([*gaps, DateInterval(today, today)])
 
         filings_discovered = 0
         filings_parsed = 0
@@ -231,6 +235,7 @@ class SecDailyIngestionService:
             cancelled=cancelled,
             on_filing_parsed=sink,
             on_progress=on_progress,
+            clock=self._clock,
         )
 
     def _make_sink(
@@ -273,6 +278,7 @@ class SecDailyIngestionService:
                 SEC_DAILY_IDENTIFIER,
                 _COVERAGE_SOURCE,
                 DateInterval(snapshot.current_date, snapshot.current_date),
+                now=datetime.combine(self._clock(), time.min, tzinfo=UTC),
             )
 
         return _record_coverage

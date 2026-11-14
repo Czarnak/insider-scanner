@@ -261,17 +261,17 @@ def test_gui_default_scans_work_without_enabled_dates(monkeypatch, qtbot, tmp_pa
     persistence = open_persistence(tmp_path / "gui-default.sqlite3")
     us = UsScanService(
         persistence,
-        adapters={"secform4": lambda *_: [], "openinsider": lambda *_: []},
-        latest_adapters={
-            "openinsider": lambda *_: [
+        adapters={
+            "secform4": lambda *_: [],
+            "openinsider": lambda ticker, start, _end, _cache: [
                 InsiderTrade(
-                    ticker="AAPL",
+                    ticker=ticker,
                     insider_name="Jane",
                     trade_type="Buy",
-                    filing_date=date(2025, 1, 3),
+                    filing_date=start,
                     source="openinsider",
                 )
-            ]
+            ],
         },
     )
     congress = CongressScanService(

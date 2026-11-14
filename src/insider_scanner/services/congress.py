@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-from calendar import monthrange
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime, time, timedelta
 
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, as_fetch_result
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.services.adapters import default_congress_adapters
 from insider_scanner.services.common import (
+    DEFAULT_CACHE_TTL,
     BoundedSourceAdapter,
+    bounded_scan_gaps,
     normalize_identifier,
     not_cancelled,
+    record_completed_scan,
     scan_result,
     source_issues,
+    subtract_months,
     validate_range,
     validate_sources,
 )
@@ -29,12 +32,19 @@ class CongressScanService:
         *,
         adapters: Mapping[str, BoundedSourceAdapter[CongressTrade]] | None = None,
         today: Callable[[], date] | None = None,
+        clock: Callable[[], datetime] | None = None,
+        cache_ttl: timedelta = DEFAULT_CACHE_TTL,
     ) -> None:
         self._persistence = persistence
         self._adapters = dict(
             default_congress_adapters() if adapters is None else adapters
         )
-        self._today = today or date.today
+        self._clock = clock or (
+            (lambda: datetime.combine(today(), time.min, tzinfo=UTC))
+            if today is not None
+            else (lambda: datetime.now(UTC))
+        )
+        self._cache_ttl = cache_ttl
 
     def scan(
         self,
@@ -48,17 +58,28 @@ class CongressScanService:
     ) -> FetchResult[CongressTrade]:
         normalized = normalize_identifier(official, "official")
         identifier = "*" if normalized.casefold() in {"*", "all"} else normalized
+        now = self._clock()
         if start_date is None and end_date is None:
-            end_date = self._today()
-            start_date = _subtract_months(end_date, 6)
+            end_date = now.date()
+            start_date = subtract_months(end_date, 6)
         requested = validate_range(start_date, end_date)
+        if requested.end > now.date():
+            raise ValueError("end_date must not be in the future")
         selected = validate_sources(sources, self._adapters)
         issues: list[FetchIssue] = []
 
         for source in selected:
-            for gap in self._persistence.coverage.gaps(
-                "congress", identifier, source, requested
-            ):
+            gaps = bounded_scan_gaps(
+                self._persistence,
+                "congress",
+                identifier,
+                source,
+                requested,
+                now=now,
+                ttl=self._cache_ttl,
+                use_cache=use_cache,
+            )
+            for gap in gaps:
                 if cancelled():
                     issues.append(FetchIssue("cancelled", source, identifier))
                     return scan_result(
@@ -87,7 +108,15 @@ class CongressScanService:
                     [replace(trade, source=source) for trade in fetched]
                 )
                 if fetched.complete:
-                    self._persistence.coverage.add("congress", identifier, source, gap)
+                    record_completed_scan(
+                        self._persistence,
+                        "congress",
+                        identifier,
+                        source,
+                        requested,
+                        gap,
+                        now=now,
+                    )
         return scan_result(self._query(identifier, selected, requested), issues)
 
     def _query(self, identifier, sources, requested) -> list[CongressTrade]:
@@ -111,11 +140,3 @@ class CongressScanService:
             reverse=True,
         )
         return trades
-
-
-def _subtract_months(value: date, months: int) -> date:
-    month_index = value.year * 12 + value.month - 1 - months
-    year, zero_based_month = divmod(month_index, 12)
-    month = zero_based_month + 1
-    day = min(value.day, monthrange(year, month)[1])
-    return date(year, month, day)

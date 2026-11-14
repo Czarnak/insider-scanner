@@ -90,7 +90,7 @@ def test_partial_latest_is_retried_and_keeps_downloaded_rows(persistence):
     assert persistence.refresh.get("us", "*", "openinsider", "latest:200") is None
 
 
-def test_latest_ticker_limit_preserves_incomplete_metadata(persistence):
+def test_ticker_scan_preserves_incomplete_metadata(persistence):
     trade = us_trade(filing_date=DAY)
     service = UsScanService(
         persistence,
@@ -100,7 +100,9 @@ def test_latest_ticker_limit_preserves_incomplete_metadata(persistence):
             )
         },
     )
-    result = service.latest(ticker=trade.ticker, count=1, start_date=DAY, end_date=DAY)
+    result = service.scan(
+        trade.ticker, sources=("openinsider",), start_date=DAY, end_date=DAY
+    )
     assert len(result) == 1
     assert result.status == FetchStatus.PARTIAL
     assert result.issues[0].reason == "result_limit"

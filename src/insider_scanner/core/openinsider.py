@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
@@ -28,6 +29,45 @@ log = get_logger("openinsider")
 BASE_URL = "http://openinsider.com"
 
 
+def _screener_url(
+    *,
+    ticker: str = "",
+    count: int,
+    start_date: date | None,
+    end_date: date | None,
+) -> str:
+    """Select custom filing dates for both ticker and market-wide requests."""
+    bounded = start_date is not None or end_date is not None
+    filing_range = ""
+    if bounded:
+        start = start_date.strftime("%m/%d/%Y") if start_date else "01/01/2000"
+        end = end_date.strftime("%m/%d/%Y") if end_date else "12/31/2030"
+        filing_range = f"{start} - {end}"
+    params = {
+        "s": ticker.upper(),
+        "o": "",
+        "pl": "",
+        "ph": "",
+        "st": "",
+        "lt": "",
+        "lh": "",
+        "fd": "-1" if bounded else "0",
+        "fdr": filing_range,
+        "td": "0",
+        "tdr": "",
+        "feession": "",
+        "xp": "1",
+        "vl": "",
+        "vh": "",
+        "ocl": "",
+        "och": "",
+        "session": "",
+        "ession": "",
+        "cnt": str(count),
+    }
+    return f"{BASE_URL}/screener?{urlencode(params)}"
+
+
 def scrape_ticker(
     ticker: str,
     use_cache: bool = True,
@@ -43,27 +83,19 @@ def scrape_ticker(
     use_cache : bool
         Whether to use the file cache.
     start_date : date or None
-        Only include trades on or after this date.
+        Only include filings on or after this date.
     end_date : date or None
-        Only include trades on or before this date.
+        Only include filings on or before this date.
 
     Returns
     -------
     list of InsiderTrade
     """
-    # Build date range params for openinsider URL
-    fd_param = "0"
-    fdr_param = ""
-    if start_date or end_date:
-        fd_param = "-1"  # custom range mode
-        sd = start_date.strftime("%m/%d/%Y") if start_date else "01/01/2000"
-        ed = end_date.strftime("%m/%d/%Y") if end_date else "12/31/2030"
-        fdr_param = f"{sd}+-+{ed}"
-
-    url = (
-        f"{BASE_URL}/screener?s={ticker.upper()}&o=&pl=&ph=&st=&lt=&lh="
-        f"&fd={fd_param}&fdr={fdr_param}&td=0&tdr="
-        f"&feession=&xp=1&vl=&vh=&ocl=&och=&session=&ession=&cnt=100"
+    url = _screener_url(
+        ticker=ticker,
+        count=100,
+        start_date=start_date,
+        end_date=end_date,
     )
     cache_dir = SCRAPER_CACHE_DIR if use_cache else None
 
@@ -93,9 +125,9 @@ def scrape_latest(
     use_cache : bool
         Whether to use the file cache.
     start_date : date or None
-        Only include trades on or after this date.
+        Only include filings on or after this date.
     end_date : date or None
-        Only include trades on or before this date.
+        Only include filings on or before this date.
 
     Returns
     -------
@@ -103,18 +135,10 @@ def scrape_latest(
     """
     if count < 1:
         raise ValueError("count must be positive")
-    td_param = "0"
-    tdr_param = ""
-    if start_date or end_date:
-        td_param = "7"
-        sd = start_date.strftime("%m/%d/%Y") if start_date else "01/01/2000"
-        ed = end_date.strftime("%m/%d/%Y") if end_date else "12/31/2030"
-        tdr_param = f"{sd}+-+{ed}"
-
-    url = (
-        f"{BASE_URL}/screener?s=&o=&pl=&ph=&st=&lt=&lh="
-        f"&fd=0&fdr=&td={td_param}&tdr={tdr_param}"
-        f"&feession=&xp=1&vl=&vh=&ocl=&och=&session=&ession=&cnt={count}"
+    url = _screener_url(
+        count=count,
+        start_date=start_date,
+        end_date=end_date,
     )
     cache_dir = SCRAPER_CACHE_DIR if use_cache else None
 

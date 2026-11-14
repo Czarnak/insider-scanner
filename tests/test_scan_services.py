@@ -202,20 +202,19 @@ def test_us_first_repeat_subrange_and_both_side_expansion(persistence):
     ]
 
 
-def test_us_unbounded_scan_uses_latest_refresh_without_infinite_coverage(persistence):
+def test_us_default_scan_fetches_each_requested_ticker_source(persistence):
     bounded = {
-        source: BoundedAdapter(lambda *_: []) for source in ("secform4", "openinsider")
+        source: BoundedAdapter(
+            lambda ticker, start, _end: [_us(ticker=ticker, filing_date=start)]
+        )
+        for source in ("secform4", "openinsider")
     }
-    latest = LatestAdapter(
-        [
-            _us(ticker="AAPL", source="openinsider"),
-            _us(ticker="MSFT", source="openinsider"),
-        ]
-    )
+    latest = LatestAdapter([])
     service = UsScanService(
         persistence,
         adapters=bounded,
         latest_adapters={"openinsider": latest},
+        clock=lambda: datetime(2026, 6, 8, tzinfo=UTC),
     )
 
     first = service.scan(
@@ -231,12 +230,13 @@ def test_us_unbounded_scan_uses_latest_refresh_without_infinite_coverage(persist
         end_date=None,
     )
 
-    assert [trade.ticker for trade in first] == ["AAPL"]
+    assert {trade.ticker for trade in first} == {"AAPL"}
     assert second == first
-    assert latest.calls == [(LATEST_OVERLAP_COUNT, True, None, None)]
-    assert all(not adapter.calls for adapter in bounded.values())
-    assert persistence.coverage.get("us", "AAPL", "secform4") == ()
-    assert persistence.coverage.get("us", "AAPL", "openinsider") == ()
+    assert latest.calls == []
+    assert all(
+        adapter.calls == [("AAPL", date(2025, 12, 8), date(2026, 6, 8), True)]
+        for adapter in bounded.values()
+    )
 
 
 def test_us_scan_can_read_sec_edgar_from_local_db_without_adapter(persistence):
@@ -565,7 +565,7 @@ def test_congress_unbounded_scan_uses_gui_six_month_finite_default(persistence):
 
     assert house.calls == [(None, date(2025, 12, 8), date(2026, 6, 8), True)]
     assert persistence.coverage.get("congress", "*", "house") == (
-        DateInterval(date(2025, 12, 8), date(2026, 6, 8)),
+        DateInterval(date(2025, 12, 8), date(2026, 6, 7)),
     )
 
 
@@ -843,35 +843,6 @@ def test_latest_us_larger_count_refreshes_after_smaller_capacity(persistence):
     service.latest(count=3)
 
     assert [call[0] for call in latest.calls] == [2, 3]
-
-
-def test_latest_us_with_dates_delegates_to_bounded_ticker_scan(persistence):
-    bounded = BoundedAdapter(
-        lambda ticker, start, _end: [
-            _us(ticker=ticker or "", source="openinsider", filing_date=start)
-        ]
-    )
-    latest = LatestAdapter([])
-    service = UsScanService(
-        persistence,
-        adapters={"openinsider": bounded},
-        latest_adapters={"openinsider": latest},
-    )
-
-    result = service.latest(
-        count=10,
-        ticker="AAPL",
-        sources=("openinsider",),
-        start_date=date(2026, 11, 1),
-        end_date=date(2026, 11, 30),
-    )
-
-    assert len(result) == 1
-    assert len(bounded.calls) == 1
-    assert latest.calls == []
-    assert persistence.coverage.get("us", "AAPL", "openinsider") == (
-        DateInterval(date(2026, 11, 1), date(2026, 11, 30)),
-    )
 
 
 def test_latest_eu_refresh_is_per_source(persistence):

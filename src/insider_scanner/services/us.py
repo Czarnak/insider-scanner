@@ -18,12 +18,15 @@ from insider_scanner.services.common import (
     LATEST_OVERLAP_COUNT,
     BoundedSourceAdapter,
     LatestSourceAdapter,
+    bounded_scan_gaps,
     flag_congress_copies,
     latest_refresh_mode,
     normalize_identifier,
     not_cancelled,
+    record_completed_scan,
     scan_result,
     source_issues,
+    subtract_months,
     validate_range,
     validate_sources,
 )
@@ -64,40 +67,31 @@ class UsScanService:
         cancelled: Callable[[], bool] = not_cancelled,
     ) -> FetchResult[InsiderTrade]:
         identifier = normalize_identifier(ticker, "ticker").upper()
-        issues: list[FetchIssue] = []
+        now = self._clock()
         if start_date is None and end_date is None:
-            selected = validate_sources(sources, self._unbounded_sources_available())
-            refresh_sources = tuple(
-                source for source in selected if source in self._latest_adapters
-            )
-            local_sources = tuple(
-                source for source in selected if source == SEC_EDGAR_SOURCE
-            )
-            if not refresh_sources and not local_sources:
-                raise ValueError("selected sources do not support unbounded scans")
-            if refresh_sources:
-                issues = self._refresh_latest(
-                    refresh_sources,
-                    count=self._latest_overlap_count,
-                    use_cache=use_cache,
-                    cancelled=cancelled,
-                )
-            return scan_result(
-                flag_congress_copies(
-                    self._persistence.us_trades.query(identifier, sources=selected)
-                ),
-                issues,
-            )
+            end_date = now.date()
+            start_date = subtract_months(end_date, 6)
         requested = validate_range(start_date, end_date)
+        if requested.end > now.date():
+            raise ValueError("end_date must not be in the future")
         selected = validate_sources(sources, self._bounded_sources_available())
         adapter_sources = tuple(
             source for source in selected if source in self._adapters
         )
 
+        issues: list[FetchIssue] = []
         for source in adapter_sources:
-            for gap in self._persistence.coverage.gaps(
-                "us", identifier, source, requested
-            ):
+            gaps = bounded_scan_gaps(
+                self._persistence,
+                "us",
+                identifier,
+                source,
+                requested,
+                now=now,
+                ttl=self._cache_ttl,
+                use_cache=use_cache,
+            )
+            for gap in gaps:
                 if cancelled():
                     issues.append(FetchIssue("cancelled", source, identifier))
                     return scan_result(
@@ -128,14 +122,21 @@ class UsScanService:
                 issues.extend(source_issues(fetched, source=source, identifier=context))
                 self._persistence.us_trades.upsert(trades)
                 if fetched.complete:
-                    self._persistence.coverage.add("us", identifier, source, gap)
+                    record_completed_scan(
+                        self._persistence,
+                        "us",
+                        identifier,
+                        source,
+                        requested,
+                        gap,
+                        now=now,
+                    )
         return scan_result(self._query(identifier, selected, requested), issues)
 
     def latest(
         self,
         *,
         count: int,
-        ticker: str | None = None,
         sources: Sequence[str] = ("openinsider",),
         start_date: date | None = None,
         end_date: date | None = None,
@@ -145,28 +146,12 @@ class UsScanService:
         if count < 1:
             raise ValueError("count must be positive")
         if start_date is not None or end_date is not None:
-            validate_range(start_date, end_date)
-            if ticker:
-                identifier = normalize_identifier(ticker, "ticker").upper()
-                selected = validate_sources(sources, self._bounded_sources_available())
-                result = self.scan(
-                    identifier,
-                    sources=selected,
-                    start_date=start_date,
-                    end_date=end_date,
-                    use_cache=use_cache,
-                    cancelled=cancelled,
-                )
-                return FetchResult(
-                    result[:count], status=result.status, issues=result.issues
-                )
-            assert start_date is not None
-            assert end_date is not None
+            requested = validate_range(start_date, end_date)
             return self._latest_in_range(
                 count=count,
                 sources=sources,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=requested.start,
+                end_date=requested.end,
                 use_cache=use_cache,
                 cancelled=cancelled,
             )
@@ -189,9 +174,6 @@ class UsScanService:
             ),
             issues,
         )
-
-    def _unbounded_sources_available(self) -> Mapping[str, object]:
-        return {**self._adapters, **self._latest_adapters, SEC_EDGAR_SOURCE: object()}
 
     def _bounded_sources_available(self) -> Mapping[str, object]:
         return {**self._adapters, SEC_EDGAR_SOURCE: object()}
@@ -216,8 +198,10 @@ class UsScanService:
                 issues.append(FetchIssue("cancelled", source, "latest"))
                 break
             refreshed_at = self._persistence.refresh.get("us", "*", source, mode)
-            if is_fresh(refreshed_at, now=now, ttl=self._cache_ttl):
+            if use_cache and is_fresh(refreshed_at, now=now, ttl=self._cache_ttl):
                 continue
+            if not use_cache:
+                self._persistence.refresh.clear("us", "*", source)
             try:
                 trades = as_fetch_result(
                     self._latest_adapters[source](

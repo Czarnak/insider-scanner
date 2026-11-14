@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import parse_qs, urlsplit
 
 import responses
 from bs4 import BeautifulSoup
@@ -191,13 +192,13 @@ class TestScrapeOpeninsider:
             start_date=date(2025, 6, 1),
             end_date=date(2025, 12, 31),
         )
-        # Verify request was made with date range params
         assert len(responses.calls) == 1
         url = responses.calls[0].request.url
-        # scrape_ticker() uses filing-date params (fd/fdr) for custom range mode
-        assert "fd=-1" in url
-        assert "fdr=" in url
-        assert "06%2F01%2F2025" in url or "06/01/2025" in url
+        params = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        assert params["fd"] == ["-1"]
+        assert params["fdr"] == ["06/01/2025 - 12/31/2025"]
+        assert params["td"] == ["0"]
+        assert params["tdr"] == [""]
         assert len(trades) == 3
         assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
 
@@ -217,7 +218,52 @@ class TestScrapeOpeninsider:
         assert len(trades) == 3
         assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
         url = responses.calls[0].request.url
-        assert "td=7" in url
+        params = parse_qs(urlsplit(url).query, keep_blank_values=True)
+        assert params["fd"] == ["-1"]
+        assert params["fdr"] == ["01/01/2025 - 12/31/2030"]
+        assert params["td"] == ["0"]
+        assert params["tdr"] == [""]
+
+    @responses.activate
+    def test_ticker_is_encoded_as_a_single_query_value(self):
+        responses.add(
+            responses.GET,
+            "http://openinsider.com/screener",
+            body=OPENINSIDER_HTML,
+            status=200,
+        )
+
+        scrape_ticker("brk.b&cnt=1", use_cache=False)
+
+        params = parse_qs(urlsplit(responses.calls[0].request.url).query)
+        assert params["s"] == ["BRK.B&CNT=1"]
+        assert params["cnt"] == ["100"]
+
+    @responses.activate
+    def test_latest_uses_filing_dates_for_late_reported_trades(self):
+        responses.add(
+            responses.GET,
+            "http://openinsider.com/screener",
+            body=OPENINSIDER_HTML,
+            status=200,
+        )
+
+        trades = scrape_latest(
+            count=50,
+            use_cache=False,
+            start_date=date(2025, 11, 17),
+            end_date=date(2025, 11, 17),
+        )
+
+        params = parse_qs(urlsplit(responses.calls[0].request.url).query)
+        assert params["fd"] == ["-1"]
+        assert params["fdr"] == ["11/17/2025 - 11/17/2025"]
+        assert params["td"] == ["0"]
+        assert any(
+            trade.trade_date < date(2025, 11, 17)
+            and trade.filing_date == date(2025, 11, 17)
+            for trade in trades
+        )
 
     @responses.activate
     def test_latest_slice_cap_only_limits_bounded_completeness(self):

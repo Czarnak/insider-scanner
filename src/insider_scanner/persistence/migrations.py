@@ -137,6 +137,18 @@ def _repair_normalized_inputs(connection: Connection) -> None:
             )
 
 
+def _repair_unfinished_scan_coverage(connection: Connection) -> None:
+    """Rebuild legacy completion claims while preserving every stored trade.
+
+    Legacy compaction replaced covered_at even for untouched intervals, so it
+    cannot prove which dates were fetched after completion. Reset this fetch
+    optimization once instead of preserving potentially missing filing dates.
+    """
+    connection.execute(
+        delete(scan_coverage).where(scan_coverage.c.domain.in_(("us", "congress")))
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -157,5 +169,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=4,
         name="repair_normalized_inputs",
         upgrade=_repair_normalized_inputs,
+    ),
+    Migration(
+        version=5,
+        name="repair_unfinished_scan_coverage",
+        upgrade=_repair_unfinished_scan_coverage,
     ),
 )

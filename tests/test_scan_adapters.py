@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from insider_scanner.services.adapters import (
     default_congress_adapters,
     default_european_adapters,
@@ -65,7 +67,8 @@ def test_default_us_latest_adapter_forwards_overlap_request(monkeypatch):
     ]
 
 
-def test_default_congress_adapters_forward_official_and_range(monkeypatch):
+@pytest.mark.parametrize("use_cache", [True, False])
+def test_default_congress_adapters_forward_official_and_range(monkeypatch, use_cache):
     calls = []
 
     def house(**kwargs):
@@ -86,7 +89,7 @@ def test_default_congress_adapters_forward_official_and_range(monkeypatch):
     start = date(2026, 3, 1)
     end = date(2026, 3, 2)
 
-    adapters["house"]("Jane Doe", start, end, True)
+    adapters["house"]("Jane Doe", start, end, use_cache)
     adapters["senate"](None, start, end, False)
 
     assert calls == [
@@ -96,6 +99,7 @@ def test_default_congress_adapters_forward_official_and_range(monkeypatch):
                 "official_name": "Jane Doe",
                 "date_from": start,
                 "date_to": end,
+                "use_cache": use_cache,
             },
         ),
         (

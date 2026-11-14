@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, delete, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -31,8 +31,9 @@ def is_fresh(
     if refreshed_at is None:
         return False
     refreshed = _aware_utc(refreshed_at)
-    # Clamp effective age at zero by treating future clock-skew values as fresh.
-    return current - refreshed < ttl
+    # A clock correction must not suppress refreshes until a future timestamp.
+    age = current - refreshed
+    return timedelta(0) <= age < ttl
 
 
 class RefreshStateRepository:
@@ -40,13 +41,15 @@ class RefreshStateRepository:
         self._engine = engine
 
     @staticmethod
-    def _conditions(domain: str, identifier: str, source: str, mode: str):
-        return and_(
+    def _conditions(domain: str, identifier: str, source: str, mode: str | None = None):
+        conditions = [
             refresh_state.c.domain == domain,
             refresh_state.c.identifier == identifier,
             refresh_state.c.source == source,
-            refresh_state.c.mode == mode,
-        )
+        ]
+        if mode is not None:
+            conditions.append(refresh_state.c.mode == mode)
+        return and_(*conditions)
 
     def get(
         self, domain: str, identifier: str, source: str, mode: str
@@ -93,3 +96,15 @@ class RefreshStateRepository:
                 )
         except SQLAlchemyError as error:
             raise PersistenceError("refresh state update failed") from error
+
+    def clear(self, domain: str, identifier: str, source: str) -> None:
+        """Invalidate every cached refresh mode for one source request key."""
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(
+                    delete(refresh_state).where(
+                        self._conditions(domain, identifier, source)
+                    )
+                )
+        except SQLAlchemyError as error:
+            raise PersistenceError("refresh state removal failed") from error

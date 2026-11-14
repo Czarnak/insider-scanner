@@ -541,7 +541,6 @@ Examples:
   python scripts/update_congress.py                     # Federal only
   python scripts/update_congress.py --include-state     # Federal + state (needs OPENSTATES_API_KEY)
   python scripts/update_congress.py --dry-run           # Preview without saving
-  python scripts/update_congress.py --federal-only      # Explicit federal only
   python scripts/update_congress.py --no-committees     # Skip committee enrichment
         """,
     )
@@ -556,12 +555,6 @@ Examples:
         "--include-state",
         action="store_true",
         help="Include state legislators (requires OPENSTATES_API_KEY env var)",
-    )
-    parser.add_argument(
-        "--federal-only",
-        action="store_true",
-        default=True,
-        help="Only fetch federal legislators (default)",
     )
     parser.add_argument(
         "--no-committees",

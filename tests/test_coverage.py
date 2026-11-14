@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
@@ -18,6 +18,7 @@ from insider_scanner.persistence.coverage import (
     uncovered_gaps,
 )
 from insider_scanner.persistence.errors import PersistenceError
+from insider_scanner.persistence.schema import scan_coverage
 
 
 def _interval(start: int, end: int) -> DateInterval:
@@ -149,5 +150,159 @@ def test_coverage_concurrent_adds_preserve_complete_union(tmp_path):
             _interval(5, 5),
             _interval(8, 9),
         )
+    finally:
+        engine.dispose()
+
+
+def test_coverage_keeps_today_and_future_open_and_can_advance_tomorrow(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "unfinished.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    now = datetime(2026, 1, 10, 12, tzinfo=UTC)
+    try:
+        repo.add("us", "AAPL", "secform4", _interval(1, 15), now=now)
+
+        assert repo.get("us", "AAPL", "secform4") == (_interval(1, 9),)
+        assert repo.gaps("us", "AAPL", "secform4", _interval(1, 15)) == (
+            _interval(10, 15),
+        )
+        repo.add(
+            "us", "AAPL", "secform4", _interval(10, 15), now=now + timedelta(days=1)
+        )
+        assert repo.get("us", "AAPL", "secform4") == (_interval(1, 10),)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("interval", [_interval(10, 10), _interval(11, 15)])
+def test_coverage_records_nothing_for_unfinished_dates(tmp_path, interval):
+    engine = create_sqlite_engine(tmp_path / "only-unfinished.sqlite3")
+    bootstrap_database(engine)
+    try:
+        repo = CoverageRepository(engine)
+        repo.add(
+            "congress",
+            "*",
+            "house",
+            interval,
+            now=datetime(2026, 1, 10, 12, tzinfo=UTC),
+        )
+        assert repo.get("congress", "*", "house") == ()
+    finally:
+        engine.dispose()
+
+
+def test_coverage_compaction_preserves_component_timestamps(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "timestamps.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    original = datetime(2026, 2, 1, tzinfo=UTC)
+    later = original + timedelta(days=1)
+    try:
+        repo.add("us", "AAPL", "secform4", _interval(1, 3), now=original)
+        repo.add("us", "AAPL", "secform4", _interval(4, 5), now=later)
+        repo.add("us", "AAPL", "secform4", _interval(8, 9), now=later)
+        with engine.connect() as connection:
+            rows = connection.execute(
+                select(scan_coverage.c.start_date, scan_coverage.c.covered_at).order_by(
+                    scan_coverage.c.start_date
+                )
+            ).all()
+        assert rows == [(date(2026, 1, 1), original), (date(2026, 1, 8), later)]
+    finally:
+        engine.dispose()
+
+
+def test_coverage_rejects_naive_observation_time(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "naive.sqlite3")
+    bootstrap_database(engine)
+    try:
+        with pytest.raises(ValueError, match="timezone-aware"):
+            CoverageRepository(engine).add(
+                "us",
+                "AAPL",
+                "secform4",
+                _interval(1, 3),
+                now=datetime(2026, 2, 1),
+            )
+    finally:
+        engine.dispose()
+
+
+def test_coverage_retains_existing_other_domain_interval_contract(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "other-domain.sqlite3")
+    bootstrap_database(engine)
+    try:
+        repo = CoverageRepository(engine)
+        repo.add(
+            "eu",
+            "EXAMPLE",
+            "amf",
+            _interval(1, 15),
+            now=datetime(2026, 1, 10, 12, tzinfo=UTC),
+        )
+        assert repo.get("eu", "EXAMPLE", "amf") == (_interval(1, 15),)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("removed", "expected"),
+    [
+        (_interval(4, 6), (_interval(1, 3), _interval(7, 10))),
+        (_interval(1, 4), (_interval(5, 10),)),
+        (_interval(8, 15), (_interval(1, 7),)),
+        (_interval(1, 15), ()),
+        (_interval(11, 15), (_interval(1, 10),)),
+    ],
+)
+def test_coverage_removal_retains_unrequested_dates_and_timestamps(
+    tmp_path, removed, expected
+):
+    engine = create_sqlite_engine(tmp_path / "remove.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    original = datetime(2026, 2, 1, tzinfo=UTC)
+    try:
+        repo.add("us", "AAPL", "secform4", _interval(1, 10), now=original)
+        repo.add("us", "AAPL", "openinsider", _interval(1, 10), now=original)
+        repo.add("us", "MSFT", "secform4", _interval(1, 10), now=original)
+
+        repo.remove("us", "AAPL", "secform4", removed)
+
+        assert repo.get("us", "AAPL", "secform4") == expected
+        assert repo.get("us", "AAPL", "openinsider") == (_interval(1, 10),)
+        assert repo.get("us", "MSFT", "secform4") == (_interval(1, 10),)
+        with engine.connect() as connection:
+            assert set(
+                connection.execute(select(scan_coverage.c.covered_at)).scalars()
+            ) == {original}
+    finally:
+        engine.dispose()
+
+
+def test_coverage_removal_rolls_back_if_retained_fragments_cannot_be_saved(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "remove-failure.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    repo.add("us", "AAPL", "secform4", _interval(1, 10))
+
+    def fail_insert(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if statement.lstrip().upper().startswith("INSERT INTO SCAN_COVERAGE"):
+            raise OperationalError(
+                statement, parameters, RuntimeError("forced failure")
+            )
+
+    event.listen(engine, "before_cursor_execute", fail_insert)
+    try:
+        with pytest.raises(PersistenceError, match="coverage removal failed") as error:
+            repo.remove("us", "AAPL", "secform4", _interval(4, 6))
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_insert)
+    try:
+        assert isinstance(error.value.__cause__, SQLAlchemyError)
+        assert repo.get("us", "AAPL", "secform4") == (_interval(1, 10),)
     finally:
         engine.dispose()
