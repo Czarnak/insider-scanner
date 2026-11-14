@@ -338,6 +338,18 @@ scan_coverage = metadata.tables["scan_coverage"]
 refresh_state = metadata.tables["refresh_state"]
 price_history = metadata.tables["price_history"]
 
+# Migration eight removes explicit indexes already supplied by UNIQUE
+# constraints. Keep migration one's metadata intact for historical upgrades.
+for _table in (scan_coverage, price_history):
+    _table.indexes.difference_update(
+        {
+            _index
+            for _index in _table.indexes
+            if _index.name
+            in {"ix_scan_coverage_lookup", "ix_price_history_symbol_date"}
+        }
+    )
+
 price_history.append_column(
     Column("source", String(32), nullable=False, server_default="")
 )

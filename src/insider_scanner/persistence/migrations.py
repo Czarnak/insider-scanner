@@ -262,6 +262,12 @@ def _unify_transaction_identity(connection: Connection) -> None:
         )
 
 
+def _remove_duplicate_indexes(connection: Connection) -> None:
+    """Retain the UNIQUE indexes that already serve the same lookup keys."""
+    connection.exec_driver_sql("DROP INDEX IF EXISTS ix_scan_coverage_lookup")
+    connection.exec_driver_sql("DROP INDEX IF EXISTS ix_price_history_symbol_date")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -297,5 +303,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=7,
         name="unify_transaction_identity",
         upgrade=_unify_transaction_identity,
+    ),
+    Migration(
+        version=8,
+        name="remove_duplicate_indexes",
+        upgrade=_remove_duplicate_indexes,
     ),
 )
