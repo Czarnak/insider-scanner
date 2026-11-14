@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from insider_scanner.core.congress_identity import MemberIdentity
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.services.common import (
@@ -46,13 +47,16 @@ def default_us_latest_adapters() -> dict[str, LatestSourceAdapter[InsiderTrade]]
     }
 
 
-def default_congress_adapters() -> dict[str, BoundedSourceAdapter[CongressTrade]]:
+def default_congress_adapters(
+    *, member: MemberIdentity | None = None
+) -> dict[str, BoundedSourceAdapter[CongressTrade]]:
     from insider_scanner.core.congress_house import scrape_house_trades
     from insider_scanner.core.congress_senate import scrape_senate_trades
 
     return {
         "house": lambda official, start, end, use_cache: scrape_house_trades(
             official_name=official,
+            member=member,
             date_from=start,
             date_to=end,
             use_cache=use_cache,
@@ -60,6 +64,7 @@ def default_congress_adapters() -> dict[str, BoundedSourceAdapter[CongressTrade]
         # Senate requests always go to eFD; it has no persisted response cache.
         "senate": lambda official, start, end, _use_cache: scrape_senate_trades(
             official_name=official,
+            member=member,
             date_from=start,
             date_to=end,
         ),

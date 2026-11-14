@@ -95,3 +95,59 @@ def test_sector_filter_resolves_source_spelling(member_file):
     assert filter_congress_trades(
         [trade], sector="Finance", member_sectors={"Katie Boyd Britt": ["Finance"]}
     ) == [trade]
+
+
+def test_service_passes_custom_structured_member_to_default_sources(
+    monkeypatch, persistence
+):
+    member = identity_for(
+        {
+            "first_name": "Marie",
+            "last_name": "Gluesenkamp Perez",
+            "bioguide_id": "CUSTOM",
+        }
+    )
+    seen = []
+
+    def scrape(**kwargs):
+        seen.append(kwargs["member"])
+        return []
+
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.scrape_house_trades", scrape
+    )
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_senate.scrape_senate_trades", scrape
+    )
+    service = CongressScanService(persistence, today=lambda: date(2026, 11, 14))
+    service.scan(
+        member,
+        sources=("house", "senate"),
+        start_date=date(2026, 10, 1),
+        end_date=date(2026, 10, 2),
+    )
+    assert seen == [member, member]
+
+
+def test_house_pipeline_retains_custom_structured_surname(monkeypatch):
+    from insider_scanner.core import congress_house
+
+    member = identity_for(
+        {
+            "first_name": "Marie",
+            "last_name": "Gluesenkamp Perez",
+            "bioguide_id": "CUSTOM",
+        }
+    )
+    monkeypatch.setattr(congress_house, "ensure_house_index", lambda *args, **kw: None)
+    seen = []
+
+    def search(year, **kwargs):
+        seen.append(kwargs["name"])
+        return []
+
+    monkeypatch.setattr(congress_house, "search_filings", search)
+    congress_house.scrape_house_trades(
+        member=member, date_from=date(2026, 10, 1), date_to=date(2026, 10, 2)
+    )
+    assert seen == [member]

@@ -582,9 +582,7 @@ def scrape_house_trades(
     """
     with _house_session() if session is None else nullcontext(session) as http:
         return _scrape_house_trades(
-            official_name=identity_for(member).official_name
-            if member is not None
-            else official_name,
+            official_name=identity_for(member) if member is not None else official_name,
             date_from=date_from,
             date_to=date_to,
             use_cache=use_cache,
@@ -595,7 +593,7 @@ def scrape_house_trades(
 
 def _scrape_house_trades(
     *,
-    official_name: str | None,
+    official_name: str | MemberIdentity | None,
     date_from: date | None,
     date_to: date | None,
     use_cache: bool,

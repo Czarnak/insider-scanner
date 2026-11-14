@@ -37,6 +37,7 @@ class CongressScanService:
         cache_ttl: timedelta = DEFAULT_CACHE_TTL,
     ) -> None:
         self._persistence = persistence
+        self._uses_default_adapters = adapters is None
         self._adapters = dict(
             default_congress_adapters() if adapters is None else adapters
         )
@@ -68,6 +69,11 @@ class CongressScanService:
             else identity_for(normalized)
         )
         identifier = "*" if member is None else member.key
+        adapters = (
+            default_congress_adapters(member=member)
+            if self._uses_default_adapters
+            else self._adapters
+        )
         now = self._clock()
         if start_date is None and end_date is None:
             end_date = now.date()
@@ -96,7 +102,7 @@ class CongressScanService:
                 context = f"{identifier} {gap.start}..{gap.end}"
                 try:
                     fetched = as_fetch_result(
-                        self._adapters[source](
+                        adapters[source](
                             None if member is None else member.official_name,
                             gap.start,
                             gap.end,

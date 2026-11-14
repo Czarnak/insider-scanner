@@ -97,6 +97,7 @@ def test_default_congress_adapters_forward_official_and_range(monkeypatch, use_c
             "house",
             {
                 "official_name": "Jane Doe",
+                "member": None,
                 "date_from": start,
                 "date_to": end,
                 "use_cache": use_cache,
@@ -104,7 +105,7 @@ def test_default_congress_adapters_forward_official_and_range(monkeypatch, use_c
         ),
         (
             "senate",
-            {"official_name": None, "date_from": start, "date_to": end},
+            {"official_name": None, "member": None, "date_from": start, "date_to": end},
         ),
     ]
 
