@@ -21,6 +21,12 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from insider_scanner.core.trade_types import (
+    BUY_TYPES,
+    SELL_TYPES,
+    TransactionDirection,
+    classify_direction,
+)
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.schema import (
     congress_trades,
@@ -32,10 +38,6 @@ DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 500
 MAX_SEARCH_LENGTH = 100
 STALE_AFTER = timedelta(hours=24)
-
-_BUY_TERMS: tuple[str, ...] = ("buy", "purchase")
-_SELL_TERMS: tuple[str, ...] = ("sell", "sale")
-
 
 class FeedMarket(StrEnum):
     """Source market represented by a normalized feed record."""
@@ -54,14 +56,6 @@ class FeedSortField(StrEnum):
     PERSON = "person"
     VALUE = "value"
     MARKET = "market"
-
-
-class TransactionDirection(StrEnum):
-    """Broad direction of a transaction derived from free-text transaction_type."""
-
-    BUY = "Buy"
-    SELL = "Sell"
-    OTHER = "Other"
 
 
 def _normalize_search(search: str) -> str:
@@ -236,6 +230,11 @@ class FeedRecord:
     source_url: str
     created_at: datetime | None = None
 
+    @property
+    def direction(self) -> TransactionDirection:
+        """Return the same direction used by models, filters and displays."""
+        return classify_direction(self.transaction_type)
+
 
 @dataclass(frozen=True)
 class FeedPage:
@@ -373,14 +372,12 @@ def _search_condition(feed, search: str):
 
 def _direction_condition(feed, direction: TransactionDirection):
     """Return a SQLAlchemy condition for a single TransactionDirection."""
-    lower_type = func.lower(func.coalesce(feed.c.transaction_type, ""))
+    lower_type = func.lower(func.trim(func.coalesce(feed.c.transaction_type, "")))
     if direction == TransactionDirection.BUY:
-        return or_(*[lower_type.like(f"%{term}%") for term in _BUY_TERMS])
+        return lower_type.in_(sorted(BUY_TYPES))
     if direction == TransactionDirection.SELL:
-        return or_(*[lower_type.like(f"%{term}%") for term in _SELL_TERMS])
-    # OTHER: matches neither buy nor sell terms
-    buy_sell_terms = _BUY_TERMS + _SELL_TERMS
-    return ~or_(*[lower_type.like(f"%{term}%") for term in buy_sell_terms])
+        return lower_type.in_(sorted(SELL_TYPES))
+    return lower_type.not_in(sorted(BUY_TYPES | SELL_TYPES))
 
 
 def _directions_condition(feed, directions: tuple[TransactionDirection, ...]):
