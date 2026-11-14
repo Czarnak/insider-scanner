@@ -68,21 +68,3 @@ def get_price_history(
             cause=Exception(f"No price data for {symbol} and fetch failed"),
         )
     return bars
-
-
-def validate_coverage(
-    symbols: list[str], source: PriceSource | None = None
-) -> dict[str, bool]:
-    """Return {symbol: has_recent_data}. Used to vet a source vs. the watchlist."""
-    from datetime import timedelta
-
-    src = source or get_price_source()
-    end = date.today()
-    start = end - timedelta(days=10)
-    result: dict[str, bool] = {}
-    for sym in symbols:
-        try:
-            result[sym] = bool(src.fetch_daily(sym, start, end))
-        except Exception:  # noqa: BLE001 - a failed provider check marks only that symbol unavailable
-            result[sym] = False
-    return result
