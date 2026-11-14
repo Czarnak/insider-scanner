@@ -831,6 +831,99 @@ def test_injected_limiter_controls_all_requests(register_efd_auth):
     assert not session.is_authenticated
 
 
+@pytest.mark.parametrize("operation", ["search", "fetch_page"])
+@responses.activate
+def test_agreement_response_reauthenticates_and_retries_once(
+    operation, register_efd_auth
+):
+    register_efd_auth()
+    method = responses.POST if operation == "search" else responses.GET
+    url = REPORT_DATA if operation == "search" else BASE_URL + "/search/view/ptr/test/"
+    responses.add(method, url, body=LANDING_HTML)
+    if operation == "search":
+        responses.add(method, url, json=SEARCH_RESPONSE_JSON)
+    else:
+        responses.add(method, url, body=PTR_PAGE_HTML)
+
+    with EFDSession() as session:
+        session.authenticate()
+        with patch.object(session, "authenticate", wraps=session.authenticate) as renew:
+            result = (
+                session.search() if operation == "search" else session.fetch_page(url)
+            )
+        renew.assert_called_once()
+        assert session.is_authenticated
+
+    assert result == (SEARCH_RESPONSE_JSON if operation == "search" else PTR_PAGE_HTML)
+    assert sum(call.request.url == url for call in responses.calls) == 2
+
+
+@responses.activate
+def test_ptr_redirect_to_agreement_url_reauthenticates(register_efd_auth):
+    register_efd_auth()
+    url = BASE_URL + "/search/view/ptr/test/"
+    responses.add(responses.GET, url, status=302, headers={"Location": SEARCH_HOME})
+    # A redirect alone identifies the return to the agreement, even if the
+    # destination page's markup changes or contains no agreement checkbox.
+    responses.add(responses.GET, SEARCH_HOME, body="<html>Agreement</html>")
+    responses.add(responses.GET, url, body=PTR_PAGE_HTML)
+
+    with EFDSession() as session:
+        session.authenticate()
+        with patch.object(session, "authenticate", wraps=session.authenticate) as renew:
+            assert session.fetch_page(url) == PTR_PAGE_HTML
+        renew.assert_called_once()
+
+
+@pytest.mark.parametrize("operation", ["search", "fetch_page"])
+@responses.activate
+def test_repeated_agreement_response_fails_after_one_renewal(
+    operation, register_efd_auth
+):
+    register_efd_auth()
+    method = responses.POST if operation == "search" else responses.GET
+    url = REPORT_DATA if operation == "search" else BASE_URL + "/search/view/ptr/test/"
+    responses.add(method, url, body=LANDING_HTML)
+
+    with EFDSession() as session:
+        session.authenticate()
+        with (
+            patch.object(session, "authenticate", wraps=session.authenticate) as renew,
+            pytest.raises(ConnectionError, match="after re-authentication"),
+        ):
+            session.search() if operation == "search" else session.fetch_page(url)
+        renew.assert_called_once()
+        assert not session.is_authenticated
+
+    assert sum(call.request.url == url for call in responses.calls) == 2
+
+
+@responses.activate
+def test_repeated_search_agreement_stays_retryable_incomplete(register_efd_auth):
+    register_efd_auth()
+    responses.add(responses.POST, REPORT_DATA, body=LANDING_HTML)
+    with EFDSession() as session:
+        session.authenticate()
+        result = search_senate_filings(session)
+    assert not result.complete
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues[0].reason == "search_failed"
+    assert result.issues[0].retryable
+
+
+@responses.activate
+def test_unrelated_html_search_failure_does_not_renew_agreement(register_efd_auth):
+    register_efd_auth()
+    responses.add(responses.POST, REPORT_DATA, body="<html>Unavailable</html>")
+    with EFDSession() as session:
+        session.authenticate()
+        with patch.object(session, "authenticate", wraps=session.authenticate) as renew:
+            result = search_senate_filings(session)
+        renew.assert_not_called()
+    assert not result.complete
+    assert result.issues[0].reason == "search_failed"
+
+
 def test_efd_context_closes_transport_on_error():
     session = EFDSession()
     with (

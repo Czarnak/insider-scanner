@@ -18,6 +18,7 @@ import re
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import Self
+from urllib.parse import urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -117,6 +118,7 @@ class EFDSession:
         ConnectionError
             If authentication fails.
         """
+        self._authenticated = False
         self.rate_limiter.acquire()
 
         # Step 1: GET the search landing page
@@ -172,6 +174,41 @@ class EFDSession:
 
         self._authenticated = True
         log.info("EFD session authenticated successfully")
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        timeout: int,
+        data: dict | None = None,
+    ) -> requests.Response:
+        """Retry a request once after a detected return to the agreement."""
+        for attempt in range(2):
+            self.rate_limiter.acquire()
+            resp = self.session.request(method, url, data=data, timeout=timeout)
+            try:
+                resp.raise_for_status()
+                path = urlsplit(resp.url).path.rstrip("/")
+                agreement = path in {"/search", "/search/home"}
+                if not agreement and "prohibition_agreement" in resp.text:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    agreement = (
+                        soup.find("input", {"name": "prohibition_agreement"})
+                        is not None
+                    )
+                if not agreement:
+                    return resp
+            except Exception:
+                resp.close()
+                raise
+            resp.close()
+            self._authenticated = False
+            if attempt:
+                break
+            log.info("EFD returned the agreement; re-authenticating once")
+            self.authenticate()
+        raise ConnectionError("EFD returned the agreement after re-authentication")
 
     def search(
         self,
@@ -242,7 +279,6 @@ class EFDSession:
             # The service contract includes the entire final filing date.
             form_data["submitted_end_date"] = date_to.strftime("%m/%d/%Y") + " 23:59:59"
 
-        self.rate_limiter.acquire()
         log.info(
             "Searching EFD: last=%s first=%s types=%s",
             last_name,
@@ -250,10 +286,11 @@ class EFDSession:
             report_types,
         )
 
-        resp = self.session.post(REPORT_DATA, data=form_data, timeout=30)
-        resp.raise_for_status()
-
-        return resp.json()
+        resp = self._request("POST", REPORT_DATA, data=form_data, timeout=30)
+        try:
+            return resp.json()
+        finally:
+            resp.close()
 
     def fetch_page(self, url: str) -> str:
         """Fetch a page within the EFD session.
@@ -263,11 +300,12 @@ class EFDSession:
         if not url.startswith("http"):
             url = BASE_URL + url
 
-        self.rate_limiter.acquire()
         log.debug("Fetching EFD page: %s", url)
-        resp = self.session.get(url, timeout=15)
-        resp.raise_for_status()
-        return resp.text
+        resp = self._request("GET", url, timeout=15)
+        try:
+            return resp.text
+        finally:
+            resp.close()
 
 
 def create_efd_session() -> EFDSession:
