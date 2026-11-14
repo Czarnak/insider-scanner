@@ -15,6 +15,7 @@ Pipeline:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Self
 
@@ -311,6 +312,8 @@ def parse_search_results(data: dict) -> list[dict]:
             continue
 
         href = link.get("href", "")
+        if not isinstance(href, str):
+            continue
         title = link.get_text(strip=True)
 
         # Check if it's a paper filing (scanned PDF — skip these)
@@ -568,7 +571,7 @@ def scrape_senate_trades(
     date_from: date | None = None,
     date_to: date | None = None,
     session: EFDSession | None = None,
-    progress_callback: callable | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[CongressTrade]:
     """Scrape Senate PTR filings and return CongressTrade records.
 
