@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtCore import QRunnable
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import open_persistence
@@ -106,6 +107,80 @@ def test_scan_tab_latest_uses_injected_service(monkeypatch, qtbot):
         )
     ]
     assert len(tab._trades) == 1
+
+
+def test_scan_tab_partial_results_remain_visible_with_warning_after_filter(qtbot):
+    from insider_scanner.gui.scan_tab import ScanTab
+
+    trade = InsiderTrade(ticker="AAPL", insider_name="Jane", trade_type="Buy")
+    result = FetchResult(
+        [trade],
+        issues=[FetchIssue("result_limit", source="openinsider", identifier="AAPL")],
+    )
+    tab = ScanTab(FakeService(result))
+    qtbot.addWidget(tab)
+
+    tab._on_scan_done(result)
+    tab._apply_filters()
+
+    assert tab._trades == [trade]
+    assert tab.trades_model.rowCount() == 1
+    assert (
+        "Incomplete results (openinsider AAPL: result limit)" in tab.status_label.text()
+    )
+
+
+def test_scan_tab_watchlist_preserves_incomplete_metadata_and_other_tickers(
+    monkeypatch, qtbot
+):
+    from insider_scanner.gui import scan_tab
+
+    class WatchlistService:
+        def scan(self, identifier, **kwargs):
+            if identifier == "AAPL":
+                return FetchResult(
+                    [InsiderTrade(ticker="AAPL")],
+                    issues=[
+                        FetchIssue(
+                            "result_limit", source="openinsider", identifier="AAPL"
+                        )
+                    ],
+                )
+            return [InsiderTrade(ticker=identifier)]
+
+    monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
+    monkeypatch.setattr(
+        "insider_scanner.utils.config.load_watchlist", lambda: ["AAPL", "MSFT"]
+    )
+    tab = scan_tab.ScanTab(WatchlistService())
+    qtbot.addWidget(tab)
+
+    tab._run_watchlist()
+
+    assert {trade.ticker for trade in tab._trades} == {"AAPL", "MSFT"}
+    assert not tab._trades.complete
+    assert (
+        "Incomplete results (openinsider AAPL: result limit)" in tab.status_label.text()
+    )
+
+
+@pytest.mark.parametrize("with_rows", [False, True])
+def test_congress_tab_shows_incomplete_warning_and_retains_rows(qtbot, with_rows):
+    from insider_scanner.gui.congress_tab import CongressTab
+
+    rows = [CongressTrade(official_name="Jane Doe", ticker="AAPL")] if with_rows else []
+    result = FetchResult(
+        rows, issues=[FetchIssue("missing_pdf", source="house", identifier="12345")]
+    )
+    tab = CongressTab(FakeService(result))
+    qtbot.addWidget(tab)
+
+    tab._on_scan_done(result)
+    tab._apply_filters()
+
+    assert tab._trades == rows
+    assert tab.trades_model.rowCount() == len(rows)
+    assert "Incomplete results (house 12345: missing pdf)" in tab.status_label.text()
 
 
 def test_scan_tab_service_error_is_concise(monkeypatch, qtbot):

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from insider_scanner.core import edgar
+from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.core.prices import get_price_history
 from insider_scanner.core.sec_client import SecBlockedError
 from insider_scanner.services.application import (
@@ -87,6 +88,8 @@ def cmd_scan(args: argparse.Namespace, services: ApplicationServices) -> None:
         end_date=until,
         use_cache=not args.no_cache,
     )
+    if warning := describe_incomplete(trades):
+        print(f"Warning: {warning}", file=sys.stderr)
 
     filtered = filter_trades(
         trades,
@@ -127,6 +130,8 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
         start_date=since,
         end_date=until,
     )
+    if warning := describe_incomplete(trades):
+        print(f"Warning: {warning}", file=sys.stderr)
 
     print(f"\nLatest {len(trades)} insider trades:")
     for t in trades[:30]:

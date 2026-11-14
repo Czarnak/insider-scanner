@@ -7,6 +7,7 @@ from insider_scanner.core.fetch_outcome import (
     FetchResult,
     FetchStatus,
     as_fetch_result,
+    describe_incomplete,
 )
 
 
@@ -37,3 +38,24 @@ def test_unsupported_is_distinct_from_success_and_retryable_failure():
 def test_unresolved_issues_cannot_claim_complete_coverage():
     with pytest.raises(ValueError, match="unresolved"):
         FetchResult(status=FetchStatus.COMPLETE, issues=[FetchIssue("missing_page")])
+
+
+def test_incomplete_description_retains_source_context_and_bounds_details():
+    result = FetchResult(
+        [1],
+        issues=[
+            FetchIssue("result_limit", source="senate", identifier="Jane Doe"),
+            FetchIssue("missing_page"),
+            FetchIssue("request_failed"),
+            FetchIssue("missing_pdf"),
+        ],
+    )
+    assert describe_incomplete(result) == (
+        "Incomplete results (senate Jane Doe: result limit; missing page; "
+        "request failed; 1 more issues)"
+    )
+    assert describe_incomplete(FetchResult(status=FetchStatus.UNSUPPORTED)) == (
+        "Incomplete results (unsupported)"
+    )
+    assert describe_incomplete(FetchResult()) == ""
+    assert describe_incomplete([]) == ""

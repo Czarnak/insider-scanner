@@ -62,3 +62,18 @@ class FetchResult(list[RecordT], Generic[RecordT]):
 def as_fetch_result(records: list[RecordT]) -> FetchResult[RecordT]:
     """Adapt legacy injected list adapters without discarding existing metadata."""
     return records if isinstance(records, FetchResult) else FetchResult(records)
+
+
+def describe_incomplete(records: list[RecordT]) -> str:
+    """Describe incomplete results without hiding usable records from callers."""
+    if not isinstance(records, FetchResult) or records.complete:
+        return ""
+    details = []
+    for issue in records.issues[:3]:
+        label = " ".join(part for part in (issue.source, issue.identifier) if part)
+        reason = issue.reason.replace("_", " ")
+        details.append(f"{label}: {reason}" if label else reason)
+    if len(records.issues) > 3:
+        details.append(f"{len(records.issues) - 3} more issues")
+    detail = "; ".join(details) or records.status.value.replace("_", " ")
+    return f"Incomplete results ({detail})"
