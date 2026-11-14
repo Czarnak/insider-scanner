@@ -18,10 +18,12 @@ from insider_scanner.services.common import (
     LATEST_OVERLAP_COUNT,
     BoundedSourceAdapter,
     LatestSourceAdapter,
+    bounded_scan_gaps,
     flag_congress_copies,
     latest_refresh_mode,
     normalize_identifier,
     not_cancelled,
+    record_completed_scan,
     scan_result,
     source_issues,
     subtract_months,
@@ -65,10 +67,13 @@ class UsScanService:
         cancelled: Callable[[], bool] = not_cancelled,
     ) -> FetchResult[InsiderTrade]:
         identifier = normalize_identifier(ticker, "ticker").upper()
+        now = self._clock()
         if start_date is None and end_date is None:
-            end_date = self._clock().date()
+            end_date = now.date()
             start_date = subtract_months(end_date, 6)
         requested = validate_range(start_date, end_date)
+        if requested.end > now.date():
+            raise ValueError("end_date must not be in the future")
         selected = validate_sources(sources, self._bounded_sources_available())
         adapter_sources = tuple(
             source for source in selected if source in self._adapters
@@ -76,10 +81,15 @@ class UsScanService:
 
         issues: list[FetchIssue] = []
         for source in adapter_sources:
-            gaps = (
-                self._persistence.coverage.gaps("us", identifier, source, requested)
-                if use_cache
-                else (requested,)
+            gaps = bounded_scan_gaps(
+                self._persistence,
+                "us",
+                identifier,
+                source,
+                requested,
+                now=now,
+                ttl=self._cache_ttl,
+                use_cache=use_cache,
             )
             for gap in gaps:
                 if cancelled():
@@ -112,7 +122,15 @@ class UsScanService:
                 issues.extend(source_issues(fetched, source=source, identifier=context))
                 self._persistence.us_trades.upsert(trades)
                 if fetched.complete:
-                    self._persistence.coverage.add("us", identifier, source, gap)
+                    record_completed_scan(
+                        self._persistence,
+                        "us",
+                        identifier,
+                        source,
+                        requested,
+                        gap,
+                        now=now,
+                    )
         return scan_result(self._query(identifier, selected, requested), issues)
 
     def latest(

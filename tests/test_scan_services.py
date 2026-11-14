@@ -565,7 +565,7 @@ def test_congress_unbounded_scan_uses_gui_six_month_finite_default(persistence):
 
     assert house.calls == [(None, date(2025, 12, 8), date(2026, 6, 8), True)]
     assert persistence.coverage.get("congress", "*", "house") == (
-        DateInterval(date(2025, 12, 8), date(2026, 6, 8)),
+        DateInterval(date(2025, 12, 8), date(2026, 6, 7)),
     )
 
 

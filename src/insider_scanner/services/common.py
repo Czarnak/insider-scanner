@@ -5,18 +5,22 @@ from __future__ import annotations
 from calendar import monthrange
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Protocol, TypeVar
 
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.senate import flag_congress_trades
-from insider_scanner.persistence.coverage import DateInterval
+from insider_scanner.persistence.coverage import DateInterval, normalize_intervals
+from insider_scanner.persistence.refresh import is_fresh
+from insider_scanner.services.context import PersistenceContext
 from insider_scanner.utils.config import DEFAULT_CACHE_TTL as CACHE_TTL_SECONDS
 
 DEFAULT_CACHE_TTL = timedelta(seconds=CACHE_TTL_SECONDS)
 # Latest endpoints refresh a recent overlapping tail to absorb late filings.
 LATEST_OVERLAP_COUNT = 200
+# Revisit recent publication dates, independent of the underlying trade date.
+RECENT_FILING_DAYS = 7
 
 TradeT = TypeVar("TradeT")
 CancellationCheck = Callable[[], bool]
@@ -100,6 +104,68 @@ def subtract_months(value: date, months: int) -> date:
     year, zero_based_month = divmod(month_index, 12)
     month = zero_based_month + 1
     return date(year, month, min(value.day, monthrange(year, month)[1]))
+
+
+def recent_filing_interval(
+    requested: DateInterval, now: datetime
+) -> DateInterval | None:
+    start = max(requested.start, now.date() - timedelta(days=RECENT_FILING_DAYS - 1))
+    return DateInterval(start, requested.end) if start <= requested.end else None
+
+
+def bounded_refresh_mode(interval: DateInterval) -> str:
+    return f"filing-tail:{interval.start}:{interval.end}"
+
+
+def bounded_scan_gaps(
+    persistence: PersistenceContext,
+    domain: str,
+    identifier: str,
+    source: str,
+    requested: DateInterval,
+    *,
+    now: datetime,
+    ttl: timedelta,
+    use_cache: bool,
+) -> tuple[DateInterval, ...]:
+    """Reuse history, but refresh recent filing dates after the bounded TTL."""
+    if not use_cache:
+        return (requested,)
+    recent = recent_filing_interval(requested, now)
+    if recent is None:
+        return persistence.coverage.gaps(domain, identifier, source, requested)
+    gaps: list[DateInterval] = []
+    if requested.start < recent.start:
+        historical = DateInterval(requested.start, recent.start - timedelta(days=1))
+        gaps.extend(persistence.coverage.gaps(domain, identifier, source, historical))
+    refreshed_at = persistence.refresh.get(
+        domain, identifier, source, bounded_refresh_mode(recent)
+    )
+    if not is_fresh(refreshed_at, now=now, ttl=ttl):
+        gaps.append(recent)
+    return normalize_intervals(gaps)
+
+
+def record_completed_scan(
+    persistence: PersistenceContext,
+    domain: str,
+    identifier: str,
+    source: str,
+    requested: DateInterval,
+    completed: DateInterval,
+    *,
+    now: datetime,
+) -> None:
+    persistence.coverage.add(domain, identifier, source, completed, now=now)
+    recent = recent_filing_interval(requested, now)
+    if (
+        recent is not None
+        and completed.start <= recent.start
+        and completed.end >= recent.end
+    ):
+        persistence.refresh.set(
+            domain, identifier, source, bounded_refresh_mode(recent), now
+        )
 
 
 def validate_sources(
