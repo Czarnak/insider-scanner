@@ -14,15 +14,14 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
-from lxml import etree
-
 from insider_scanner.core._sec_xml import (
     SecXmlSecurityError,
-    guard_xml_pre_parse,
-    guard_xml_tree,
-    hardened_xml_parser,
 )
-from insider_scanner.core.sec_ownership_document import OwnershipDocument
+from insider_scanner.core.sec_ownership_document import (
+    OwnershipDocument,
+    SecOwnershipDocumentError,
+    _validated_ownership_xml,
+)
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
@@ -193,21 +192,14 @@ def parse_ownership_document(
 
     Notes
     -----
-    The pre-parse and tree guards are applied here independently of
-    ``extract_ownership_document``: this function is a self-contained untrusted
-    boundary that may be called with any policy, so it re-validates the XML
-    rather than trusting a prior extraction pass.
+    Extracted documents reuse their private validated tree under the same policy.
+    Manually constructed documents and changed policies are fully validated.
     """
-    xml_bytes = document.xml_text.encode("utf-8")
-    sha256 = hashlib.sha256(xml_bytes).hexdigest()
-
-    guard_xml_pre_parse(xml_bytes, policy, document.accession_number)
     try:
-        root = etree.fromstring(xml_bytes, hardened_xml_parser())
-    except etree.XMLSyntaxError as exc:
-        acc = document.accession_number
-        raise SecOwnershipParseError(f"XML parse failure (accession={acc})") from exc
-    guard_xml_tree(root, policy, document.accession_number)
+        root, xml_bytes = _validated_ownership_xml(document, policy)
+    except SecOwnershipDocumentError as exc:
+        raise SecOwnershipParseError("Invalid ownership XML document") from exc
+    sha256 = hashlib.sha256(xml_bytes).hexdigest()
 
     ctx = _ParseContext(policy=policy, accession=document.accession_number)
 

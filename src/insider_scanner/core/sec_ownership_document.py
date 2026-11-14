@@ -1,16 +1,9 @@
-"""Locate and validate the ownership XML from SEC Form 3/4/5 filings.
-
-Supports two input shapes:
-- Full submission text (.txt) with SEC-DOCUMENT / SEC-HEADER envelope
-- Direct primary ownership XML document
-
-Does NOT parse transactions.  Downstream modules handle that.
-"""
+"""Extract and validate SEC ownership XML without decoding other attachments."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lxml import etree
 
@@ -19,68 +12,68 @@ from insider_scanner.core._sec_xml import (
     guard_xml_tree,
     hardened_xml_parser,
 )
+from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
     SecSecurityPolicy,
 )
 
-OWNERSHIP_FORM_TYPES: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 
-# ---------------------------------------------------------------------------
-# Value object
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class _ValidatedXml:
+    source: bytes
+    root: etree._Element
+    policy: SecSecurityPolicy
 
 
 @dataclass(frozen=True, slots=True)
 class OwnershipDocument:
-    """Extracted ownership XML with filing provenance."""
+    """Ownership XML with provenance and a private, non-constructor parse cache.
+
+    ``xml_text`` is Unicode with a UTF-8 declaration. Extracted documents retain
+    the selected source bytes privately for parsing and document hashing.
+    ``dataclasses.replace`` drops validation, even for metadata edits.
+    """
 
     accession_number: str | None
     document_type: str | None
     xml_text: str
-
-
-# ---------------------------------------------------------------------------
-# Error hierarchy
-# ---------------------------------------------------------------------------
+    _validation: _ValidatedXml | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
 
 class SecOwnershipDocumentError(Exception):
-    """Base class for safe ownership-document extraction failures."""
+    """Safe ownership-document extraction failure."""
 
 
 class NonOwnershipDocumentError(SecOwnershipDocumentError):
-    """Raised when no Form 3/4/5 ownership document can be located."""
+    """No supported ownership XML document was found."""
 
 
 class UnsupportedOwnershipDocumentError(NonOwnershipDocumentError):
-    """An ownership filing uses a text or HTML format rather than ownership XML."""
+    """An ownership block uses legacy text or HTML."""
 
 
-# ---------------------------------------------------------------------------
-# Patterns
-# ---------------------------------------------------------------------------
-
-_ACCESSION_RE = re.compile(r"ACCESSION NUMBER:\s*([0-9-]+)", re.IGNORECASE)
+_ACCESSION_RE = re.compile(rb"ACCESSION NUMBER:\s*([0-9-]+)", re.IGNORECASE)
 _DOCUMENT_BLOCK_RE = re.compile(
-    r"<DOCUMENT>(.*?)</DOCUMENT>", re.DOTALL | re.IGNORECASE
+    rb"<DOCUMENT>(.*?)</DOCUMENT>", re.DOTALL | re.IGNORECASE
 )
-_TYPE_LINE_RE = re.compile(r"<TYPE>([^\r\n]+)", re.IGNORECASE)
-_TEXT_BLOCK_RE = re.compile(r"<TEXT>(.*?)</TEXT>", re.DOTALL | re.IGNORECASE)
-_XML_WRAPPER_RE = re.compile(r"<XML>(.*?)</XML>", re.DOTALL | re.IGNORECASE)
-_DOCUMENT_TYPE_ELEMENT_RE = re.compile(
-    r"<documentType>\s*([^<]+?)\s*</documentType>", re.IGNORECASE
+_TYPE_LINE_RE = re.compile(rb"<TYPE>([^\r\n]+)", re.IGNORECASE)
+_TEXT_BLOCK_RE = re.compile(rb"<TEXT>(.*?)</TEXT>", re.DOTALL | re.IGNORECASE)
+_XML_WRAPPER_RE = re.compile(rb"<XML>(.*?)</XML>", re.DOTALL | re.IGNORECASE)
+_XML_PREAMBLE_RE = re.compile(rb"\A(?:\s+|<!--.*?-->|<\?.*?\?>)*", re.DOTALL)
+_OWNERSHIP_ROOT_START_RE = re.compile(rb"<(?:[^\s<>/:]+:)?ownershipDocument(?=[\s/>])")
+_ENCODING_RE = re.compile(
+    r"(\A\ufeff?\s*<\?xml\b[^?]*?\bencoding\s*=\s*)(['\"])[^'\"]+\2"
 )
-_XML_PREAMBLE_RE = re.compile(r"\A(?:\s+|<!--.*?-->|<\?.*?\?>)*", re.DOTALL)
-_OWNERSHIP_ROOT_START_RE = re.compile(r"<(?:[^\s<>/:]+:)?ownershipDocument(?=[\s/>])")
+_FULL_SUBMISSION_MARKERS = (b"<SEC-DOCUMENT", b"<SEC-HEADER", b"<DOCUMENT>")
 
-# Presence of any of these tags means it is a full submission envelope.
-_FULL_SUBMISSION_MARKERS = ("<SEC-DOCUMENT", "<SEC-HEADER", "<DOCUMENT>")
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _unicode_xml_bytes(text: str) -> bytes:
+    """Already-decoded text must not be decoded again using its declaration."""
+    return _ENCODING_RE.sub(r'\1"UTF-8"', text, count=1).encode("utf-8")
 
 
 def extract_ownership_document(
@@ -89,187 +82,111 @@ def extract_ownership_document(
     accession_number: str | None = None,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
 ) -> OwnershipDocument:
-    """Extract the Form 3/4/5 ownership XML from an SEC filing payload.
+    """Select ownership XML as bytes, honoring its declared source encoding.
 
-    Parameters
-    ----------
-    content:
-        Raw filing bytes (decoded as UTF-8) or already-decoded text.
-    accession_number:
-        Caller-supplied accession number; used as a fallback when the header
-        cannot be parsed (full submission) or as the sole source (direct XML).
-
-    Returns
-    -------
-    OwnershipDocument
-        Immutable provenance record carrying the validated XML text.
-
-    Raises
-    ------
-    TypeError
-        ``content`` is neither ``bytes`` nor ``str``.
-    SecOwnershipDocumentError
-        Byte decoding fails, or the extracted XML is not well-formed.
-    NonOwnershipDocumentError
-        No Form 3/4/5 block can be located, or the XML root element is not
-        ``ownershipDocument``.
-    UnsupportedOwnershipDocumentError
-        An ownership-typed submission block contains legacy text or HTML.
+    SEC envelopes use ASCII delimiters. Only the selected XML is decoded; binary
+    or differently encoded attachments have no bearing on ownership parsing.
     """
     if not isinstance(content, (bytes, str)):
-        raise TypeError(f"content must be bytes or str, got {type(content).__name__!r}")
-
+        raise TypeError("content must be bytes or str")
     max_input = policy.limits_for(SecResourceProfile.FILING_DOCUMENT).max_bytes
     if len(content) > max_input:
         raise SecOwnershipDocumentError("Filing payload exceeds the size limit.")
-
-    text = _decode(content)
-    stripped = text.lstrip()
-
-    if _is_full_submission(stripped):
-        return _extract_from_full_submission(stripped, accession_number, policy)
-
-    if "<ownershipDocument" in stripped:
-        return _extract_direct_xml(stripped, accession_number, policy)
-
-    raise NonOwnershipDocumentError(
-        "Content does not appear to be an SEC submission or ownership XML document."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _decode(content: bytes | str) -> str:
-    """Return decoded text; raises SecOwnershipDocumentError on bad bytes."""
-    if isinstance(content, str):
-        return content
-    try:
-        return content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise SecOwnershipDocumentError(
-            "Failed to decode filing content as UTF-8."
-        ) from exc
-
-
-def _is_full_submission(text: str) -> bool:
-    return any(marker in text for marker in _FULL_SUBMISSION_MARKERS)
-
-
-def _extract_from_full_submission(
-    text: str, fallback_accession: str | None, policy: SecSecurityPolicy
-) -> OwnershipDocument:
-    """Parse a full SEC submission envelope and return the ownership block."""
-    # Extract accession number from header (prefer header over parameter).
-    accession_match = _ACCESSION_RE.search(text)
-    accession_number = (
-        accession_match.group(1).strip() if accession_match else fallback_accession
-    )
-
-    # Walk every <DOCUMENT>…</DOCUMENT> block in document order.
-    for block_match in _DOCUMENT_BLOCK_RE.finditer(text):
-        block_body = block_match.group(1)
-
-        type_match = _TYPE_LINE_RE.search(block_body)
-        if type_match is None:
-            continue
-        doc_type = type_match.group(1).strip()
-        if doc_type not in OWNERSHIP_FORM_TYPES:
-            continue
-
-        # Found an ownership-typed block — extract its XML text.
-        xml_text = _extract_xml_from_block(block_body)
-        return _build_document(xml_text, accession_number, doc_type, policy)
-
-    raise NonOwnershipDocumentError(
-        "No Form 3/4/5 <DOCUMENT> block found in SEC submission."
-    )
+    is_unicode = isinstance(content, str)
+    raw = content.encode("utf-8") if isinstance(content, str) else content
+    if len(raw) > max_input:
+        raise SecOwnershipDocumentError("Filing payload exceeds the size limit.")
+    raw = raw.strip()
+    if any(marker in raw for marker in _FULL_SUBMISSION_MARKERS):
+        match = _ACCESSION_RE.search(raw)
+        accession_number = match.group(1).decode("ascii") if match else accession_number
+        for block in _DOCUMENT_BLOCK_RE.finditer(raw):
+            body = block.group(1)
+            type_match = _TYPE_LINE_RE.search(body)
+            if type_match is None:
+                continue
+            doc_type = type_match.group(1).strip().decode("ascii", errors="replace")
+            if doc_type not in OWNERSHIP_FORM_TYPES:
+                continue
+            text_match = _TEXT_BLOCK_RE.search(body)
+            if text_match is None:
+                raise SecOwnershipDocumentError("Ownership block has no TEXT section.")
+            selected = text_match.group(1).strip()
+            wrapper = _XML_WRAPPER_RE.search(selected)
+            if wrapper is not None:
+                selected = wrapper.group(1).strip()
+            elif not _looks_like_ownership_xml(selected):
+                raise UnsupportedOwnershipDocumentError(
+                    "Ownership filing is not available as machine-readable XML."
+                )
+            return _build_document(
+                selected, accession_number, doc_type, policy, is_unicode
+            )
+        raise NonOwnershipDocumentError("No Form 3/4/5 DOCUMENT block found.")
+    if not _looks_like_ownership_xml(raw):
+        raise NonOwnershipDocumentError("Content is not ownership XML.")
+    return _build_document(raw, accession_number, None, policy, is_unicode)
 
 
-def _extract_xml_from_block(block_body: str) -> str:
-    """Pull the raw XML string from a <DOCUMENT> body."""
-    text_match = _TEXT_BLOCK_RE.search(block_body)
-    if text_match is None:
-        raise SecOwnershipDocumentError(
-            "Ownership document block has no <TEXT> section."
-        )
-
-    text_content = text_match.group(1)
-
-    xml_match = _XML_WRAPPER_RE.search(text_content)
-    if xml_match is not None:
-        return xml_match.group(1).strip()
-
-    xml_text = text_content.strip()
-    if not _looks_like_ownership_xml(xml_text):
-        raise UnsupportedOwnershipDocumentError(
-            "Ownership filing is not available as machine-readable XML."
-        )
-    return xml_text
-
-
-def _looks_like_ownership_xml(text: str) -> bool:
-    """Recognize XML without sending legacy HTML/text through the parser.
-
-    Comments, processing instructions and qualified roots are valid XML. Keep
-    declarations in the XML path so the existing guards still reject DTDs and
-    entities, including declarations after a comment or processing instruction.
-    """
-    candidate = text.lstrip("\ufeff \t\r\n")
-    if candidate.startswith("<?xml"):
+def _looks_like_ownership_xml(raw: bytes) -> bool:
+    candidate = raw.removeprefix(b"\xef\xbb\xbf").lstrip()
+    if candidate.startswith(b"<?xml"):
         return True
-    candidate = _XML_PREAMBLE_RE.sub("", candidate, count=1)
-    return candidate.startswith(("<!DOCTYPE", "<!ENTITY")) or bool(
+    candidate = _XML_PREAMBLE_RE.sub(b"", candidate, count=1)
+    return candidate.startswith((b"<!DOCTYPE", b"<!ENTITY")) or bool(
         _OWNERSHIP_ROOT_START_RE.match(candidate)
     )
 
 
-def _extract_direct_xml(
-    text: str, accession_number: str | None, policy: SecSecurityPolicy
-) -> OwnershipDocument:
-    """Handle a payload that is itself the primary ownership XML."""
-    xml_text = text.strip()
-
-    doc_type_match = _DOCUMENT_TYPE_ELEMENT_RE.search(xml_text)
-    document_type = doc_type_match.group(1) if doc_type_match else None
-
-    return _build_document(xml_text, accession_number, document_type, policy)
+def _parse_xml(
+    source: bytes, accession: str | None, policy: SecSecurityPolicy
+) -> etree._Element:
+    guard_xml_pre_parse(source, policy, accession)
+    try:
+        root = etree.fromstring(source, hardened_xml_parser())
+    except (etree.XMLSyntaxError, ValueError, LookupError) as exc:
+        raise SecOwnershipDocumentError("Ownership XML is not well-formed.") from exc
+    guard_xml_tree(root, policy, accession)
+    # The SEC ownership schema has no namespace. Reject qualified roots instead
+    # of returning empty filings from downstream unqualified field lookups.
+    if root.tag != "ownershipDocument":
+        raise NonOwnershipDocumentError(
+            "Root element is not unqualified ownershipDocument."
+        )
+    return root
 
 
 def _build_document(
-    xml_text: str,
-    accession_number: str | None,
-    document_type: str | None,
+    source: bytes,
+    accession: str | None,
+    doc_type: str | None,
     policy: SecSecurityPolicy,
+    is_unicode: bool,
 ) -> OwnershipDocument:
-    """Validate the XML and construct an immutable OwnershipDocument."""
-    _validate_ownership_xml(xml_text, accession_number, policy)
-    return OwnershipDocument(
-        accession_number=accession_number,
-        document_type=document_type,
-        xml_text=xml_text,
-    )
-
-
-def _validate_ownership_xml(
-    xml_text: str, accession_number: str | None, policy: SecSecurityPolicy
-) -> None:
-    """Enforce XML resource limits, then parse with a hardened lxml parser."""
-    xml_bytes = xml_text.encode("utf-8")
-    guard_xml_pre_parse(xml_bytes, policy, accession_number)
-    parser = hardened_xml_parser()
+    if is_unicode:
+        source = _unicode_xml_bytes(source.decode("utf-8"))
+    root = _parse_xml(source, accession, policy)
     try:
-        root = etree.fromstring(xml_bytes, parser)
-    except etree.XMLSyntaxError as exc:
-        acc_hint = f" (accession={accession_number})" if accession_number else ""
-        raise SecOwnershipDocumentError(
-            f"Ownership XML is not well-formed{acc_hint}."
-        ) from exc
+        text = source.decode(root.getroottree().docinfo.encoding or "utf-8")
+    except (UnicodeError, LookupError) as exc:
+        raise SecOwnershipDocumentError("Unsupported ownership XML encoding.") from exc
+    text = _ENCODING_RE.sub(r'\1"UTF-8"', text, count=1)
+    document = OwnershipDocument(
+        accession, doc_type or root.findtext("documentType"), text
+    )
+    object.__setattr__(document, "_validation", _ValidatedXml(source, root, policy))
+    return document
 
-    guard_xml_tree(root, policy, accession_number)
 
-    local_name = etree.QName(root.tag).localname
-    if local_name != "ownershipDocument":
-        raise NonOwnershipDocumentError("Root element is not 'ownershipDocument'.")
+def _validated_ownership_xml(
+    document: OwnershipDocument, policy: SecSecurityPolicy
+) -> tuple[etree._Element, bytes]:
+    """Internal handoff; callers must not mutate or expose the cached tree."""
+    cached = document._validation
+    if cached is not None:
+        if cached.policy == policy:
+            return cached.root, cached.source
+        source = cached.source
+    else:
+        source = _unicode_xml_bytes(document.xml_text)
+    return _parse_xml(source, document.accession_number, policy), source
