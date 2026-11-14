@@ -36,7 +36,7 @@ def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
         numeric_flags = {f"{field}_missing" for field in numeric_fields}
         for field in fields(left):
             name = field.name
-            if name in numeric_flags:
+            if name in numeric_flags or name in {"accession_number", "sec_row_id"}:
                 continue
             if name in numeric_fields:
                 flag = f"{name}_missing"
@@ -57,6 +57,11 @@ def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
                     if any(value is not None for value in values)
                     else None
                 )
+        # Partial evidence from separate scraper observations cannot be joined
+        # into an invented native identity. Select the entire pair together.
+        updates["accession_number"], updates["sec_row_id"] = max(
+            (trade.accession_number, trade.sec_row_id) for trade in (left, right)
+        )
         merged = replace(left, **updates)
     edgar_urls = sorted(trade.edgar_url for trade in (left, right) if trade.edgar_url)
     congress_members = sorted(

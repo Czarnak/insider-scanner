@@ -242,3 +242,42 @@ def test_congress_source_row_round_trips_and_legacy_exports_keep_default():
     legacy = trade.to_dict()
     legacy.pop("source_row_id")
     assert CongressTrade.from_dict(legacy).source_row_id == ""
+
+
+def test_scraper_merge_cannot_synthesize_native_sec_identity(engine):
+    accession_only = us_trade(accession_number="accession")
+    row_only = us_trade(sec_row_id="row")
+    original_key = us_canonical_key(accession_only)
+    for order in ((accession_only, row_only), (row_only, accession_only)):
+        merged = merge_trades(list(order))
+        assert len(merged) == 1
+        assert us_canonical_key(merged[0]) == original_key
+        assert not (merged[0].accession_number and merged[0].sec_row_id)
+    repository = UsTradeRepository(engine)
+    assert repository.upsert([accession_only, row_only]) == UpsertResult(
+        inserted=1, updated=0, skipped=1
+    )
+    assert repository.upsert([row_only]) == UpsertResult(skipped=1)
+
+
+def test_congress_correction_keeps_zero_lower_bound_with_its_upper_bound(engine):
+    stored = congress_trade(source_row_id="1", amount_low=50001, amount_high=100000)
+    corrected = replace(
+        stored, amount_range="$0 - $15,000", amount_low=0, amount_high=15000
+    )
+    repository = CongressTradeRepository(engine)
+    repository.upsert([stored])
+    assert repository.upsert([corrected]) == UpsertResult(updated=1)
+    assert repository.query(stored.official_name) == [corrected]
+
+
+def test_old_congress_export_stays_idempotent_after_native_lots_are_recovered(engine):
+    legacy = congress_trade()
+    lots = [replace(legacy, source_row_id=str(index)) for index in (1, 2)]
+    repository = CongressTradeRepository(engine)
+    assert repository.upsert([legacy]) == UpsertResult(inserted=1)
+    assert repository.upsert(lots) == UpsertResult(inserted=1, updated=1)
+    assert repository.upsert([legacy]) == UpsertResult(skipped=1)
+    assert repository.query(legacy.official_name) == sorted(
+        lots, key=congress_canonical_key
+    )

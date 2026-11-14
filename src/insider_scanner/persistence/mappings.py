@@ -174,7 +174,7 @@ def coalesce_congress_trades(
     right: CongressTrade,
 ) -> CongressTrade:
     """Apply populated incoming corrections; empty fields retain stored data."""
-    return replace(
+    merged = replace(
         left,
         **{
             field: getattr(right, field)
@@ -182,6 +182,12 @@ def coalesce_congress_trades(
             else getattr(left, field)
             for field in _CONGRESS_FIELDS
         },
+    )
+    # A zero lower bound can be reported alongside a populated upper bound.
+    # Select the complete range so a correction cannot create inverted bounds.
+    amounts = right if right.amount_low or right.amount_high else left
+    return replace(
+        merged, amount_low=amounts.amount_low, amount_high=amounts.amount_high
     )
 
 
