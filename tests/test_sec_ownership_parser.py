@@ -413,23 +413,16 @@ _MALFORMED_DATE_XML = """\
 """
 
 
-def test_malformed_shares_raises_parse_error() -> None:
-    from insider_scanner.core.sec_ownership_parser import (
-        SecOwnershipParseError,
-        parse_ownership_document,
-    )
+def test_malformed_optional_shares_retains_row_with_safe_warning() -> None:
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
 
-    doc = OwnershipDocument(
-        accession_number="0000000001-26-000001",
-        document_type="4",
-        xml_text=_MALFORMED_SHARES_XML,
+    doc = OwnershipDocument("0000000001-26-000001", "4", _MALFORMED_SHARES_XML)
+    filing = parse_ownership_document(doc)
+    assert filing.non_derivative_transactions[0].shares is None
+    assert filing.non_derivative_transactions[0].warnings == (
+        "invalid_decimal:transactionShares",
     )
-    with pytest.raises(SecOwnershipParseError) as exc_info:
-        parse_ownership_document(doc)
-
-    # Raw XML body must not appear in the error message
-    assert "not-a-number" not in str(exc_info.value)
-    assert _MALFORMED_SHARES_XML not in str(exc_info.value)
+    assert "not-a-number" not in repr(filing.non_derivative_transactions[0].warnings)
 
 
 def test_malformed_date_raises_parse_error() -> None:
@@ -546,9 +539,22 @@ def test_document_sha256_matches() -> None:
 
 
 def _doc(xml_text: str, accession: str = "0000000001-26-000001") -> OwnershipDocument:
-    return OwnershipDocument(
-        accession_number=accession, document_type="4", xml_text=xml_text
+    # Field-limit tests need the minimal identity required by the boundary.
+    xml_text = xml_text.replace(
+        "<ownershipDocument>",
+        "<ownershipDocument>"
+        "<issuer><issuerCik>1</issuerCik></issuer>"
+        "<reportingOwner><reportingOwnerId><rptOwnerCik>2</rptOwnerCik>"
+        "</reportingOwnerId></reportingOwner>",
+        1,
     )
+    xml_text = xml_text.replace(
+        "<nonDerivativeTransaction>",
+        "<nonDerivativeTransaction>"
+        "<transactionDate><value>2026-06-12</value></transactionDate>"
+        "<transactionCoding><transactionCode>P</transactionCode></transactionCoding>",
+    )
+    return OwnershipDocument(accession, "4", xml_text)
 
 
 def _small_policy(**overrides: object):
