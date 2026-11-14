@@ -24,7 +24,9 @@ def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
     including corrected empty values and missing flags. Scraper duplicates
     coalesce each field independently with a stable typed maximum, so repeated
     enrichment is associative and independent of input order. Numeric values
-    and their availability flags always travel together.
+    and their availability flags always travel together. Filing links and
+    Congress annotations survive as enrichment metadata: the SEC parser does
+    not classify Congress membership.
     """
     if left == right:
         return replace(left)

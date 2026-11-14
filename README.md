@@ -531,7 +531,8 @@ Scraper duplicates fill complementary fields using deterministic per-field rules
 SEC transactions retain their accession/row identity and coexist with scraper
 observations for source comparison. A new parse of the same SEC row replaces its
 stored financial and parser fields, including corrected zeros, missing values
-and cleared fields; source provenance and available filing links are retained.
+and cleared fields; source provenance, available filing links and Congress
+enrichment annotations are retained.
 Undated scraper observations also retain filing/source evidence in their keys.
 
 ### Data Flow — Congress (House)
