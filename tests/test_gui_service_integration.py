@@ -458,14 +458,16 @@ def test_sec_ingest_range_dispatch_emits_progress_cancels_and_reads_concurrently
     from insider_scanner.core.sec_client import SecTransport
     from insider_scanner.services.sec_daily import SecDailyIngestionService
     from insider_scanner.utils.threading import dispatch
-    from tests.test_sec_daily_service import (
+    from tests.sec_stubs import (
         DAY,
         EMPTY_INDEX,
         INDEX_DAY_TWO,
         INDEX_ONE_ROW,
         NEXT_DAY,
+        VALID_FILING,
+        StubResponse,
+        make_client,
     )
-    from tests.test_sec_downloads import StubResponse, VALID_FILING, make_client
 
     db_path = tmp_path / "sec-bg.sqlite3"
     persistence = open_persistence(db_path)

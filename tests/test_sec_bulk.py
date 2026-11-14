@@ -16,8 +16,8 @@ from typing import Callable
 import pytest
 
 from insider_scanner.core.sec_bulk import (
-    BulkFilingMetadata,
     OWNERSHIP_FORMS,
+    BulkFilingMetadata,
     SecBulkError,
     SecBulkSecurityError,
     bulk_metadata_to_index_row,
@@ -28,12 +28,12 @@ from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityReason,
 )
+from tests.sec_stubs import FIXTURE_ZIP
 
 # Sentinel string present in the malformed-metadata fixture — must never leak.
 TASK6_METADATA_SENTINEL = "TASK6_METADATA_SENTINEL"
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
-FIXTURE_ZIP = FIXTURE_DIR / "sec_submissions_bulk_small.zip"
 
 
 def _small_policy(**overrides: object):

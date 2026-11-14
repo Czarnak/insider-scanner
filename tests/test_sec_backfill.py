@@ -1,18 +1,24 @@
 from __future__ import annotations
+
 from collections.abc import Iterator
 from pathlib import Path
+
 import pytest
 
+from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.sec_backfill import (
+    SecBackfillConfirmationError,
     SecBackfillService,
     SecBackfillSummary,
-    SecBackfillConfirmationError,
 )
-from tests.test_sec_downloads import make_client, make_transport, VALID_FILING
-from tests.test_sec_bulk import FIXTURE_ZIP  # reuse the 4-record fixture
-from insider_scanner.persistence.errors import PersistenceError
-from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
+from tests.sec_stubs import (
+    FIXTURE_ZIP,  # reuse the 4-record fixture
+    VALID_FILING,
+    make_client,
+    make_transport,
+)
 
 
 @pytest.fixture

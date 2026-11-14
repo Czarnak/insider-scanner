@@ -1,14 +1,13 @@
 """Behavior tests for the idempotent SEC daily ingestion service.
 
 Reuses the fake transport/client construction and the ``sec_form4_primary.xml``
-fixture from :mod:`tests.test_sec_downloads`, paired with a temp-file SQLite
+fixture from :mod:`tests.sec_stubs`, paired with a temp-file SQLite
 ``PersistenceContext`` so every test runs without live network or a shared DB.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -24,44 +23,17 @@ from insider_scanner.services.sec_daily import (
     SecDailyIngestionSummary,
 )
 from insider_scanner.services.sec_downloads import SecDownloadProgress
-from tests.test_sec_downloads import (
+from tests.sec_stubs import (
+    DAY,
+    EMPTY_INDEX,
+    INDEX_DAY_TWO,
+    INDEX_MIXED,
+    INDEX_ONE_ROW,
     INDEX_TWO_ROWS,
+    NEXT_DAY,
     make_client,
     make_transport,
 )
-
-DAY = date(2026, 6, 15)
-NEXT_DAY = date(2026, 6, 16)
-
-# A daily master index containing one ownership form (4) and one non-ownership
-# form (8-K). The index parser drops the non-ownership row before the sink sees
-# it, so only the Form 4 is downloaded, parsed, and persisted.
-INDEX_MIXED = (
-    "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
-    "320193|APPLE INC|4|2026-06-15|edgar/data/320193/0000320193-26-000061.txt\n"
-    "789019|MICROSOFT CORP|8-K|2026-06-15|edgar/data/789019/0000789019-26-000010.txt\n"
-)
-
-# An index whose only ownership row is a Form 4 (single filing for that day).
-INDEX_ONE_ROW = (
-    "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
-    "320193|APPLE INC|4|2026-06-15|edgar/data/320193/0000320193-26-000061.txt\n"
-)
-
-# An index with one ownership row dated to the second day of a two-day range.
-INDEX_DAY_TWO = (
-    "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
-    "789019|MICROSOFT CORP|4|2026-06-16|edgar/data/789019/0000789019-26-000010.txt\n"
-)
-
-EMPTY_INDEX = (
-    "Description: daily index\n"
-    "CIK|Company Name|Form Type|Date Filed|Filename\n" + "-" * 60 + "\n"
-)
-
 
 @pytest.fixture
 def persistence(tmp_path: Path) -> Iterator[PersistenceContext]:
@@ -156,7 +128,7 @@ def test_failed_filing_download_is_counted_and_run_continues(
     transport = make_transport(index_text=INDEX_TWO_ROWS)
 
     def _get(url: str, **_kwargs: object):
-        from tests.test_sec_downloads import StubResponse
+        from tests.sec_stubs import StubResponse
 
         if url.endswith(".idx"):
             return StubResponse(chunks=(INDEX_TWO_ROWS.encode("utf-8"),))
@@ -271,7 +243,7 @@ def test_range_catchup_records_coverage_for_each_day(
 ) -> None:
     # Day one yields the Form 4 fixture; day two yields its own ownership row.
     def transport_for_range():
-        from tests.test_sec_downloads import StubResponse, VALID_FILING
+        from tests.sec_stubs import VALID_FILING, StubResponse
 
         def _get(url: str, **_kwargs: object) -> StubResponse:
             if url.endswith(".idx"):
@@ -318,7 +290,7 @@ def test_mid_date_cancel_leaves_date_uncovered_then_resumes(
         from unittest.mock import Mock
 
         from insider_scanner.core.sec_client import SecTransport
-        from tests.test_sec_downloads import StubResponse, VALID_FILING
+        from tests.sec_stubs import VALID_FILING, StubResponse
 
         def _get(url: str, **_kwargs: object) -> StubResponse:
             if url.endswith(".idx"):
@@ -507,7 +479,7 @@ def _two_day_transport() -> object:
     from unittest.mock import Mock
 
     from insider_scanner.core.sec_client import SecTransport
-    from tests.test_sec_downloads import StubResponse, VALID_FILING
+    from tests.sec_stubs import VALID_FILING, StubResponse
 
     def _get(url: str, **_kwargs: object) -> StubResponse:
         if url.endswith(".idx"):

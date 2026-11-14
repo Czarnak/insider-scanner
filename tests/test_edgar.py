@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
 import json
+from datetime import date
 from typing import Any
 
 import pytest
@@ -12,17 +12,17 @@ import responses
 from insider_scanner.core.edgar import (
     COMPANY_TICKERS_URL,
     build_daily_master_index_url,
-    parse_cik_from_html,
-    resolve_cik,
-    resolve_cik_from_json,
-    get_filing_url,
     build_edgar_url_for_trade,
     build_filing_archive_url,
+    get_filing_url,
     normalize_cik,
+    parse_cik_from_html,
     quarter_for_date,
+    resolve_cik,
+    resolve_cik_from_json,
 )
 from insider_scanner.core.models import InsiderTrade
-from tests.fixtures import EDGAR_CIK_HTML, EDGAR_CIK_NOT_FOUND_HTML
+from tests.html_samples import EDGAR_CIK_HTML, EDGAR_CIK_NOT_FOUND_HTML
 
 # Sample company_tickers.json payload (SEC format)
 COMPANY_TICKERS_JSON = json.dumps(
