@@ -17,17 +17,19 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
-
-import requests
 
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_owner as _normalize_owner
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
 from insider_scanner.core.models import CongressTrade
+from insider_scanner.utils.atomic_file import atomic_write_bytes
 from insider_scanner.utils.config import HOUSE_DISCLOSURES_DIR
+from insider_scanner.utils.http import HttpSession
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import parse_ptr_date as _parse_date_flexible
 
@@ -77,7 +79,44 @@ def _pdf_cache_path(doc_id: str, year: int) -> Path:
     return pdf_dir / f"{doc_id}.pdf"
 
 
-def ensure_house_index(year: int, *, force: bool = False) -> Path:
+def _house_session() -> HttpSession:
+    return HttpSession(
+        min_interval_seconds=0.25,
+        user_agent="InsiderScanner/2.0 (House financial disclosures research)",
+    )
+
+
+def _download_bytes(url: str, session: HttpSession | None) -> bytes:
+    with _house_session() if session is None else nullcontext(session) as http:
+        response = http.get(url, timeout=30)
+        try:
+            return response.content
+        finally:
+            response.close()
+
+
+def _validate_index(content: bytes) -> None:
+    root = ET.fromstring(content)
+    if root.tag != "FinancialDisclosure":
+        raise ValueError("House index is not a financial disclosure document")
+
+
+def _validate_pdf(content: bytes) -> None:
+    if not content.startswith(b"%PDF-"):
+        raise ValueError("House response is not a PDF")
+    import pdfplumber
+
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            if not pdf.pages:
+                raise ValueError("House PDF contains no pages")
+    except Exception as exc:
+        raise ValueError("House PDF could not be read") from exc
+
+
+def ensure_house_index(
+    year: int, *, force: bool = False, session: HttpSession | None = None
+) -> Path:
     """Ensure the House financial disclosure index for *year* is available.
 
     Downloads the ZIP from disclosures-clerk.house.gov and extracts the
@@ -103,26 +142,34 @@ def ensure_house_index(year: int, *, force: bool = False) -> Path:
     xml_path = _index_xml_path(year)
 
     if xml_path.exists() and not force:
-        log.debug("Index already exists: %s", xml_path)
-        return xml_path
+        try:
+            _validate_index(xml_path.read_bytes())
+        except (OSError, ValueError, ET.ParseError) as exc:
+            log.warning(
+                "Invalid cached House index %s: %s; downloading again", xml_path, exc
+            )
+        else:
+            log.debug("Index already exists: %s", xml_path)
+            return xml_path
 
     url = INDEX_ZIP_URL.format(year=year)
     log.info("Downloading House index for %d from %s", year, url)
 
     HOUSE_DISCLOSURES_DIR.mkdir(parents=True, exist_ok=True)
 
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        for name in zf.namelist():
-            # Extract only the FD files (XML + TXT)
-            if name.endswith(("FD.xml", "FD.txt")):
-                zf.extract(name, HOUSE_DISCLOSURES_DIR)
-                log.info("Extracted %s", name)
-
-    if not xml_path.exists():
-        raise FileNotFoundError(f"ZIP did not contain expected {year}FD.xml")
+    content = _download_bytes(url, session)
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        xml_name = f"{year}FD.xml"
+        txt_name = f"{year}FD.txt"
+        if xml_name not in zf.namelist():
+            raise FileNotFoundError(f"ZIP did not contain expected {xml_name}")
+        xml_content = zf.read(xml_name)
+        _validate_index(xml_content)
+        # Publish only validated, explicitly named members. Existing valid files
+        # survive download, validation and interrupted-write failures.
+        atomic_write_bytes(xml_path, xml_content)
+        if txt_name in zf.namelist():
+            atomic_write_bytes(_index_txt_path(year), zf.read(txt_name))
 
     return xml_path
 
@@ -296,7 +343,25 @@ def search_filings(
 # -----------------------------------------------------------------------
 
 
-def fetch_ptr_pdf(doc_id: str, year: int, *, force: bool = False) -> bytes:
+def _read_cached_pdf(cache_path: Path) -> bytes | None:
+    """Return validated cached bytes, preserving their provenance for repairs."""
+    try:
+        content = cache_path.read_bytes()
+        _validate_pdf(content)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.warning(
+            "Invalid cached House PDF %s: %s; downloading again", cache_path, exc
+        )
+        return None
+    log.debug("PDF cache hit: %s", cache_path)
+    return content
+
+
+def fetch_ptr_pdf(
+    doc_id: str, year: int, *, force: bool = False, session: HttpSession | None = None
+) -> bytes:
     """Download a PTR PDF and return its raw bytes.
 
     Caches locally under data/house_disclosures/{year}/pdfs/{doc_id}.pdf.
@@ -309,18 +374,18 @@ def fetch_ptr_pdf(doc_id: str, year: int, *, force: bool = False) -> bytes:
     """
     cache_path = _pdf_cache_path(doc_id, year)
 
-    if cache_path.exists() and not force:
-        log.debug("PDF cache hit: %s", cache_path)
-        return cache_path.read_bytes()
+    if not force:
+        content = _read_cached_pdf(cache_path)
+        if content is not None:
+            return content
 
     url = PTR_PDF_URL.format(year=year, doc_id=doc_id)
     log.info("Downloading PTR PDF: %s", url)
 
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-
-    cache_path.write_bytes(resp.content)
-    return resp.content
+    content = _download_bytes(url, session)
+    _validate_pdf(content)
+    atomic_write_bytes(cache_path, content)
+    return content
 
 
 # -----------------------------------------------------------------------
@@ -341,7 +406,7 @@ def _is_scanned_pdf(pdf) -> bool:
     return len(text.strip()) < 50
 
 
-def parse_ptr_pdf(pdf_bytes: bytes) -> list[dict]:
+def parse_ptr_pdf(pdf_bytes: bytes, *, strict: bool = False) -> list[dict]:
     """Extract transaction rows from an electronically-filed House PTR PDF.
 
     Returns a list of dicts with keys: owner, asset, tx_type, tx_date,
@@ -393,7 +458,9 @@ def parse_ptr_pdf(pdf_bytes: bytes) -> list[dict]:
                         if tx and tx.get("asset"):
                             transactions.append(tx)
 
-    except Exception as exc:  # noqa: BLE001 - PDF backends raise several unrelated exception types
+    except Exception as exc:
+        if strict:
+            raise ValueError("House PDF transaction extraction failed") from exc
         log.warning("PDF parse error: %s", exc)
         return []
 
@@ -474,7 +541,8 @@ def scrape_house_trades(
     official_name: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
-    progress_callback: callable | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    session: HttpSession | None = None,
 ) -> list[CongressTrade]:
     """Scrape House PTR filings and return parsed CongressTrade records.
 
@@ -491,7 +559,24 @@ def scrape_house_trades(
     -------
     list of CongressTrade
     """
-    # Determine which years to scan
+    with _house_session() if session is None else nullcontext(session) as http:
+        return _scrape_house_trades(
+            official_name=official_name,
+            date_from=date_from,
+            date_to=date_to,
+            progress_callback=progress_callback,
+            session=http,
+        )
+
+
+def _scrape_house_trades(
+    *,
+    official_name: str | None,
+    date_from: date | None,
+    date_to: date | None,
+    progress_callback: Callable[[int, int, str], None] | None,
+    session: HttpSession,
+) -> list[CongressTrade]:
     years = _determine_years(date_from, date_to)
 
     all_trades: list[CongressTrade] = []
@@ -500,7 +585,7 @@ def scrape_house_trades(
     # Step 1: Ensure indexes and collect matching filings
     for year in years:
         try:
-            ensure_house_index(year)
+            ensure_house_index(year, session=session)
         except Exception as exc:  # noqa: BLE001 - isolate a failed year from the scan
             log.warning("Could not get index for %d: %s", year, exc)
             continue
@@ -531,8 +616,24 @@ def scrape_house_trades(
             progress_callback(i, total, f"Processing {official} ({doc_id})")
 
         try:
-            pdf_bytes = fetch_ptr_pdf(doc_id, year)
-            raw_transactions = parse_ptr_pdf(pdf_bytes)
+            cached_pdf = _read_cached_pdf(_pdf_cache_path(doc_id, year))
+            pdf_bytes = (
+                cached_pdf
+                if cached_pdf is not None
+                else fetch_ptr_pdf(doc_id, year, force=True, session=session)
+            )
+            try:
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
+            except ValueError:
+                if cached_pdf is None:
+                    raise
+                log.warning(
+                    "Could not parse cached House PDF %s/%s; downloading once",
+                    year,
+                    doc_id,
+                )
+                pdf_bytes = fetch_ptr_pdf(doc_id, year, force=True, session=session)
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
         except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
             log.warning("Failed to process PDF %s/%s: %s", year, doc_id, exc)
             continue

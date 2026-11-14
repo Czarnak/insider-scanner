@@ -182,7 +182,7 @@ Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` t
 
 Ingest SEC ownership filings (Forms 3/4/5) directly from EDGAR into the local
 database. These commands require a valid `SEC_USER_AGENT` (see SEC fair access
-below) — the default placeholder contact email is rejected, so set it first:
+below), so set it first:
 
 ```bash
 # Required: your app/company name plus a real contact email
@@ -200,7 +200,8 @@ Ingestion is idempotent: completed days are recorded as covered, so re-running a
 `sec-daily`/`sec-catchup` over already-ingested dates does not duplicate rows.
 Per-date progress is written to stderr unless `--quiet`; recoverable per-filing
 failures are reported in the summary without failing the command. Exit codes:
-`0` success, `1` when `SEC_USER_AGENT` is misconfigured, `2` for an invalid range
+`0` success, `1` when `SEC_USER_AGENT` is misconfigured or SEC access is blocked,
+`2` for an invalid range
 or a `sec-backfill` invocation missing `--confirm-full-backfill`.
 
 #### SEC full bulk backfill
@@ -237,8 +238,15 @@ The backfill reuses the same hardened downloader and parser as `sec-daily`.
 
 - Set `SEC_USER_AGENT` to a real name and contact email before running
   (e.g. `export SEC_USER_AGENT="MyApp/1.0 (you@example.com)"`).
-  The placeholder default is rejected by EDGAR.
-- The downloader enforces ≤ 10 requests/second as required by SEC policy.
+  Missing and placeholder contact identities are rejected before network access.
+- All SEC traffic, including legacy ticker lookups, shares one process-wide
+  limiter at 8 requests/second. Separate running processes have separate limits.
+- HTTP sessions reuse connections. Transient server and transport failures,
+  including interrupted response bodies, have a bounded retry budget.
+- Sustained HTTP 403/429 blocking stops the run with a cooldown message, leaving
+  unfinished dates and filings available for a later retry. The process waits
+  at least 10 minutes before allowing one probe; a longer SEC `Retry-After` is
+  honored. Restarting the process does not remove a server-side block.
 - A full backfill touches every ownership filing in EDGAR — expect it to take
   several hours and generate significant network traffic. Run it once and use
   `sec-daily` / `sec-catchup` for ongoing ingestion.
@@ -375,7 +383,7 @@ src/insider_scanner/
 │   ├── european.py      # DB-first European scan orchestration
 │   └── importer.py      # Validated legacy JSON import
 ├── utils/
-│   ├── config.py        # Paths, SEC/User-Agent constants, watchlists
+│   ├── config.py        # Paths, runtime SEC identity, watchlists
 │   ├── logging.py       # Logging setup
 │   ├── caching.py       # File cache with TTL expiry
 │   ├── http.py          # Rate-limited HTTP helper
@@ -445,7 +453,11 @@ The **Congress Scan** tab provides a full GUI workflow for scanning congressiona
 
 ### SEC EDGAR Compliance
 
-All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 requests/second as required by SEC policy. The User-Agent is configurable via the `SEC_USER_AGENT` environment variable.
+All EDGAR requests validate a contact `User-Agent` and share a process-wide
+8 requests/second limiter. Set the `SEC_USER_AGENT` environment variable before
+starting the CLI or GUI; its value is read when a client is created or a legacy
+lookup sends a request. Ticker metadata is cached for 24 hours, with explicit
+cache bypass available. Verification links open the human EDGAR search page.
 
 ---
 

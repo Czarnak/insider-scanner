@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Protocol, Self
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -15,8 +18,11 @@ import requests
 from insider_scanner.core.sec_fair_access import (
     DEFAULT_SEC_RETRY_POLICY,
     RateLimiter,
+    SecCircuitBreaker,
+    SecCircuitOpenError,
     SecRetryPolicy,
     backoff_delay,
+    default_circuit_breaker,
     default_rate_limiter,
     no_jitter,
 )
@@ -39,6 +45,11 @@ _EMAIL_PATTERN = re.compile(
 _PLACEHOLDER_EMAIL = "contact@example.com"
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _LOGGER = logging.getLogger(__name__)
+_RETRYABLE_TRANSPORT_ERRORS = (
+    requests.Timeout,
+    requests.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 class _SecResponse(Protocol):
@@ -69,7 +80,27 @@ class SecTransport(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RequestsSecTransport:
-    """Stateless ``requests.get`` streaming transport adapter."""
+    """Own a reusable connection pool for one SEC client or worker."""
+
+    session: requests.Session = field(default_factory=requests.Session)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Retry at the client boundary, where each attempt is rate limited and
+        # includes the streamed body. Adapter-level retries bypass that gate.
+        adapter = requests.adapters.HTTPAdapter(max_retries=0)
+        self.session.mount("https://", adapter)
+
+    def close(self) -> None:
+        if not self._closed:
+            object.__setattr__(self, "_closed", True)
+            self.session.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def get(
         self,
@@ -80,7 +111,9 @@ class RequestsSecTransport:
         allow_redirects: bool,
         stream: bool,
     ) -> requests.Response:
-        return requests.get(
+        if self._closed:
+            raise RuntimeError("SEC transport is closed")
+        return self.session.get(
             url,
             headers=headers,
             timeout=timeout,
@@ -136,6 +169,17 @@ class SecTransportError(SecClientError):
         super().__init__(f"SEC transport failed for {self.url}")
 
 
+class SecBlockedError(SecClientError):
+    """SEC access is paused process-wide after sustained blocking."""
+
+    def __init__(self, retry_after_seconds: float) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(
+            "SEC access is blocked; stop this run and retry after "
+            f"{math.ceil(retry_after_seconds)} seconds of cooldown"
+        )
+
+
 class SecDecodeError(SecClientError):
     """Raised when an SEC text response is not valid UTF-8."""
 
@@ -155,9 +199,11 @@ class SecClient:
     """
 
     user_agent: str
-    transport: SecTransport = field(default_factory=RequestsSecTransport)
+    transport: SecTransport | None = None
+    _owns_transport: bool = field(default=False, init=False, repr=False, compare=False)
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY
     rate_limiter: RateLimiter = field(default_factory=default_rate_limiter)
+    circuit_breaker: SecCircuitBreaker = field(default_factory=default_circuit_breaker)
     retry_policy: SecRetryPolicy = DEFAULT_SEC_RETRY_POLICY
     sleep: Callable[[float], None] = time.sleep
     jitter: Callable[[float], float] = no_jitter
@@ -168,6 +214,20 @@ class SecClient:
             raise SecConfigurationError("SEC security policy is invalid")
         if not isinstance(self.retry_policy, SecRetryPolicy):
             raise SecConfigurationError("SEC retry policy is invalid")
+        if self.transport is None:
+            object.__setattr__(self, "transport", RequestsSecTransport())
+            object.__setattr__(self, "_owns_transport", True)
+
+    def close(self) -> None:
+        """Close an internally created transport; injected transports stay owned by callers."""
+        if self._owns_transport and isinstance(self.transport, RequestsSecTransport):
+            self.transport.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def fetch_text(self, url: str, *, profile: SecResourceProfile) -> str:
         content = self.fetch_bytes(url, profile=profile)
@@ -181,7 +241,10 @@ class SecClient:
         current_url = _validate_url(url, self.policy)
         redirects = 0
         while True:
-            response = self._request_with_retry(current_url)
+            result = self._request_with_retry(current_url, limits)
+            if isinstance(result, bytes):
+                return result
+            response = result
             try:
                 if response.status_code in _REDIRECT_STATUSES:
                     current_url = _redirect_target(
@@ -189,33 +252,51 @@ class SecClient:
                     )
                     redirects += 1
                     continue
-                _validate_response_headers(response.headers, limits, current_url)
-                return _read_bounded(response, limits, self.policy, current_url)
             finally:
                 _close_response(response, current_url)
 
-    def _request_with_retry(self, url: str) -> _SecResponse:
-        """Return a redirect or 2xx response, retrying transient throttling.
-
-        Error statuses are handled here: 404 raises the recoverable
-        :class:`SecFilingNotFoundError`; statuses in ``retry_policy`` are retried
-        with bounded backoff; all other non-success statuses raise
-        :class:`SecHttpError`. Transport failures are not retried.
-        """
-        attempt = 0
-        while True:
-            attempt += 1
+    def _request_with_retry(
+        self, url: str, limits: SecResourceLimits
+    ) -> _SecResponse | bytes:
+        """Retry each complete network hop, including its streamed response body."""
+        for attempt in range(1, self.retry_policy.max_attempts + 1):
             self.rate_limiter.acquire()
-            response = self._send(url)
-            status = response.status_code
-            if status in _REDIRECT_STATUSES or 200 <= status < 300:
-                return response
-            retry_after = (
-                _parse_retry_after(_header(response.headers, "Retry-After"))
-                if status in self.retry_policy.retry_statuses
-                else None
-            )
-            _close_response(response, url)
+            try:
+                ticket = self.circuit_breaker.acquire()
+            except SecCircuitOpenError as exc:
+                raise SecBlockedError(exc.retry_after_seconds) from None
+            retry_after = None
+            try:
+                response = self._send(url)
+                status = response.status_code
+                retry_after = _parse_retry_after(
+                    _header(response.headers, "Retry-After")
+                )
+                if status in _REDIRECT_STATUSES:
+                    self.circuit_breaker.record_response(ticket, status)
+                    return response
+                try:
+                    if 200 <= status < 300:
+                        _validate_response_headers(response.headers, limits, url)
+                        content = _read_bounded(response, limits, self.policy, url)
+                        self.circuit_breaker.record_response(ticket, status)
+                        return content
+                    cooldown = self.circuit_breaker.record_response(
+                        ticket, status, retry_after
+                    )
+                    if cooldown is not None:
+                        raise SecBlockedError(cooldown)
+                finally:
+                    _close_response(response, url)
+            except SecTransportError:
+                self.circuit_breaker.record_transport_failure(ticket)
+                if attempt == self.retry_policy.max_attempts:
+                    raise
+                self._sleep_backoff(attempt, None)
+                continue
+            except BaseException:
+                self.circuit_breaker.record_transport_failure(ticket)
+                raise
             if status == 404:
                 raise SecFilingNotFoundError(status, url)
             if (
@@ -225,6 +306,7 @@ class SecClient:
                 self._sleep_backoff(attempt, retry_after)
                 continue
             raise SecHttpError(status, url)
+        raise AssertionError("unreachable retry loop")
 
     def _sleep_backoff(self, attempt: int, retry_after: float | None) -> None:
         delay = backoff_delay(
@@ -234,6 +316,7 @@ class SecClient:
             self.sleep(delay)
 
     def _send(self, url: str) -> _SecResponse:
+        assert self.transport is not None
         try:
             return self.transport.get(
                 url,
@@ -242,7 +325,7 @@ class SecClient:
                 allow_redirects=False,
                 stream=True,
             )
-        except Exception as exc:
+        except _RETRYABLE_TRANSPORT_ERRORS as exc:
             raise SecTransportError(url) from exc
 
 
@@ -302,7 +385,7 @@ def _read_bounded(
             chunks.append(chunk)
     except SecClientError:
         raise
-    except Exception as exc:
+    except _RETRYABLE_TRANSPORT_ERRORS as exc:
         raise SecTransportError(url) from exc
     return b"".join(chunks)
 
@@ -350,18 +433,23 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
 
 
 def _parse_retry_after(value: str | None) -> float | None:
-    """Parse a ``Retry-After`` delta-seconds value, else fall back to backoff.
-
-    Only non-negative ASCII integer seconds (RFC 7231 delta-seconds) are
-    accepted. The HTTP-date form and fractional values fall back to computed
-    exponential backoff rather than risking an unbounded or surprising wait.
-    """
+    """Parse nonnegative delta-seconds or an RFC HTTP-date for retry/cooldown."""
     if value is None:
         return None
     candidate = value.strip()
     if candidate.isascii() and candidate.isdigit():
-        return float(candidate)
-    return None
+        try:
+            seconds = float(candidate)
+        except OverflowError:
+            return None
+        return seconds if math.isfinite(seconds) else None
+    try:
+        timestamp = parsedate_to_datetime(candidate)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if timestamp.tzinfo is None:
+        return None
+    return max(0.0, (timestamp - datetime.now(UTC)).total_seconds())
 
 
 def _close_response(response: _SecResponse, url: str) -> None:

@@ -275,10 +275,12 @@ def test_reads_keep_the_callers_ttl(tmp_path, monkeypatch):
 def test_http_forwards_custom_ttl_to_the_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(caching, "time", SimpleNamespace(time=lambda: 100))
     monkeypatch.setattr(
-        http.requests,
-        "get",
-        lambda *args, **kwargs: SimpleNamespace(
-            text="network response", raise_for_status=lambda: None
+        http,
+        "_http_session",
+        lambda: SimpleNamespace(
+            get=lambda *args, **kwargs: SimpleNamespace(
+                text="network response", encoding="utf-8"
+            )
         ),
     )
     url = "https://example.com"
@@ -293,7 +295,7 @@ def test_http_forwards_custom_ttl_to_the_cache(tmp_path, monkeypatch):
     def unexpected_network(*args, **kwargs):
         raise AssertionError("Fresh cached response should avoid a network request")
 
-    monkeypatch.setattr(http.requests, "get", unexpected_network)
+    monkeypatch.setattr(http, "_http_session", unexpected_network)
     assert (
         http.fetch_url(url, cache_dir=tmp_path, cache_ttl=86400) == "network response"
     )
@@ -342,10 +344,12 @@ def test_cache_write_failure_does_not_discard_network_response(tmp_path, monkeyp
     blocked = tmp_path / "cache"
     blocked.write_bytes(b"file blocks directory creation")
     monkeypatch.setattr(
-        http.requests,
-        "get",
-        lambda *args, **kwargs: SimpleNamespace(
-            text="network response", raise_for_status=lambda: None
+        http,
+        "_http_session",
+        lambda: SimpleNamespace(
+            get=lambda *args, **kwargs: SimpleNamespace(
+                text="network response", encoding="utf-8"
+            )
         ),
     )
     assert (

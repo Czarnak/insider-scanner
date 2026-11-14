@@ -14,7 +14,6 @@ SEED_TARGETS = (
 )
 
 EXPORTED_RUNTIME_PATHS = {
-    "PROJECT_ROOT": "data_dir",
     "DATA_DIR": "data_dir",
     "CACHE_DIR": "cache_dir",
     "DATABASE_FILE": "database_file",

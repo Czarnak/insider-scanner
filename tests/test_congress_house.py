@@ -30,6 +30,13 @@ from insider_scanner.core.congress_house import (
 )
 from insider_scanner.core.models import CongressTrade
 
+SAMPLE_PDF = (
+    b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+    b"2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n"
+    b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj\n"
+    b"trailer\n<< /Root 1 0 R >>\n%%EOF\n"
+)
+
 
 @pytest.fixture
 def fixed_today(monkeypatch):
@@ -681,7 +688,7 @@ class TestScrapeHouseTrades:
         responses.add(
             responses.GET,
             PTR_PDF_URL.format(year=2026, doc_id="20034001"),
-            body=b"fake pdf",
+            body=SAMPLE_PDF,
             status=200,
         )
 
@@ -765,7 +772,7 @@ class TestScrapeHouseTrades:
         responses.add(
             responses.GET,
             PTR_PDF_URL.format(year=2026, doc_id="20034001"),
-            body=b"fake pdf",
+            body=SAMPLE_PDF,
             status=200,
         )
 
@@ -805,7 +812,7 @@ class TestFetchPtrPdf:
         responses.add(
             responses.GET,
             PTR_PDF_URL.format(year=2026, doc_id="12345"),
-            body=b"%PDF-1.4 fake pdf content",
+            body=SAMPLE_PDF,
             status=200,
         )
 
@@ -816,14 +823,14 @@ class TestFetchPtrPdf:
 
             data = fetch_ptr_pdf("12345", 2026)
 
-        assert data == b"%PDF-1.4 fake pdf content"
+        assert data == SAMPLE_PDF
 
     def test_cache_hit(self, tmp_path):
         """Second call should use cache, not HTTP."""
         pdf_dir = tmp_path / "2026" / "pdfs"
         pdf_dir.mkdir(parents=True)
         cached = pdf_dir / "12345.pdf"
-        cached.write_bytes(b"cached pdf")
+        cached.write_bytes(SAMPLE_PDF)
 
         with patch(
             "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
@@ -832,4 +839,210 @@ class TestFetchPtrPdf:
 
             data = fetch_ptr_pdf("12345", 2026)
 
-        assert data == b"cached pdf"
+        assert data == SAMPLE_PDF
+
+
+@responses.activate
+def test_invalid_cached_index_is_replaced(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+    )
+    cached = tmp_path / "2026FD.xml"
+    cached.write_bytes(b"<FinancialDisclosure><Member>")
+    responses.add(
+        responses.GET, INDEX_ZIP_URL.format(year=2026), body=_make_sample_zip()
+    )
+
+    assert ensure_house_index(2026) == cached
+    assert "Pelosi" in cached.read_text()
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_invalid_download_preserves_existing_house_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+    )
+    cached = tmp_path / "2026FD.xml"
+    cached.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    responses.add(
+        responses.GET, INDEX_ZIP_URL.format(year=2026), body=_make_sample_zip("<html/>")
+    )
+
+    with pytest.raises(ValueError, match="financial disclosure"):
+        ensure_house_index(2026, force=True)
+
+    assert cached.read_text(encoding="utf-8") == SAMPLE_INDEX_XML
+
+
+@responses.activate
+def test_house_zip_publishes_only_expected_members(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+    )
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, "w") as archive:
+        archive.writestr("2026FD.xml", SAMPLE_INDEX_XML)
+        archive.writestr("../outsideFD.xml", SAMPLE_INDEX_XML)
+        archive.writestr("2025FD.xml", SAMPLE_INDEX_XML)
+    responses.add(
+        responses.GET, INDEX_ZIP_URL.format(year=2026), body=content.getvalue()
+    )
+
+    ensure_house_index(2026)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["2026FD.xml"]
+    assert not (tmp_path.parent / "outsideFD.xml").exists()
+
+
+@pytest.mark.parametrize(
+    "bad_content", [b"<html>Try later</html>", b"%PDF-1.4 truncated"]
+)
+@responses.activate
+def test_corrupt_cached_pdf_is_refetched_once(tmp_path, monkeypatch, bad_content):
+    from insider_scanner.core.congress_house import fetch_ptr_pdf
+
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+    )
+    cached = tmp_path / "2026" / "pdfs" / "12345.pdf"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(bad_content)
+    responses.add(
+        responses.GET, PTR_PDF_URL.format(year=2026, doc_id="12345"), body=SAMPLE_PDF
+    )
+
+    assert fetch_ptr_pdf("12345", 2026) == SAMPLE_PDF
+    assert cached.read_bytes() == SAMPLE_PDF
+    assert len(responses.calls) == 1
+    # A valid scanned/empty PDF remains a cache hit rather than an endless retry.
+    assert fetch_ptr_pdf("12345", 2026) == SAMPLE_PDF
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_html_pdf_response_is_not_cached(tmp_path, monkeypatch):
+    from insider_scanner.core.congress_house import fetch_ptr_pdf
+
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+    )
+    responses.add(
+        responses.GET,
+        PTR_PDF_URL.format(year=2026, doc_id="12345"),
+        body=b"<html>blocked</html>",
+    )
+
+    with pytest.raises(ValueError, match="not a PDF"):
+        fetch_ptr_pdf("12345", 2026)
+
+    assert not (tmp_path / "2026" / "pdfs" / "12345.pdf").exists()
+
+
+def test_house_scan_reuses_session_for_index_and_pdfs(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    http = MagicMock()
+    response_index = MagicMock(content=_make_sample_zip())
+    response_pdf = MagicMock(content=SAMPLE_PDF)
+    http.get.side_effect = [response_index, response_pdf]
+    with patch.object(house, "parse_ptr_pdf", return_value=[]):
+        assert (
+            house.scrape_house_trades(
+                official_name="Nancy Pelosi",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 12, 31),
+                session=http,
+            )
+            == []
+        )
+
+    assert http.get.call_count == 2
+    http.close.assert_not_called()
+    response_index.close.assert_called_once()
+    response_pdf.close.assert_called_once()
+
+
+def test_house_owned_session_closes_when_download_fails(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    http = MagicMock()
+    http.__enter__.return_value = http
+    http.get.side_effect = OSError("offline")
+    with patch.object(house, "_house_session", return_value=http):
+        assert (
+            house.scrape_house_trades(
+                date_from=date(2026, 1, 1), date_to=date(2026, 12, 31)
+            )
+            == []
+        )
+    http.__exit__.assert_called_once()
+
+
+@responses.activate
+def test_house_refetches_cached_pdf_once_on_extraction_failure(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    cached = tmp_path / "2026" / "pdfs" / "20034001.pdf"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(SAMPLE_PDF)
+    responses.add(
+        responses.GET, PTR_PDF_URL.format(year=2026, doc_id="20034001"), body=SAMPLE_PDF
+    )
+    with patch.object(
+        house, "parse_ptr_pdf", side_effect=[ValueError("bad stream"), []]
+    ) as parser:
+        assert (
+            house.scrape_house_trades(
+                official_name="Nancy Pelosi",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 12, 31),
+            )
+            == []
+        )
+    assert parser.call_count == 2
+    assert len(responses.calls) == 1
+
+
+def test_pdf_extraction_error_can_be_distinguished_from_empty_result():
+    from insider_scanner.core.congress_house import parse_ptr_pdf
+
+    assert parse_ptr_pdf(b"not a PDF") == []
+    with pytest.raises(ValueError, match="transaction extraction failed"):
+        parse_ptr_pdf(b"not a PDF", strict=True)
+    assert parse_ptr_pdf(SAMPLE_PDF, strict=True) == []
+
+
+@pytest.mark.parametrize("cached_bytes", [b"not a PDF", b"%PDF-1.4 truncated"])
+@responses.activate
+def test_house_corrupt_cache_repair_does_not_download_again_on_extraction_error(
+    tmp_path, monkeypatch, cached_bytes
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    cached = tmp_path / "2026" / "pdfs" / "20034001.pdf"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(cached_bytes)
+    responses.add(
+        responses.GET, PTR_PDF_URL.format(year=2026, doc_id="20034001"), body=SAMPLE_PDF
+    )
+    with patch.object(
+        house, "parse_ptr_pdf", side_effect=ValueError("bad stream")
+    ) as parser:
+        assert (
+            house.scrape_house_trades(
+                official_name="Nancy Pelosi",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 12, 31),
+            )
+            == []
+        )
+    assert parser.call_count == 1
+    assert len(responses.calls) == 1
+    assert cached.read_bytes() == SAMPLE_PDF

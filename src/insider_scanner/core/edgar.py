@@ -1,30 +1,38 @@
 """SEC EDGAR CIK resolver and Form 4 filing lookup.
 
-Compliance: Uses proper User-Agent header and rate-limits to 10 req/s
-as required by https://www.sec.gov/os/accessing-edgar-data.
+SEC requests use the shared fair-access HTTP client.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import date
+import time
+from datetime import date, timedelta
+from pathlib import Path
+from threading import Lock
+from urllib.parse import urlencode
+
+import requests
 
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.sec_client import SecBlockedError, SecClientError
 from insider_scanner.utils.config import EDGAR_CACHE_DIR
 from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
 
 log = get_logger("edgar")
 
-EDGAR_COMPANY_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&dateRange=custom&startdt={start}&enddt={end}&forms=4"
-EDGAR_CIK_LOOKUP = "https://efts.sec.gov/LATEST/search-index?q=%22{ticker}%22&forms=4"
-EDGAR_FULL_TEXT_SEARCH = "https://efts.sec.gov/LATEST/search-index?q={query}&forms=4&dateRange=custom&startdt={start}&enddt={end}"
-EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik}.json"
-EDGAR_FILING_BASE = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=4&dateb=&owner=include&count=40"
 EDGAR_FILING_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type=4&dateb=&owner=include&count={count}"
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives"
 SEC_DAILY_INDEX_BASE_URL = f"{SEC_ARCHIVES_BASE_URL}/edgar/daily-index"
+_TICKER_MAP_TTL = 86400
+_ticker_map_lock = Lock()
+_ticker_map_cache: tuple[Path, float, dict[str, str]] | None = None
+
+
+class _TickerDirectoryError(ValueError):
+    """The SEC ticker directory has an unexpected structure."""
 
 
 def normalize_cik(cik: str | int) -> str:
@@ -100,27 +108,69 @@ def resolve_cik_from_json(ticker: str, use_cache: bool = True) -> str | None:
     str or None
         Raw CIK string (not zero-padded) or None if not found.
     """
-    cache_dir = EDGAR_CACHE_DIR if use_cache else None
-
     try:
-        text = fetch_url(
-            COMPANY_TICKERS_URL,
-            cache_dir=cache_dir,
-            cache_ttl=86400,  # 24h — this file changes rarely
-            use_sec_agent=True,
-        )
-        data = json.loads(text)
-    except Exception as exc:  # noqa: BLE001 - retain the resolver fallback across fetch and cache failures
+        tickers = _company_ticker_map(use_cache)
+    except SecBlockedError:
+        raise
+    except (
+        requests.RequestException,
+        SecClientError,
+        OSError,
+        json.JSONDecodeError,
+        UnicodeError,
+        _TickerDirectoryError,
+    ) as exc:
         log.warning("company_tickers.json fetch failed: %s", exc)
         return None
 
-    ticker_upper = ticker.upper()
+    return tickers.get(ticker.upper())
+
+
+def _company_ticker_map(use_cache: bool) -> dict[str, str]:
+    """Parse the ticker directory once per cache location and 24-hour window.
+
+    An explicit cache bypass fetches and parses independently without reading
+    or populating the shared in-memory or on-disk cache.
+    """
+    global _ticker_map_cache
+    if not use_cache:
+        return _fetch_company_ticker_map(use_cache=False)
+    with _ticker_map_lock:
+        now = time.monotonic()
+        if (
+            _ticker_map_cache is not None
+            and _ticker_map_cache[0] == EDGAR_CACHE_DIR
+            and now < _ticker_map_cache[1]
+        ):
+            return _ticker_map_cache[2]
+        tickers = _fetch_company_ticker_map(use_cache=True)
+        _ticker_map_cache = (EDGAR_CACHE_DIR, now + _TICKER_MAP_TTL, tickers)
+        return tickers
+
+
+def _fetch_company_ticker_map(*, use_cache: bool) -> dict[str, str]:
+    text = fetch_url(
+        COMPANY_TICKERS_URL,
+        cache_dir=EDGAR_CACHE_DIR if use_cache else None,
+        cache_ttl=_TICKER_MAP_TTL,
+        use_sec_agent=True,
+    )
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise _TickerDirectoryError("company_tickers.json must contain an object")
+    tickers: dict[str, str] = {}
     for entry in data.values():
-        if entry.get("ticker", "").upper() == ticker_upper:
-            cik = entry.get("cik_str", "")
-            if cik:
-                return str(cik)
-    return None
+        if not isinstance(entry, dict) or not isinstance(entry.get("ticker"), str):
+            continue
+        raw_cik = entry.get("cik_str")
+        if not isinstance(raw_cik, (str, int)):
+            continue
+        try:
+            cik = str(int(normalize_cik(raw_cik)))
+        except (TypeError, ValueError):
+            continue
+        tickers[entry["ticker"].upper()] = cik
+    return tickers
 
 
 def resolve_cik(ticker: str, use_cache: bool = True) -> str | None:
@@ -161,7 +211,9 @@ def _resolve_cik_html(ticker: str, use_cache: bool = True) -> str | None:
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=86400, use_sec_agent=True)
-    except Exception as exc:  # noqa: BLE001 - retain the optional HTML resolver fallback
+    except SecBlockedError:
+        raise
+    except (requests.RequestException, SecClientError, OSError) as exc:
         log.warning("CIK HTML lookup failed for %s: %s", ticker, exc)
         return None
 
@@ -201,60 +253,24 @@ def get_filing_url(cik: str, count: int = 40) -> str:
     return EDGAR_FILING_URL.format(cik=cik, count=count)
 
 
-def fetch_filings_page(cik: str, count: int = 40, use_cache: bool = True) -> str:
-    """Fetch the EDGAR Form 4 filings listing page for a CIK.
-
-    Parameters
-    ----------
-    cik : str
-        SEC CIK number.
-    count : int
-        Number of filings to retrieve.
-    use_cache : bool
-        Whether to use the file cache.
-
-    Returns
-    -------
-    str
-        HTML of the filings listing page.
-    """
-    url = get_filing_url(cik, count)
-    cache_dir = EDGAR_CACHE_DIR if use_cache else None
-
-    return fetch_url(url, cache_dir=cache_dir, cache_ttl=3600, use_sec_agent=True)
-
-
-def fetch_company_info(cik: str, use_cache: bool = True) -> dict:
-    """Fetch company submission info from EDGAR.
-
-    Returns a dict with keys like 'name', 'tickers', 'filings'.
-    """
-    padded = cik.zfill(10)
-    url = EDGAR_SUBMISSIONS.format(cik=padded)
-    cache_dir = EDGAR_CACHE_DIR if use_cache else None
-
-    try:
-        text = fetch_url(url, cache_dir=cache_dir, cache_ttl=86400, use_sec_agent=True)
-        return json.loads(text)
-    except Exception as exc:  # noqa: BLE001 - retain the optional company-info fallback
-        log.warning("Company info fetch failed for CIK %s: %s", cik, exc)
-        return {}
-
-
 def build_edgar_url_for_trade(trade: InsiderTrade) -> str:
-    """Generate an EDGAR search URL for a given trade (for verification)."""
-    name = trade.insider_name.replace(" ", "+")
-    ticker = trade.ticker
-    d = trade.filing_date or trade.trade_date
-    if d:
-        start = d.replace(day=1).isoformat()
-        end = d.isoformat()
+    """Open human-readable EDGAR results, allowing time for a trade's filing."""
+    if trade.filing_date:
+        start = trade.filing_date.replace(day=1)
+        end = trade.filing_date
+    elif trade.trade_date:
+        start = trade.trade_date.replace(day=1)
+        end = trade.trade_date + timedelta(days=30)
     else:
-        start = "2020-01-01"
-        end = "2030-12-31"
-
-    return (
-        f"https://efts.sec.gov/LATEST/search-index?"
-        f"q=%22{name}%22+%22{ticker}%22&forms=4"
-        f"&dateRange=custom&startdt={start}&enddt={end}"
+        end = date.today()
+        start = date(end.year - 5, 1, 1)
+    query = urlencode(
+        {
+            "q": f'"{trade.insider_name}" "{trade.ticker}"',
+            "forms": "4",
+            "dateRange": "custom",
+            "startdt": start.isoformat(),
+            "enddt": end.isoformat(),
+        }
     )
+    return f"https://www.sec.gov/edgar/search/#/{query}"

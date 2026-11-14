@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import responses
 
+from insider_scanner.core import edgar
 from insider_scanner.core.edgar import (
     COMPANY_TICKERS_URL,
     build_daily_master_index_url,
@@ -32,6 +34,12 @@ COMPANY_TICKERS_JSON = json.dumps(
         "2": {"cik_str": 1318605, "ticker": "TSLA", "title": "Tesla, Inc."},
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _configured_sec_contact(monkeypatch):
+    """Mocked SEC calls still pass through the real contact validation."""
+    monkeypatch.setenv("SEC_USER_AGENT", "InsiderScanner tests tests@insider.test")
 
 
 class TestNormalizeCik:
@@ -149,6 +157,110 @@ class TestParseCik:
 
 
 class TestResolveCikFromJson:
+    def test_reuses_parsed_directory_for_multiple_tickers(self, monkeypatch):
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert resolve_cik_from_json("msft") == "789019"
+        assert resolve_cik_from_json("MISSING") is None
+        assert len(calls) == 1
+        assert calls[0][1]["cache_dir"] == edgar.EDGAR_CACHE_DIR
+
+    def test_directory_expires_and_tracks_cache_location(self, monkeypatch, tmp_path):
+        now = [0.0]
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append(kwargs["cache_dir"])
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        now[0] = 86399
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert len(calls) == 1
+        now[0] = 86400
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert len(calls) == 2
+        monkeypatch.setattr(edgar, "EDGAR_CACHE_DIR", tmp_path)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert calls[-1] == tmp_path
+        assert len(calls) == 3
+
+    def test_cache_bypass_reads_fresh_directory_each_time(self, monkeypatch):
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append(kwargs["cache_dir"])
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert resolve_cik_from_json("AAPL", use_cache=False) == "320193"
+        assert resolve_cik_from_json("MSFT", use_cache=False) == "789019"
+        assert calls == [edgar.EDGAR_CACHE_DIR, None, None]
+
+    @pytest.mark.parametrize("payload", ["[]", "null", "not JSON"])
+    def test_invalid_directory_is_a_miss_and_not_memoized(self, monkeypatch, payload):
+        payloads = iter([payload, COMPANY_TICKERS_JSON])
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", lambda *a, **k: next(payloads))
+        assert resolve_cik_from_json("AAPL") is None
+        assert resolve_cik_from_json("AAPL") == "320193"
+
+    def test_bad_optional_entries_do_not_hide_valid_tickers(self, monkeypatch):
+        payload = json.dumps(
+            {
+                "0": {"ticker": "BAD", "cik_str": True},
+                "1": None,
+                "2": {"ticker": 123, "cik_str": 456},
+                "3": {"ticker": "AAPL", "cik_str": 320193},
+            }
+        )
+        monkeypatch.setattr(edgar, "fetch_url", lambda *a, **k: payload)
+        assert resolve_cik_from_json("AAPL", use_cache=False) == "320193"
+        assert resolve_cik_from_json("BAD", use_cache=False) is None
+
+    def test_programming_errors_propagate(self, monkeypatch):
+        def broken_fetch(*args, **kwargs):
+            raise RuntimeError("programming error")
+
+        monkeypatch.setattr(edgar, "fetch_url", broken_fetch)
+        with pytest.raises(RuntimeError, match="programming error"):
+            resolve_cik_from_json("AAPL", use_cache=False)
+
+    def test_sustained_block_stops_without_html_fallback(self, monkeypatch):
+        calls = []
+
+        def blocked_fetch(url, **kwargs):
+            calls.append(url)
+            raise edgar.SecBlockedError(600)
+
+        monkeypatch.setattr(edgar, "fetch_url", blocked_fetch)
+        with pytest.raises(edgar.SecBlockedError):
+            resolve_cik("AAPL", use_cache=False)
+        assert calls == [COMPANY_TICKERS_URL]
+
+    def test_html_fallback_propagates_sustained_block(self, monkeypatch):
+        def blocked_fetch(url, **kwargs):
+            if url == COMPANY_TICKERS_URL:
+                return COMPANY_TICKERS_JSON
+            raise edgar.SecBlockedError(600)
+
+        monkeypatch.setattr(edgar, "fetch_url", blocked_fetch)
+        with pytest.raises(edgar.SecBlockedError):
+            resolve_cik("UNKNOWN", use_cache=False)
+
     @responses.activate
     def test_resolve_aapl(self):
         responses.add(
@@ -243,20 +355,61 @@ class TestFilingUrl:
 
 class TestBuildEdgarUrl:
     def test_build_url(self):
-        from datetime import date
-
         trade = InsiderTrade(
             ticker="AAPL",
             insider_name="Cook Timothy",
             filing_date=date(2025, 11, 15),
         )
         url = build_edgar_url_for_trade(trade)
-        assert "Cook+Timothy" in url
-        assert "AAPL" in url
-        assert "forms=4" in url
+        parts = urlsplit(url)
+        assert parts.netloc == "www.sec.gov"
+        assert parts.path == "/edgar/search/"
+        assert parts.query == ""
+        assert parse_qs(parts.fragment.removeprefix("/")) == {
+            "q": ['"Cook Timothy" "AAPL"'],
+            "forms": ["4"],
+            "dateRange": ["custom"],
+            "startdt": ["2025-11-01"],
+            "enddt": ["2025-11-15"],
+        }
 
-    def test_build_url_no_date(self):
+    def test_build_url_no_date(self, monkeypatch):
+        class FutureDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2035, 7, 9)
+
+        monkeypatch.setattr(edgar, "date", FutureDate)
         trade = InsiderTrade(ticker="AAPL", insider_name="Test Person")
-        url = build_edgar_url_for_trade(trade)
-        assert "Test+Person" in url
-        assert "AAPL" in url
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["q"] == ['"Test Person" "AAPL"']
+        assert query["startdt"] == ["2030-01-01"]
+        assert query["enddt"] == ["2035-07-09"]
+
+    @pytest.mark.parametrize(
+        "name", ["SMITH & CO LLC", "O'NEIL #2", "José / Müller + Partners"]
+    )
+    def test_encodes_search_terms_without_injecting_parameters(self, name):
+        trade = InsiderTrade(ticker="A&B", insider_name=name)
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["q"] == [f'"{name}" "A&B"']
+        assert set(query) == {"q", "forms", "dateRange", "startdt", "enddt"}
+
+    def test_trade_date_window_includes_later_filings(self):
+        trade = InsiderTrade(
+            ticker="AAPL", insider_name="Person", trade_date=date(2025, 12, 30)
+        )
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["startdt"] == ["2025-12-01"]
+        assert query["enddt"] == ["2026-01-29"]
+
+    def test_filing_date_takes_precedence_over_trade_date(self):
+        trade = InsiderTrade(
+            ticker="AAPL",
+            insider_name="Person",
+            trade_date=date(2025, 12, 30),
+            filing_date=date(2026, 1, 5),
+        )
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["startdt"] == ["2026-01-01"]
+        assert query["enddt"] == ["2026-01-05"]

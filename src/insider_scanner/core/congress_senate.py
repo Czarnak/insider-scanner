@@ -15,8 +15,9 @@ Pipeline:
 from __future__ import annotations
 
 import re
-import time
+from collections.abc import Callable
 from datetime import date, datetime
+from typing import Self
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,6 +26,7 @@ from curl_cffi import requests as curl_requests
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
 from insider_scanner.core.models import CongressTrade
+from insider_scanner.core.sec_fair_access import RateLimiter
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import parse_ptr_date as _parse_date
 
@@ -51,22 +53,11 @@ REPORT_TYPE_PTR = 11  # Periodic Transaction Report
 FILTER_TYPE_SENATOR = 1
 
 # Rate limit: be polite to the Senate servers
-_MIN_REQUEST_INTERVAL = 1.0  # seconds between requests
-_last_request_time: float = 0.0
+_SENATE_RATE_LIMITER = RateLimiter(min_interval_seconds=1.0)
 
 # Regex for extracting PTR UUID links from search results
 _PTR_LINK_RE = re.compile(r"/search/view/ptr/([a-f0-9-]+)/")
 _PAPER_LINK_RE = re.compile(r"/search/view/paper/")
-
-
-def _rate_limit() -> None:
-    """Enforce rate limiting between requests."""
-    global _last_request_time
-    now = time.time()
-    elapsed = now - _last_request_time
-    if elapsed < _MIN_REQUEST_INTERVAL:
-        time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
-    _last_request_time = time.time()
 
 
 # -----------------------------------------------------------------------
@@ -81,7 +72,10 @@ class EFDSession:
     and maintains session cookies for subsequent API calls.
     """
 
-    def __init__(self):
+    def __init__(self, *, rate_limiter: RateLimiter | None = None):
+        self.rate_limiter = (
+            rate_limiter if rate_limiter is not None else _SENATE_RATE_LIMITER
+        )
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -90,6 +84,17 @@ class EFDSession:
             }
         )
         self._authenticated = False
+
+    def close(self) -> None:
+        """Close this session's transport and discard authentication state."""
+        self._authenticated = False
+        self.session.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
 
     @property
     def is_authenticated(self) -> bool:
@@ -106,7 +111,7 @@ class EFDSession:
         ConnectionError
             If authentication fails.
         """
-        _rate_limit()
+        self.rate_limiter.acquire()
 
         # Step 1: GET the search landing page
         log.info("Fetching EFD landing page for CSRF token...")
@@ -116,8 +121,10 @@ class EFDSession:
                 "EFD rejected the standard HTTP transport; retrying with "
                 "browser impersonation"
             )
+            resp.close()
             self.session.close()
             self.session = _create_browser_session()
+            self.rate_limiter.acquire()
             resp = self.session.get(SEARCH_LANDING, timeout=15)
         resp.raise_for_status()
 
@@ -127,7 +134,7 @@ class EFDSession:
             raise ConnectionError("Could not find CSRF token on EFD landing page")
         csrf_token = csrf_input["value"]
 
-        _rate_limit()
+        self.rate_limiter.acquire()
 
         # Step 2: POST the prohibition agreement
         log.info("Accepting EFD prohibition agreement...")
@@ -228,7 +235,7 @@ class EFDSession:
         if date_to:
             form_data["submitted_end_date"] = date_to.strftime("%m/%d/%Y") + " 00:00:00"
 
-        _rate_limit()
+        self.rate_limiter.acquire()
         log.info(
             "Searching EFD: last=%s first=%s types=%s",
             last_name,
@@ -249,7 +256,7 @@ class EFDSession:
         if not url.startswith("http"):
             url = BASE_URL + url
 
-        _rate_limit()
+        self.rate_limiter.acquire()
         log.debug("Fetching EFD page: %s", url)
         resp = self.session.get(url, timeout=15)
         resp.raise_for_status()
@@ -265,7 +272,11 @@ def create_efd_session() -> EFDSession:
         An authenticated session ready for searching.
     """
     session = EFDSession()
-    session.authenticate()
+    try:
+        session.authenticate()
+    except BaseException:
+        session.close()
+        raise
     return session
 
 
@@ -301,6 +312,8 @@ def parse_search_results(data: dict) -> list[dict]:
             continue
 
         href = link.get("href", "")
+        if not isinstance(href, str):
+            continue
         title = link.get_text(strip=True)
 
         # Check if it's a paper filing (scanned PDF — skip these)
@@ -558,7 +571,7 @@ def scrape_senate_trades(
     date_from: date | None = None,
     date_to: date | None = None,
     session: EFDSession | None = None,
-    progress_callback: callable | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[CongressTrade]:
     """Scrape Senate PTR filings and return CongressTrade records.
 
@@ -584,81 +597,88 @@ def scrape_senate_trades(
     if official_name:
         first_name, last_name = _split_name(official_name)
 
-    # Create session if not provided
+    # The caller retains ownership of an explicitly supplied session.
+    owns_session = session is None
     if session is None:
         session = create_efd_session()
 
-    # Search for filings
-    filings = search_senate_filings(
-        session,
-        first_name=first_name,
-        last_name=last_name,
-        date_from=date_from,
-        date_to=date_to,
-    )
+    try:
+        # Search for filings
+        filings = search_senate_filings(
+            session,
+            first_name=first_name,
+            last_name=last_name,
+            date_from=date_from,
+            date_to=date_to,
+        )
 
-    if not filings:
-        log.info("No Senate PTR filings found")
-        return []
+        if not filings:
+            log.info("No Senate PTR filings found")
+            return []
 
-    total = len(filings)
-    log.info("Processing %d Senate PTR filings...", total)
+        total = len(filings)
+        log.info("Processing %d Senate PTR filings...", total)
 
-    all_trades: list[CongressTrade] = []
+        all_trades: list[CongressTrade] = []
 
-    for i, filing in enumerate(filings):
-        official = f"{filing['first_name']} {filing['last_name']}".strip()
-        ptr_url = filing["report_url"]
+        for i, filing in enumerate(filings):
+            official = f"{filing['first_name']} {filing['last_name']}".strip()
+            ptr_url = filing["report_url"]
+
+            if progress_callback:
+                progress_callback(i, total, f"Processing {official} PTR")
+
+            if not filing["report_uuid"]:
+                log.debug("Skipping filing without UUID: %s", filing["report_title"])
+                continue
+
+            try:
+                html = session.fetch_page(ptr_url)
+                raw_transactions = parse_ptr_page(html)
+            except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
+                log.warning("Failed to fetch/parse PTR %s: %s", ptr_url, exc)
+                continue
+
+            source_url = (
+                BASE_URL + ptr_url if not ptr_url.startswith("http") else ptr_url
+            )
+
+            for tx in raw_transactions:
+                ticker = tx.get("ticker", "")
+                if not ticker or ticker == "--":
+                    ticker = _extract_ticker(tx.get("asset_name", ""))
+
+                amount_range = tx.get("amount", "")
+                amount_low, amount_high = CongressTrade.parse_amount_range(amount_range)
+
+                trade = CongressTrade(
+                    official_name=official,
+                    chamber="Senate",
+                    filing_date=filing.get("filing_date"),
+                    doc_id=filing["report_uuid"],
+                    source_url=source_url,
+                    trade_date=_parse_date(tx.get("tx_date", "")),
+                    asset_description=tx.get("asset_name", ""),
+                    ticker=ticker,
+                    trade_type=_normalize_tx_type(tx.get("tx_type", "")),
+                    owner=tx.get("owner", "Self") or "Self",
+                    amount_range=amount_range,
+                    amount_low=amount_low,
+                    amount_high=amount_high,
+                    comment=tx.get("comment", ""),
+                    source="senate",
+                )
+                all_trades.append(trade)
 
         if progress_callback:
-            progress_callback(i, total, f"Processing {official} PTR")
+            progress_callback(total, total, "Done")
 
-        if not filing["report_uuid"]:
-            log.debug("Skipping filing without UUID: %s", filing["report_title"])
-            continue
-
-        try:
-            html = session.fetch_page(ptr_url)
-            raw_transactions = parse_ptr_page(html)
-        except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
-            log.warning("Failed to fetch/parse PTR %s: %s", ptr_url, exc)
-            continue
-
-        source_url = BASE_URL + ptr_url if not ptr_url.startswith("http") else ptr_url
-
-        for tx in raw_transactions:
-            ticker = tx.get("ticker", "")
-            if not ticker or ticker == "--":
-                ticker = _extract_ticker(tx.get("asset_name", ""))
-
-            amount_range = tx.get("amount", "")
-            amount_low, amount_high = CongressTrade.parse_amount_range(amount_range)
-
-            trade = CongressTrade(
-                official_name=official,
-                chamber="Senate",
-                filing_date=filing.get("filing_date"),
-                doc_id=filing["report_uuid"],
-                source_url=source_url,
-                trade_date=_parse_date(tx.get("tx_date", "")),
-                asset_description=tx.get("asset_name", ""),
-                ticker=ticker,
-                trade_type=_normalize_tx_type(tx.get("tx_type", "")),
-                owner=tx.get("owner", "Self") or "Self",
-                amount_range=amount_range,
-                amount_low=amount_low,
-                amount_high=amount_high,
-                comment=tx.get("comment", ""),
-                source="senate",
-            )
-            all_trades.append(trade)
-
-    if progress_callback:
-        progress_callback(total, total, "Done")
-
-    log.info(
-        "Scraped %d trades from %d Senate PTR filings",
-        len(all_trades),
-        total,
-    )
-    return all_trades
+        log.info(
+            "Scraped %d trades from %d Senate PTR filings",
+            len(all_trades),
+            total,
+        )
+        return all_trades
+    finally:
+        if owns_session:
+            session.close()

@@ -84,12 +84,10 @@ def resolve_runtime_paths(
 DEFAULT_PATHS = resolve_runtime_paths()
 
 # Backward-compatible constants used by existing scanner, GUI, and CLI modules.
-PROJECT_ROOT: Path = DEFAULT_PATHS.data_dir
 DATA_DIR: Path = DEFAULT_PATHS.data_dir
 CACHE_DIR: Path = DEFAULT_PATHS.cache_dir
 OUTPUTS_DIR: Path = DEFAULT_PATHS.outputs_dir
 DATABASE_FILE: Path = DEFAULT_PATHS.database_file
-DB_PATH: Path = DEFAULT_PATHS.database_file
 
 EDGAR_CACHE_DIR: Path = DEFAULT_PATHS.edgar_cache_dir
 SCRAPER_CACHE_DIR: Path = DEFAULT_PATHS.scraper_cache_dir
@@ -101,12 +99,12 @@ TICKERS_FILE: Path = DEFAULT_PATHS.tickers_file
 EU_WATCHLIST_FILE: Path = DEFAULT_PATHS.eu_watchlist_file
 HOUSE_DISCLOSURES_DIR: Path = DEFAULT_PATHS.house_disclosures_dir
 
+
 # SEC EDGAR compliance: https://www.sec.gov/os/accessing-edgar-data
-SEC_USER_AGENT: str = os.getenv(
-    "SEC_USER_AGENT",
-    "InsiderScanner/0.1 (research; contact@example.com)",
-)
-SEC_MAX_REQUESTS_PER_SECOND: int = 10
+def get_sec_user_agent() -> str:
+    """Read the contact identity at request time, including runtime changes."""
+    return os.getenv("SEC_USER_AGENT", "")
+
 
 # Cache expiry defaults (seconds)
 DEFAULT_CACHE_TTL: int = 3600  # 1 hour

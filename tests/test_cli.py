@@ -6,6 +6,7 @@ from argparse import Namespace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -523,7 +524,7 @@ class TestCmdSecCompare:
 
 class TestCmdSecDaily:
     def test_builds_service_and_ingests_requested_date(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+        monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
         seen: dict[str, object] = {}
 
@@ -551,7 +552,7 @@ class TestCmdSecDaily:
         assert "SEC ingestion" in capsys.readouterr().out
 
     def test_no_cleanup_flag_disables_cleanup(self, monkeypatch):
-        monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+        monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
         seen: dict[str, object] = {}
 
@@ -574,9 +575,7 @@ class TestCmdSecDaily:
     def test_ua_misconfig_prints_friendly_error_and_returns_1(
         self, monkeypatch, capsys
     ):
-        monkeypatch.setattr(
-            "insider_scanner.utils.config.SEC_USER_AGENT", PLACEHOLDER_USER_AGENT
-        )
+        monkeypatch.setenv("SEC_USER_AGENT", PLACEHOLDER_USER_AGENT)
         constructed: list[object] = []
 
         class FakeServices:
@@ -597,7 +596,7 @@ class TestCmdSecDaily:
 
 class TestCmdSecCatchup:
     def test_passes_inclusive_range_and_checkpoint(self, monkeypatch, capsys):
-        monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+        monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
         monkeypatch.setattr(
             cli, "_sec_checkpoint_path", lambda: Path("cache/ckpt.json")
@@ -693,7 +692,7 @@ class TestCmdSecBackfill:
         assert code == 2
 
     def test_dispatches_service_and_prints_summary(self, monkeypatch, capsys, tmp_path):
-        monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+        monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
         monkeypatch.setattr(
             cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf_ckpt.json")
@@ -736,7 +735,7 @@ class TestCmdSecBackfill:
 
 
 def test_sec_backfill_requires_confirmation(capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+    monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
 
     class _FakeServices:
         def close(self):
@@ -770,7 +769,7 @@ def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr(cli, "_build_sec_client", lambda: object())
+    monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
     monkeypatch.setattr(
         cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf.json")
     )
@@ -798,3 +797,73 @@ def test_sec_backfill_missing_zip_is_arg_error():
 
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["sec-backfill", "--confirm-full-backfill"])
+
+
+@pytest.mark.parametrize("error", [RuntimeError("fetch failed"), KeyboardInterrupt()])
+@pytest.mark.parametrize("command", ["daily", "catchup", "backfill"])
+def test_sec_commands_close_owned_client_on_failure(
+    monkeypatch, tmp_path, command, error
+):
+    client = Mock()
+    monkeypatch.setattr(cli, "_build_sec_client", lambda: client)
+    service = Mock()
+    service.ingest_date.side_effect = error
+    service.ingest_range.side_effect = error
+    service.run.side_effect = error
+    services = Mock()
+    services.make_sec_daily.return_value = service
+    services.make_sec_backfill.return_value = service
+    archive = tmp_path / "submissions.zip"
+    archive.touch()
+    args = Namespace(
+        date=date(2026, 6, 15),
+        since=date(2026, 6, 15),
+        until=date(2026, 6, 15),
+        no_cleanup=True,
+        quiet=True,
+        confirm_full_backfill=True,
+        zip=archive,
+        cik=None,
+    )
+    function = getattr(cli, "cmd_sec_" + command)
+    with pytest.raises(type(error)):
+        function(args, services)
+    client.close.assert_called_once_with()
+
+
+def test_run_closes_services_on_keyboard_interrupt(monkeypatch):
+    services = Mock()
+    command = Mock(side_effect=KeyboardInterrupt)
+    parser = Mock()
+    parser.parse_args.return_value = Namespace(func=command)
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+    monkeypatch.setattr(cli, "ensure_dirs", lambda: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.run([], service_factory=lambda: services)
+
+    services.close.assert_called_once_with()
+
+
+def test_run_reports_sec_block_with_cooldown(monkeypatch, capsys):
+    from insider_scanner.core.sec_client import SecBlockedError
+
+    services = Mock()
+    command = Mock(side_effect=SecBlockedError(600))
+    parser = Mock()
+    parser.parse_args.return_value = Namespace(func=command)
+    monkeypatch.setattr(cli, "build_parser", lambda: parser)
+    monkeypatch.setattr(cli, "ensure_dirs", lambda: None)
+
+    assert cli.run([], service_factory=lambda: services) == 1
+    assert "600" in capsys.readouterr().err
+    services.close.assert_called_once_with()
+
+
+def test_sec_client_reads_current_environment(monkeypatch):
+    monkeypatch.setenv("SEC_USER_AGENT", "Scanner first@scanner.example")
+    with cli._build_sec_client() as first:
+        assert first.user_agent == "Scanner first@scanner.example"
+    monkeypatch.setenv("SEC_USER_AGENT", "Scanner second@scanner.example")
+    with cli._build_sec_client() as second:
+        assert second.user_agent == "Scanner second@scanner.example"
