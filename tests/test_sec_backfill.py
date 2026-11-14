@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from pathlib import Path
-
 import pytest
 
 from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 from insider_scanner.persistence.errors import PersistenceError
-from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.sec_backfill import (
     SecBackfillConfirmationError,
     SecBackfillService,
@@ -19,15 +15,6 @@ from tests.sec_stubs import (
     make_client,
     make_transport,
 )
-
-
-@pytest.fixture
-def persistence(tmp_path: Path) -> Iterator[PersistenceContext]:
-    ctx = open_persistence(database_file=tmp_path / "db.sqlite")
-    try:
-        yield ctx
-    finally:
-        ctx.close()
 
 
 def _service(persistence, tmp_path, transport=None, **kw) -> SecBackfillService:

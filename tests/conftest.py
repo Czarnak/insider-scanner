@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Install overrides during conftest import, before collection imports modules
 # that bind DEFAULT_PATHS or its compatibility aliases. Never inherit a user's
 # configured profile, even when pytest itself was launched with overrides.
@@ -43,6 +42,31 @@ def runtime_paths():
     from insider_scanner.utils.config import DEFAULT_PATHS
 
     return DEFAULT_PATHS
+
+
+@pytest.fixture
+def engine(tmp_path):
+    """A fresh, initialized SQLite engine for repository tests."""
+    from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
+
+    engine = create_sqlite_engine(tmp_path / "test.sqlite3")
+    try:
+        bootstrap_database(engine)
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture
+def persistence(tmp_path):
+    """A separate initialized persistence context, disposed after each test."""
+    from insider_scanner.services.context import open_persistence
+
+    context = open_persistence(tmp_path / "persistence.sqlite3")
+    try:
+        yield context
+    finally:
+        context.close()
 
 
 @pytest.fixture(autouse=True)

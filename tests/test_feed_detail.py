@@ -14,7 +14,6 @@ import pytest
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
-from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.feed import (
     EntityHit,
     EntitySearchResults,
@@ -31,18 +30,9 @@ from insider_scanner.persistence.repositories import (
     UsTradeRepository,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def engine(tmp_path):
-    db = create_sqlite_engine(tmp_path / "feed_detail.sqlite3")
-    bootstrap_database(db)
-    yield db
-    db.dispose()
 
 
 def _seed_all_markets(engine) -> None:

@@ -7,7 +7,6 @@ fixture from :mod:`tests.sec_stubs`, paired with a temp-file SQLite
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -16,7 +15,7 @@ from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_ownership_parser import OwnershipFiling
 from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 from insider_scanner.persistence.errors import PersistenceError
-from insider_scanner.services.context import PersistenceContext, open_persistence
+from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_daily import (
     SEC_DAILY_IDENTIFIER,
     SecDailyIngestionService,
@@ -34,14 +33,6 @@ from tests.sec_stubs import (
     make_client,
     make_transport,
 )
-
-@pytest.fixture
-def persistence(tmp_path: Path) -> Iterator[PersistenceContext]:
-    context = open_persistence(database_file=tmp_path / "db.sqlite")
-    try:
-        yield context
-    finally:
-        context.close()
 
 
 def _make_service(

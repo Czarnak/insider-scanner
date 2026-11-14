@@ -5,8 +5,6 @@ from datetime import date
 
 import pytest
 
-from insider_scanner.core.models import InsiderTrade
-from insider_scanner.services.context import open_persistence
 from insider_scanner.services.sec_comparison import (
     DEFAULT_LEGACY_SOURCES,
     SEC_EDGAR_SOURCE,
@@ -14,37 +12,7 @@ from insider_scanner.services.sec_comparison import (
     SecComparisonTarget,
     render_report,
 )
-
-
-@pytest.fixture
-def persistence(tmp_path):
-    context = open_persistence(tmp_path / "comparison.sqlite3")
-    try:
-        yield context
-    finally:
-        context.close()
-
-
-def _trade(**overrides) -> InsiderTrade:
-    values = {
-        "ticker": "AAPL",
-        "company": "Apple Inc.",
-        "insider_name": "Tim Cook",
-        "insider_title": "CEO",
-        "trade_type": "Sell",
-        "trade_date": date(2026, 1, 5),
-        "filing_date": date(2026, 1, 7),
-        "shares": 10.0,
-        "price": 200.0,
-        "value": 2_000.0,
-        "shares_owned_after": 500_000.0,
-        "source": SEC_EDGAR_SOURCE,
-        "edgar_url": "https://sec.test/aapl",
-        "accession_number": "0000320193-26-000001",
-        "sec_row_id": "non-derivative:0",
-    }
-    values.update(overrides)
-    return InsiderTrade(**values)  # type: ignore[arg-type]
+from tests.factories import sec_trade as _trade
 
 
 def test_compare_reports_matched_and_unmatched_rows_by_legacy_source(persistence):
