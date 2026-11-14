@@ -77,6 +77,7 @@ def make_client(transport: Mock, *, policy=DEFAULT_SEC_SECURITY_POLICY) -> SecCl
         user_agent=VALID_USER_AGENT,
         transport=cast(SecTransport, transport),
         policy=policy,
+        rate_limiter=RateLimiter(min_interval_seconds=0.0),
     )
 
 
@@ -167,7 +168,7 @@ def test_default_transport_uses_requests_streaming_options() -> None:
     response = StubResponse(chunks=(b"document",))
 
     with patch(
-        "insider_scanner.core.sec_client.requests.get", return_value=response
+        "insider_scanner.core.sec_client.requests.Session.get", return_value=response
     ) as requests_get:
         client = SecClient(user_agent=VALID_USER_AGENT)
         result = fetch_bytes(client)
@@ -182,6 +183,38 @@ def test_default_transport_uses_requests_streaming_options() -> None:
         allow_redirects=False,
         stream=True,
     )
+
+
+def test_owned_session_is_reused_and_closed_on_context_exit() -> None:
+    session = Mock()
+    session.get.side_effect = [StubResponse(), StubResponse()]
+    transport = RequestsSecTransport(session=session)
+    with transport:
+        client = SecClient(
+            user_agent=VALID_USER_AGENT,
+            transport=transport,
+            rate_limiter=RateLimiter(0.0),
+        )
+        assert fetch_bytes(client) == fetch_bytes(client) == b"payload"
+        client.close()
+        session.close.assert_not_called()
+    transport.close()
+    session.close.assert_called_once()
+    assert session.get.call_count == 2
+    with pytest.raises(RuntimeError, match="closed"):
+        transport.get(
+            VALID_URL, headers={}, timeout=(1, 1), allow_redirects=False, stream=True
+        )
+
+
+def test_default_client_closes_owned_transport_even_on_failure() -> None:
+    with (
+        patch.object(RequestsSecTransport, "close") as close,
+        pytest.raises(RuntimeError),
+        SecClient(user_agent=VALID_USER_AGENT),
+    ):
+        raise RuntimeError("consumer failed")
+    close.assert_called_once()
 
 
 def test_relative_sec_redirect_is_validated_then_followed() -> None:

@@ -59,9 +59,14 @@ class RateLimiter:
             self._next_allowed = self.monotonic() + self.min_interval_seconds
 
 
+_SHARED_RATE_LIMITER = RateLimiter(
+    min_interval_seconds=1.0 / DEFAULT_REQUESTS_PER_SECOND
+)
+
+
 def default_rate_limiter() -> RateLimiter:
-    """Return a limiter pinned to :data:`DEFAULT_REQUESTS_PER_SECOND`."""
-    return RateLimiter(min_interval_seconds=1.0 / DEFAULT_REQUESTS_PER_SECOND)
+    """Return the process-wide SEC gate shared by all default clients."""
+    return _SHARED_RATE_LIMITER
 
 
 @dataclass(frozen=True, slots=True)

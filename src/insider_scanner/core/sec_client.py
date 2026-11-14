@@ -7,7 +7,7 @@ import re
 import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, Self
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -69,7 +69,27 @@ class SecTransport(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RequestsSecTransport:
-    """Stateless ``requests.get`` streaming transport adapter."""
+    """Own a reusable connection pool for one SEC client or worker."""
+
+    session: requests.Session = field(default_factory=requests.Session)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Retry at the client boundary, where each attempt is rate limited and
+        # includes the streamed body. Adapter-level retries bypass that gate.
+        adapter = requests.adapters.HTTPAdapter(max_retries=0)
+        self.session.mount("https://", adapter)
+
+    def close(self) -> None:
+        if not self._closed:
+            object.__setattr__(self, "_closed", True)
+            self.session.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def get(
         self,
@@ -80,7 +100,9 @@ class RequestsSecTransport:
         allow_redirects: bool,
         stream: bool,
     ) -> requests.Response:
-        return requests.get(
+        if self._closed:
+            raise RuntimeError("SEC transport is closed")
+        return self.session.get(
             url,
             headers=headers,
             timeout=timeout,
@@ -155,7 +177,8 @@ class SecClient:
     """
 
     user_agent: str
-    transport: SecTransport = field(default_factory=RequestsSecTransport)
+    transport: SecTransport | None = None
+    _owns_transport: bool = field(default=False, init=False, repr=False, compare=False)
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY
     rate_limiter: RateLimiter = field(default_factory=default_rate_limiter)
     retry_policy: SecRetryPolicy = DEFAULT_SEC_RETRY_POLICY
@@ -168,6 +191,20 @@ class SecClient:
             raise SecConfigurationError("SEC security policy is invalid")
         if not isinstance(self.retry_policy, SecRetryPolicy):
             raise SecConfigurationError("SEC retry policy is invalid")
+        if self.transport is None:
+            object.__setattr__(self, "transport", RequestsSecTransport())
+            object.__setattr__(self, "_owns_transport", True)
+
+    def close(self) -> None:
+        """Close an internally created transport; injected transports stay owned by callers."""
+        if self._owns_transport and isinstance(self.transport, RequestsSecTransport):
+            self.transport.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def fetch_text(self, url: str, *, profile: SecResourceProfile) -> str:
         content = self.fetch_bytes(url, profile=profile)
@@ -234,6 +271,7 @@ class SecClient:
             self.sleep(delay)
 
     def _send(self, url: str) -> _SecResponse:
+        assert self.transport is not None
         try:
             return self.transport.get(
                 url,
