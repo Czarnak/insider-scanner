@@ -69,12 +69,13 @@ def test_available_current_index_persists_rows_but_stays_uncovered(
     assert persistence.coverage.get("us", SEC_DAILY_IDENTIFIER, "sec_edgar") == ()
 
 
-def test_current_index_ignores_a_legacy_completed_checkpoint(tmp_path):
+@pytest.mark.parametrize("version", [1, 2])
+def test_current_index_ignores_a_completed_checkpoint(tmp_path, version):
     checkpoint = tmp_path / "checkpoint.json"
     atomic_write_json(
         checkpoint,
         {
-            "version": 1,
+            "version": version,
             "range": {"start": DAY.isoformat(), "end": DAY.isoformat()},
             "completed_dates": [DAY.isoformat()],
         },
@@ -93,6 +94,33 @@ def test_current_index_ignores_a_legacy_completed_checkpoint(tmp_path):
     assert fetched
     assert report.dates_completed == 0
     assert checkpoint.exists()
+
+
+def test_legacy_checkpoint_refetches_a_previously_completed_historic_date(tmp_path):
+    checkpoint = tmp_path / "checkpoint.json"
+    atomic_write_json(
+        checkpoint,
+        {
+            "version": 1,
+            "range": {"start": DAY.isoformat(), "end": DAY.isoformat()},
+            "completed_dates": [DAY.isoformat()],
+            "counters": {"discovered": 99, "parsed": 99},
+        },
+    )
+    fetched = []
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport(index_text=INDEX_ONE_ROW, fetched=fetched)),
+        cache_root=tmp_path / "cache",
+        checkpoint_path=checkpoint,
+        clock=lambda: DAY + timedelta(days=1),
+    )
+
+    assert any(url.endswith("master.20260615.idx") for url in fetched)
+    assert report.dates_completed == 1
+    assert report.discovered == report.parsed == 1
+    assert not checkpoint.exists()
 
 
 def test_missing_elapsed_index_is_a_completed_empty_day(tmp_path):

@@ -13,7 +13,7 @@ from insider_scanner.core.sec_client import SecClient
 from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_ownership_parser import OwnershipFiling
 from insider_scanner.persistence.errors import PersistenceError
-from insider_scanner.persistence.json_state import atomic_write_json
+from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
 from insider_scanner.services.sec_downloads import (
     SecDownloadProgress,
     SecDownloadReport,
@@ -226,6 +226,7 @@ def test_resume_skips_completed_dates_and_restores_counters(tmp_path: Path) -> N
         on_progress=progress,
     )
 
+    assert read_json_dict(checkpoint)["version"] == 2
     resume_urls: list[str] = []
     report = download_filings_in_range(
         start_date=date(2026, 6, 15),
@@ -285,7 +286,7 @@ def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
     atomic_write_json(
         checkpoint,
         {
-            "version": 1,
+            "version": 2,
             "range": {"start": "2026-06-15", "end": "2026-06-15"},
             "completed_dates": ["2026-06-15"],
             "counters": {

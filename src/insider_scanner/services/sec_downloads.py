@@ -69,7 +69,9 @@ def sec_today() -> date:
     return datetime.now(ZoneInfo("America/New_York")).date()
 
 
-_CHECKPOINT_VERSION = 1
+# Version 1 could mark an unpublished index complete. Its dates and aggregate
+# counters cannot establish completion after the filing calendar day ended.
+_CHECKPOINT_VERSION = 2
 _COUNTER_KEYS = (
     "discovered",
     "downloaded",
