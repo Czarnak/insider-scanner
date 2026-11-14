@@ -31,8 +31,9 @@ def is_fresh(
     if refreshed_at is None:
         return False
     refreshed = _aware_utc(refreshed_at)
-    # Clamp effective age at zero by treating future clock-skew values as fresh.
-    return current - refreshed < ttl
+    # A clock correction must not suppress refreshes until a future timestamp.
+    age = current - refreshed
+    return timedelta(0) <= age < ttl
 
 
 class RefreshStateRepository:

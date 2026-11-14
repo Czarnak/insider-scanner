@@ -63,13 +63,15 @@ def test_freshness_rejects_negative_ttl():
         is_fresh(now, now=now, ttl=timedelta(seconds=-1))
 
 
-def test_freshness_treats_future_timestamp_as_fresh_clock_skew():
+@pytest.mark.parametrize("skew", [timedelta(seconds=1), timedelta(days=30)])
+@pytest.mark.parametrize("ttl", [timedelta(0), timedelta(hours=1)])
+def test_freshness_rejects_future_timestamp_after_clock_correction(skew, ttl):
     now = datetime(2026, 6, 7, 10, 0, tzinfo=UTC)
 
-    assert is_fresh(
-        now + timedelta(minutes=5),
+    assert not is_fresh(
+        now + skew,
         now=now,
-        ttl=timedelta(hours=1),
+        ttl=ttl,
     )
 
 
