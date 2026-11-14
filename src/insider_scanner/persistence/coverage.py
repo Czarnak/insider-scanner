@@ -160,6 +160,48 @@ class CoverageRepository:
         except SQLAlchemyError as error:
             raise PersistenceError("coverage update failed") from error
 
+    def remove(
+        self,
+        domain: str,
+        identifier: str,
+        source: str,
+        interval: DateInterval,
+    ) -> None:
+        """Invalidate an interval before refresh without losing other coverage."""
+        affected = and_(
+            self._conditions(domain, identifier, source),
+            scan_coverage.c.start_date <= interval.end,
+            scan_coverage.c.end_date >= interval.start,
+        )
+        try:
+            with immediate_transaction(self._engine) as connection:
+                rows = connection.execute(select(scan_coverage).where(affected)).all()
+                fragments = []
+                for row in rows:
+                    retained = []
+                    if row.start_date < interval.start:
+                        retained.append(
+                            DateInterval(row.start_date, interval.start - _DAY)
+                        )
+                    if interval.end < row.end_date:
+                        retained.append(DateInterval(interval.end + _DAY, row.end_date))
+                    fragments.extend(
+                        {
+                            "domain": domain,
+                            "identifier": identifier,
+                            "source": source,
+                            "start_date": item.start,
+                            "end_date": item.end,
+                            "covered_at": row.covered_at,
+                        }
+                        for item in retained
+                    )
+                connection.execute(delete(scan_coverage).where(affected))
+                if fragments:
+                    connection.execute(insert(scan_coverage), fragments)
+        except SQLAlchemyError as error:
+            raise PersistenceError("coverage removal failed") from error
+
     def gaps(
         self,
         domain: str,

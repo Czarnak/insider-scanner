@@ -113,3 +113,58 @@ def test_refresh_update_failure_rolls_back_and_wraps_cause(tmp_path):
         assert repo.get("us", "AAPL", "edgar", "latest") == original
     finally:
         engine.dispose()
+
+
+def test_refresh_clear_invalidates_all_modes_for_only_selected_source_key(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "clear.sqlite3")
+    bootstrap_database(engine)
+    repo = RefreshStateRepository(engine)
+    observed = datetime(2026, 6, 7, 10, tzinfo=UTC)
+    retained_keys = [
+        ("us", "AAPL", "openinsider", "latest:200"),
+        ("us", "*", "secform4", "latest:200"),
+        ("congress", "*", "openinsider", "latest:200"),
+    ]
+    try:
+        for key in retained_keys:
+            repo.set(*key, observed)
+        repo.set("us", "*", "openinsider", "latest:200", observed)
+        repo.set("us", "*", "openinsider", "latest:500", observed)
+
+        repo.clear("us", "*", "openinsider")
+
+        assert repo.get("us", "*", "openinsider", "latest:200") is None
+        assert repo.get("us", "*", "openinsider", "latest:500") is None
+        assert all(repo.get(*key) == observed for key in retained_keys)
+    finally:
+        engine.dispose()
+
+
+def test_refresh_clear_wraps_failure_without_changing_stored_timestamp(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "clear-failure.sqlite3")
+    bootstrap_database(engine)
+    repo = RefreshStateRepository(engine)
+    observed = datetime(2026, 6, 7, 10, tzinfo=UTC)
+    repo.set("us", "*", "openinsider", "latest:200", observed)
+
+    def fail_delete(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if statement.lstrip().upper().startswith("DELETE FROM REFRESH_STATE"):
+            raise OperationalError(
+                statement, parameters, RuntimeError("forced failure")
+            )
+
+    event.listen(engine, "before_cursor_execute", fail_delete)
+    try:
+        with pytest.raises(
+            PersistenceError, match="refresh state removal failed"
+        ) as error:
+            repo.clear("us", "*", "openinsider")
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_delete)
+    try:
+        assert isinstance(error.value.__cause__, SQLAlchemyError)
+        assert repo.get("us", "*", "openinsider", "latest:200") == observed
+    finally:
+        engine.dispose()

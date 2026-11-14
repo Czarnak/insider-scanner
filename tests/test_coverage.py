@@ -244,3 +244,65 @@ def test_coverage_retains_existing_other_domain_interval_contract(tmp_path):
         assert repo.get("eu", "EXAMPLE", "amf") == (_interval(1, 15),)
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("removed", "expected"),
+    [
+        (_interval(4, 6), (_interval(1, 3), _interval(7, 10))),
+        (_interval(1, 4), (_interval(5, 10),)),
+        (_interval(8, 15), (_interval(1, 7),)),
+        (_interval(1, 15), ()),
+        (_interval(11, 15), (_interval(1, 10),)),
+    ],
+)
+def test_coverage_removal_retains_unrequested_dates_and_timestamps(
+    tmp_path, removed, expected
+):
+    engine = create_sqlite_engine(tmp_path / "remove.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    original = datetime(2026, 2, 1, tzinfo=UTC)
+    try:
+        repo.add("us", "AAPL", "secform4", _interval(1, 10), now=original)
+        repo.add("us", "AAPL", "openinsider", _interval(1, 10), now=original)
+        repo.add("us", "MSFT", "secform4", _interval(1, 10), now=original)
+
+        repo.remove("us", "AAPL", "secform4", removed)
+
+        assert repo.get("us", "AAPL", "secform4") == expected
+        assert repo.get("us", "AAPL", "openinsider") == (_interval(1, 10),)
+        assert repo.get("us", "MSFT", "secform4") == (_interval(1, 10),)
+        with engine.connect() as connection:
+            assert set(
+                connection.execute(select(scan_coverage.c.covered_at)).scalars()
+            ) == {original}
+    finally:
+        engine.dispose()
+
+
+def test_coverage_removal_rolls_back_if_retained_fragments_cannot_be_saved(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "remove-failure.sqlite3")
+    bootstrap_database(engine)
+    repo = CoverageRepository(engine)
+    repo.add("us", "AAPL", "secform4", _interval(1, 10))
+
+    def fail_insert(
+        _connection, _cursor, statement, parameters, _context, _executemany
+    ):
+        if statement.lstrip().upper().startswith("INSERT INTO SCAN_COVERAGE"):
+            raise OperationalError(
+                statement, parameters, RuntimeError("forced failure")
+            )
+
+    event.listen(engine, "before_cursor_execute", fail_insert)
+    try:
+        with pytest.raises(PersistenceError, match="coverage removal failed") as error:
+            repo.remove("us", "AAPL", "secform4", _interval(4, 6))
+    finally:
+        event.remove(engine, "before_cursor_execute", fail_insert)
+    try:
+        assert isinstance(error.value.__cause__, SQLAlchemyError)
+        assert repo.get("us", "AAPL", "secform4") == (_interval(1, 10),)
+    finally:
+        engine.dispose()
