@@ -278,12 +278,6 @@ http-client.private.env.json
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 .vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
-!*.code-workspace
 
 # Built Visual Studio Code Extensions
 *.vsix
@@ -313,17 +307,11 @@ __marimo__/
 /scripts/api_key.txt
 /playground.ipynb
 data/
-.claude/settings.local.json
+.claude/
+.codex/
 .vscode/
 .tmp_pytest/
 .pytest-temp/
-graphify-out/cache/
-graphify-out/manifest.json
-graphify-out/cost.json
-graphify-out/.graphify_chunk_*
-graphify-out/.graphify_python
-graphify-out/.graphify_root
-graphify-out/graph.html
 docs/superpowers/
 docs/edgar_planning/credentials.json
 UI_design/
