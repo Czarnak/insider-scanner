@@ -12,16 +12,48 @@ unaffected and PySide6 is only imported when an app is already live).
 
 from __future__ import annotations
 
+import sys
+import tempfile
+from pathlib import Path
+
 import pytest
+
+
+# Install overrides during conftest import, before collection imports modules
+# that bind DEFAULT_PATHS or its compatibility aliases. Never inherit a user's
+# configured profile, even when pytest itself was launched with overrides.
+_runtime_root = tempfile.TemporaryDirectory(prefix="insider-scanner-tests-")
+_runtime_environment = pytest.MonkeyPatch()
+_runtime_environment.setenv(
+    "INSIDER_SCANNER_DATA_DIR", str(Path(_runtime_root.name) / "data")
+)
+_runtime_environment.setenv(
+    "INSIDER_SCANNER_CACHE_DIR", str(Path(_runtime_root.name) / "cache")
+)
+
+
+def pytest_unconfigure(config):
+    _runtime_environment.undo()
+    _runtime_root.cleanup()
+
+
+@pytest.fixture(scope="session")
+def runtime_paths():
+    """The disposable profile bound by application imports in this session."""
+    from insider_scanner.utils.config import DEFAULT_PATHS
+
+    return DEFAULT_PATHS
 
 
 @pytest.fixture(autouse=True)
 def _gui_isolation():
     yield
 
-    from PySide6.QtWidgets import QApplication
+    qt_widgets = sys.modules.get("PySide6.QtWidgets")
+    if qt_widgets is None:
+        return
 
-    app = QApplication.instance()
+    app = qt_widgets.QApplication.instance()
     if app is None:
         return
 

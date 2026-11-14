@@ -43,10 +43,22 @@ def resolve_runtime_paths(
     cache_dir: Path | None = None,
     platform_dirs: PlatformDirs | None = None,
 ) -> RuntimePaths:
-    """Resolve writable paths, allowing deterministic root injection in tests."""
+    """Resolve roots from explicit arguments, environment, then platform defaults.
+
+    Set environment overrides before importing the application: DEFAULT_PATHS
+    and the compatibility constants below are resolved once at import time.
+    """
     dirs = platform_dirs or PlatformDirs(APP_NAME, APP_AUTHOR)
-    resolved_data_dir = Path(data_dir or dirs.user_data_path)
-    resolved_cache_dir = Path(cache_dir or dirs.user_cache_path)
+    resolved_data_dir = Path(
+        data_dir
+        if data_dir is not None
+        else os.getenv("INSIDER_SCANNER_DATA_DIR") or dirs.user_data_path
+    ).expanduser()
+    resolved_cache_dir = Path(
+        cache_dir
+        if cache_dir is not None
+        else os.getenv("INSIDER_SCANNER_CACHE_DIR") or dirs.user_cache_path
+    ).expanduser()
     outputs_dir = resolved_data_dir / "exports"
 
     return RuntimePaths(

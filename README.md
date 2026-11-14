@@ -44,6 +44,27 @@ Python 3.11+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
 `pandas`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and SQLAlchemy.
 The `gui` extra adds `PySide6` and `pyqtgraph`.
 
+### Runtime data and cache directories
+
+The application keeps its existing platform-specific data and cache locations
+by default. To use a separate profile or another drive, set
+`INSIDER_SCANNER_DATA_DIR` and/or `INSIDER_SCANNER_CACHE_DIR` before starting
+the CLI or GUI. The data root contains SQLite, user state, seed files and
+exports; the cache root contains downloaded filings and scraper caches.
+Setting one override leaves the other root at its usual location. Existing
+files are not moved automatically.
+
+For example, in PowerShell:
+
+```powershell
+$env:INSIDER_SCANNER_DATA_DIR = 'D:\InsiderScanner\profile'
+$env:INSIDER_SCANNER_CACHE_DIR = 'D:\InsiderScanner\cache'
+insider-scanner
+```
+
+Tests always replace these overrides with a disposable profile before
+application modules are collected, so they do not use your normal profile.
+
 ---
 
 ## Usage

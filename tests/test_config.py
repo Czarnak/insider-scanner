@@ -8,7 +8,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from insider_scanner.utils.config import (
     RuntimePaths,
@@ -20,6 +23,64 @@ from insider_scanner.utils.config import (
 
 
 class TestRuntimePaths:
+    def test_environment_overrides_both_runtime_roots(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("INSIDER_SCANNER_CACHE_DIR", str(tmp_path / "downloads"))
+
+        paths = resolve_runtime_paths()
+
+        assert paths.data_dir == tmp_path / "profile"
+        assert paths.database_file == tmp_path / "profile/insider_scanner.sqlite3"
+        assert paths.cache_dir == tmp_path / "downloads"
+        assert paths.edgar_cache_dir == tmp_path / "downloads/edgar"
+
+    def test_explicit_roots_take_precedence_over_environment(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "env-data"))
+        monkeypatch.setenv("INSIDER_SCANNER_CACHE_DIR", str(tmp_path / "env-cache"))
+
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "explicit-data", cache_dir=tmp_path / "explicit-cache"
+        )
+
+        assert paths.data_dir == tmp_path / "explicit-data"
+        assert paths.cache_dir == tmp_path / "explicit-cache"
+
+    @pytest.mark.parametrize("override", [None, ""])
+    def test_unset_or_empty_overrides_preserve_platform_paths(
+        self, monkeypatch, tmp_path, override
+    ):
+        for name in ("INSIDER_SCANNER_DATA_DIR", "INSIDER_SCANNER_CACHE_DIR"):
+            if override is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, override)
+        platform_dirs = SimpleNamespace(
+            user_data_path=tmp_path / "existing-data",
+            user_cache_path=tmp_path / "existing-cache",
+        )
+
+        paths = resolve_runtime_paths(platform_dirs=platform_dirs)
+
+        assert paths.data_dir == tmp_path / "existing-data"
+        assert paths.cache_dir == tmp_path / "existing-cache"
+
+    def test_overriding_data_keeps_independent_cache_default(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
+        monkeypatch.delenv("INSIDER_SCANNER_CACHE_DIR", raising=False)
+        platform_dirs = SimpleNamespace(
+            user_data_path=tmp_path / "existing-data",
+            user_cache_path=tmp_path / "existing-cache",
+        )
+
+        paths = resolve_runtime_paths(platform_dirs=platform_dirs)
+
+        assert paths.data_dir == tmp_path / "profile"
+        assert paths.cache_dir == tmp_path / "existing-cache"
+
     def test_resolve_runtime_paths_uses_injected_data_and_cache_roots(self, tmp_path):
         data_dir = tmp_path / "data"
         cache_dir = tmp_path / "cache"
