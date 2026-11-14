@@ -12,6 +12,7 @@ unaffected and PySide6 is only imported when an app is already live).
 
 from __future__ import annotations
 
+import gc
 import sys
 import tempfile
 from pathlib import Path
@@ -71,23 +72,33 @@ def persistence(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _gui_isolation():
-    yield
-
     qt_widgets = sys.modules.get("PySide6.QtWidgets")
-    if qt_widgets is None:
-        return
+    app = qt_widgets.QApplication.instance() if qt_widgets is not None else None
+    restore_gc = app is not None and gc.isenabled()
+    if restore_gc:
+        # Automatic cyclic GC can run on a worker, destroying Qt wrappers while
+        # the GUI thread holds the GIL and waits for a Qt mutex. Collect on the
+        # GUI thread after cleanup instead. qapp is session-scoped, so it exists
+        # before this function-scoped fixture for tests requesting qtbot/qapp.
+        gc.disable()
+    try:
+        yield
+    finally:
+        try:
+            qt_widgets = sys.modules.get("PySide6.QtWidgets")
+            app = qt_widgets.QApplication.instance() if qt_widgets is not None else None
+            if app is not None:
+                from PySide6.QtCore import QEvent
 
-    app = qt_widgets.QApplication.instance()
-    if app is None:
-        return
+                from insider_scanner.gui.theme import reset_theme_manager
 
-    from PySide6.QtCore import QEvent
-
-    from insider_scanner.gui.theme import reset_theme_manager
-
-    for widget in list(app.topLevelWidgets()):
-        widget.close()
-        widget.deleteLater()
-    app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    app.processEvents()
-    reset_theme_manager()
+                for widget in list(app.topLevelWidgets()):
+                    widget.close()
+                    widget.deleteLater()
+                app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                app.processEvents()
+                reset_theme_manager()
+                gc.collect()
+        finally:
+            if restore_gc:
+                gc.enable()

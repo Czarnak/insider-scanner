@@ -93,3 +93,72 @@ finally:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_gui_cycles_are_collected_on_the_main_thread(tmp_path):
+    env = dict(os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import gc
+import runpy
+import sys
+import threading
+import weakref
+
+namespace = runpy.run_path(sys.argv[1])
+try:
+    from PySide6.QtCore import QObject, Qt
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication([])
+    gc.enable()
+    fixture = namespace['_gui_isolation'].__wrapped__()
+    next(fixture)
+    assert not gc.isenabled(), 'Qt cycles must not be collected by workers'
+
+    destroyed_on = []
+    cycle = QObject()
+    cycle.cycle = cycle
+    cycle.destroyed.connect(
+        lambda: destroyed_on.append(threading.get_ident()),
+        Qt.ConnectionType.DirectConnection,
+    )
+    ref = weakref.ref(cycle)
+    del cycle
+
+    # Allocate enough tracked containers on a worker to trigger automatic GC
+    # under the normal thresholds. The fixture defers that collection.
+    worker = threading.Thread(target=lambda: [[] for _ in range(5000)])
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert ref() is not None
+    assert not destroyed_on
+
+    assert next(fixture, 'finished') == 'finished'
+    assert destroyed_on == [threading.get_ident()]
+    assert ref() is None
+    assert gc.isenabled(), 'the original GC state must be restored'
+
+    gc.disable()
+    fixture = namespace['_gui_isolation'].__wrapped__()
+    next(fixture)
+    assert next(fixture, 'finished') == 'finished'
+    assert not gc.isenabled(), 'an already disabled GC must stay disabled'
+finally:
+    gc.enable()
+    namespace['pytest_unconfigure'](None)
+""",
+            str(CONFTEST),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

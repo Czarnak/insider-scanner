@@ -60,6 +60,10 @@ cross-platform thread method, which terminates a stalled pytest process and
 prints its thread stacks. A deliberately slow test can use
 `@pytest.mark.timeout(seconds)` with a reason for the override. GUI tests use
 `QT_QPA_PLATFORM=offscreen` in CI; set it locally for headless runs too.
+The GUI fixture defers automatic cyclic garbage collection until cleanup on the
+GUI thread, preventing worker-thread collection of Qt wrappers. Native code
+holding the GIL can prevent the Python timeout thread from running; the CI job
+timeout still bounds such a hang.
 
 Mypy checks the full source tree, including untyped function bodies, against
 Python 3.11. `mypy.ini` baselines existing errors by module and error category;
