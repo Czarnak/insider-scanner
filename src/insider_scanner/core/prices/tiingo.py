@@ -11,7 +11,7 @@ from urllib.parse import quote
 import requests
 
 from .model import PriceBar
-from .source import PriceSourceError, validate_price_request
+from .source import PriceSourceError, _checked_json, validate_price_request
 
 _DAILY_URL = "https://api.tiingo.com/tiingo/daily"
 _TIMEOUT = (5.0, 20.0)
@@ -119,23 +119,7 @@ class TiingoSource:
                 },
                 timeout=_TIMEOUT,
             )
-            if response.status_code >= 400:
-                raise PriceSourceError("Tiingo")
-
-            content = response.content
-            content_type = response.headers.get("Content-Type", "").lower()
-            stripped_content = content.lstrip().lower()
-            if (
-                not stripped_content
-                or "html" in content_type
-                or stripped_content.startswith((b"<html", b"<!doctype html"))
-            ):
-                raise PriceSourceError("Tiingo")
-
-            try:
-                payload = response.json()
-            except ValueError:
-                raise PriceSourceError("Tiingo") from None
+            payload = _checked_json(response, "Tiingo")
             return parse_tiingo_json(payload, normalized_symbol)
         except PriceSourceError:
             raise

@@ -1,0 +1,107 @@
+"""Shared congressional disclosure parsing contracts."""
+
+import pytest
+
+from insider_scanner.core.congress_common import (
+    extract_ticker,
+    normalize_owner,
+    normalize_tx_type,
+    parse_amount_range,
+)
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        ("Berkshire Hathaway (BRK.B) [ST]", "BRK.B"),
+        ("Brown-Forman Class B (BF-B)", "BF-B"),
+        ("Vanguard (ETF) Growth Fund (VUG)", "ETF"),
+        ("U.S. Treasury Bonds", ""),
+    ],
+)
+def test_extract_ticker(description, expected):
+    assert extract_ticker(description) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("P", "Purchase"),
+        ("purchase", "Purchase"),
+        (" S (partial) ", "Sale"),
+        ("s(full)", "Sale"),
+        ("Sale (Partial)", "Sale"),
+        ("E", "Exchange"),
+        ("exchange", "Exchange"),
+        ("X", "Other"),
+        ("unknown", "Other"),
+    ],
+)
+def test_normalize_transaction_type(raw, expected):
+    assert normalize_tx_type(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", "Self"),
+        (" self ", "SELF"),
+        ("SP", "Spouse"),
+        ("spouse", "SPOUSE"),
+        ("dc", "Dependent Child"),
+        ("Dependent Child", "DEPENDENT CHILD"),
+        ("JT", "Joint"),
+        ("Joint", "JOINT"),
+        ("Other owner", "OTHER OWNER"),
+    ],
+)
+def test_normalize_owner(raw, expected):
+    assert normalize_owner(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Spouse/DC Over $1,000,000", (1000000.0, 1000000.0)),
+        ("Over $50,000,000", (50000000.0, 50000000.0)),
+        ("spouse/DC over $1,000,000", (1000000.0, 1000000.0)),
+        ("$1,001 - $15,000", (1001.0, 15000.0)),
+        ("$1,001 – $15,000", (1001.0, 15000.0)),
+        ("$1,001 — $15,000", (1001.0, 15000.0)),
+        ("1001-15000", (1001.0, 15000.0)),
+        ("$1,001.50 - $15,000.25", (1001.5, 15000.25)),
+        (" $ 1001 - $ 15000 ", (1001.0, 15000.0)),
+        ("Owner-specific category Over $ 1,000,000", (1000000.0, 1000000.0)),
+        ("", (0.0, 0.0)),
+        ("--", (0.0, 0.0)),
+        ("not disclosed", (0.0, 0.0)),
+    ],
+)
+def test_parse_amount_range(raw, expected):
+    assert parse_amount_range(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Over $1,000,00",
+        "Spouse/DC Over $1,000,00",
+        "$1,00 - $2,000",
+        "$1,000 - $2,00",
+        "$-100 - $200",
+        "-$100 - $200",
+        "-100 - 200",
+        "$100 - -$200",
+        "Over $-100",
+        "Over -$100",
+        "$100.0.0 - $200",
+        "$100 - $200.0.0",
+        "$100 - $200 trailing text",
+        "Over $100 trailing text",
+        "$200 - $100",
+        "Over $" + "9" * 400,
+        "$1 - $" + "9" * 400,
+    ],
+)
+def test_parse_amount_range_rejects_malformed_or_invalid_categories(raw):
+    assert parse_amount_range(raw) == (0.0, 0.0)

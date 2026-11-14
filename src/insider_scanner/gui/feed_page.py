@@ -10,22 +10,21 @@ from functools import partial
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThreadPool, Signal
 from PySide6.QtGui import QBrush, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
     QSplitter,
-    QTableView,
     QVBoxLayout,
     QWidget,
 )
 
+from insider_scanner.core.trade_types import classify_direction
 from insider_scanner.gui.feed_filters import FeedFilterChips, FeedFilterPanel
 from insider_scanner.gui.investigation_drawer import InvestigationDrawer
 from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.gui.trade_display import format_value, make_feed_table
 from insider_scanner.persistence.errors import is_access_denied
 from insider_scanner.persistence.feed import (
     DEFAULT_PAGE_SIZE,
@@ -109,10 +108,10 @@ class FeedTableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.FontRole and column in {3, 6, 7, 8, 9, 10}:
             return self._mono_font
         if role == Qt.ItemDataRole.ForegroundRole and column == 1:
-            normalized = record.transaction_type.casefold()
-            if normalized in {"buy", "purchase"}:
+            direction = classify_direction(record.transaction_type)
+            if direction == TransactionDirection.BUY:
                 return QBrush(self._palette.purchase)
-            if normalized in {"sell", "sale"}:
+            if direction == TransactionDirection.SELL:
                 return QBrush(self._palette.sale)
         if role == Qt.ItemDataRole.ToolTipRole:
             return self._display_value(record, column)
@@ -176,12 +175,7 @@ class FeedTableModel(QAbstractTableModel):
             suffix = f" {record.currency}" if record.currency else ""
             return f"{record.price:,.2f}{suffix}"
         if column == 10:
-            if record.value_display:
-                return record.value_display
-            if record.value_sort is None:
-                return "—"
-            suffix = f" {record.currency}" if record.currency else ""
-            return f"{record.value_sort:,.2f}{suffix}"
+            return format_value(record)
         return record.source or "—"
 
 
@@ -302,22 +296,7 @@ class FeedPageWidget(QWidget):
         layout.addWidget(self.stale_banner)
 
         self.model = FeedTableModel(self)
-        self.table = QTableView()
-        self.table.setAccessibleName("Unified transaction feed")
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate(
-            (70, 90, 170, 100, 150, 100, 90, 90, 90, 90, 120, 80)
-        ):
-            self.table.setColumnWidth(column, width)
+        self.table = make_feed_table(self.model, "Unified transaction feed")
         self.table.horizontalHeader().setSortIndicator(
             6,
             Qt.SortOrder.DescendingOrder,

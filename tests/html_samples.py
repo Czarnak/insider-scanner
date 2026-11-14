@@ -103,33 +103,33 @@ OPENINSIDER_HTML = """
   <th>Shares Owned After</th>
 </tr>
 <tr>
-  <td>2025-11-17</td>
+  <td>2025-11-17 18:58:20</td>
   <td>2025-11-15</td>
   <td>AAPL</td>
   <td>Apple Inc</td>
   <td>Cook Timothy D</td>
   <td>CEO</td>
   <td>S - Sale</td>
-  <td>100,000</td>
+  <td>-100,000</td>
   <td>$185.50</td>
-  <td>$18,550,000</td>
+  <td>-$18,550,000</td>
   <td>3,280,000</td>
 </tr>
 <tr>
-  <td>2025-11-14</td>
+  <td>2025-11-14 16:30:05</td>
   <td>2025-11-12</td>
   <td>MSFT</td>
   <td>Microsoft Corp</td>
   <td>Nadella Satya</td>
   <td>CEO</td>
   <td>S - Sale</td>
-  <td>200,000</td>
+  <td>-200,000</td>
   <td>$420.00</td>
-  <td>$84,000,000</td>
+  <td>-$84,000,000</td>
   <td>5,000,000</td>
 </tr>
 <tr>
-  <td>2025-11-10</td>
+  <td>2025-11-10 09:15:42</td>
   <td>2025-11-08</td>
   <td>TSLA</td>
   <td>Tesla Inc</td>

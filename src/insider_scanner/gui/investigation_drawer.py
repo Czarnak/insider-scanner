@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.trade_types import TransactionDirection, classify_direction
 from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.gui.trade_display import format_value
 from insider_scanner.persistence.feed import (
     FeedMarket,
     FeedRecord,
@@ -28,9 +30,6 @@ from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker
 
 log = get_logger("gui.investigation_drawer")
-
-_PURCHASE_TYPES: frozenset[str] = frozenset({"buy", "purchase"})
-_SALE_TYPES: frozenset[str] = frozenset({"sell", "sale"})
 
 
 class InvestigationDrawer(QWidget):
@@ -425,21 +424,16 @@ class InvestigationDrawer(QWidget):
         self._scroll.hide()
 
     def _transaction_color(self, transaction_type: str) -> QColor:
-        normalized = transaction_type.casefold()
-        if normalized in _PURCHASE_TYPES:
+        direction = classify_direction(transaction_type)
+        if direction == TransactionDirection.BUY:
             return QColor(self._palette.purchase)
-        if normalized in _SALE_TYPES:
+        if direction == TransactionDirection.SELL:
             return QColor(self._palette.sale)
         return QColor(self._palette.text_primary)
 
     @staticmethod
     def _format_value(record: FeedRecord) -> str:
-        if record.value_display:
-            return record.value_display
-        if record.value_sort is None:
-            return "—"
-        suffix = f" {record.currency}" if record.currency else ""
-        return f"{record.value_sort:,.2f}{suffix}"
+        return format_value(record)
 
     def _kv_label(self, key: str, value: str) -> QLabel:
         label = QLabel(f"{key}: {value}")

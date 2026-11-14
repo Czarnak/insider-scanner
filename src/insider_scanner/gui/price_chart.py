@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from operator import attrgetter
 
 import pyqtgraph as pg
 from PySide6.QtGui import QColor
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.core.trade_types import TransactionDirection, classify_direction
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.utils.logging import get_logger
@@ -27,6 +30,8 @@ class ChartColors:
     buy_pen: str
     sell_brush: str
     sell_pen: str
+    other_brush: str
+    other_pen: str
     grid: str
     crosshair: str
     background: str
@@ -46,6 +51,8 @@ def chart_colors(palette: ThemePalette) -> ChartColors:
         buy_pen=_darken(palette.purchase),
         sell_brush=palette.sale,
         sell_pen=_darken(palette.sale),
+        other_brush=palette.text_muted,
+        other_pen=_darken(palette.text_muted),
         grid=palette.border,
         crosshair=palette.text_muted,
         background=palette.surface,
@@ -122,6 +129,15 @@ class PriceChartWidget(QWidget):
         )
         self.plot_widget.addItem(self.buy_scatter)
         self.plot_widget.addItem(self.sell_scatter)
+        self.other_scatter = pg.ScatterPlotItem(
+            size=10,
+            symbol="o",
+            brush=pg.mkBrush(colors.other_brush),
+            pen=pg.mkPen(colors.other_pen),
+            hoverable=True,
+            tip=lambda x, y, data: data.get("tip", "") if data else "",
+        )
+        self.plot_widget.addItem(self.other_scatter)
 
         self._apply_axis_pens(colors)
 
@@ -149,13 +165,17 @@ class PriceChartWidget(QWidget):
         self.buy_scatter.setPen(pg.mkPen(colors.buy_pen))
         self.sell_scatter.setBrush(pg.mkBrush(colors.sell_brush))
         self.sell_scatter.setPen(pg.mkPen(colors.sell_pen))
+        self.other_scatter.setBrush(pg.mkBrush(colors.other_brush))
+        self.other_scatter.setPen(pg.mkPen(colors.other_pen))
         if self.price_curve is not None:
             self.price_curve.setPen(pg.mkPen(colors.price, width=2))
         self._apply_axis_pens(colors)
 
     def set_trade_markers(self, trades: list[InsiderTrade | CongressTrade]) -> None:
-        """Overlay buy/sell markers on the current price line."""
-        buys, sells = [], []
+        """Overlay directional triangles and neutral circles on the price line."""
+        groups: dict[TransactionDirection, list[dict]] = {
+            direction: [] for direction in TransactionDirection
+        }
         for t in trades:
             if t.trade_date is None:
                 continue
@@ -163,17 +183,18 @@ class PriceChartWidget(QWidget):
                 "pos": (_to_timestamp(t.trade_date), marker_y_for_trade(t, self._bars)),
                 "data": {"tip": build_marker_tooltip(t)},
             }
-            (buys if is_buy(t) else sells).append(spot)
-        self.buy_scatter.setData(
-            [b["pos"][0] for b in buys],
-            [b["pos"][1] for b in buys],
-            data=[b["data"] for b in buys],
-        )
-        self.sell_scatter.setData(
-            [s["pos"][0] for s in sells],
-            [s["pos"][1] for s in sells],
-            data=[s["data"] for s in sells],
-        )
+            groups[classify_direction(t.trade_type)].append(spot)
+        for direction, scatter in (
+            (TransactionDirection.BUY, self.buy_scatter),
+            (TransactionDirection.SELL, self.sell_scatter),
+            (TransactionDirection.OTHER, self.other_scatter),
+        ):
+            spots = groups[direction]
+            scatter.setData(
+                [spot["pos"][0] for spot in spots],
+                [spot["pos"][1] for spot in spots],
+                data=[spot["data"] for spot in spots],
+            )
 
     def set_price_data(self, bars: list[PriceBar]) -> None:
         """Render the price line, replacing any previous curve."""
@@ -197,9 +218,6 @@ class PriceChartWidget(QWidget):
         self._hline.setPos(point.y())
 
 
-BUY_TYPES = {"Buy", "Purchase", "Exercise"}
-
-
 def marker_y_for_trade(
     trade: InsiderTrade | CongressTrade, bars: list[PriceBar]
 ) -> float:
@@ -208,19 +226,12 @@ def marker_y_for_trade(
     price = getattr(trade, "price", 0.0)
     if not bars or trade.trade_date is None:
         return price
-    best: float | None = None
-    for b in bars:  # bars are date-sorted ascending
-        if b.date <= trade.trade_date:
-            best = b.plot_close
-        else:
-            break
-    if best is not None:
-        return best
-    return bars[0].plot_close if bars else price
+    index = bisect_right(bars, trade.trade_date, key=attrgetter("date")) - 1
+    return bars[max(index, 0)].plot_close
 
 
 def is_buy(trade: InsiderTrade | CongressTrade) -> bool:
-    return trade.trade_type in BUY_TYPES
+    return classify_direction(trade.trade_type) == TransactionDirection.BUY
 
 
 def build_marker_tooltip(trade: InsiderTrade | CongressTrade) -> str:

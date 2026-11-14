@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import responses
+from bs4 import BeautifulSoup
 
 from insider_scanner.core.openinsider import (
     parse_openinsider_html,
@@ -26,9 +27,7 @@ class TestParseOpeninsider:
     def test_tickers_extracted(self):
         trades = parse_openinsider_html(OPENINSIDER_HTML)
         tickers = {t.ticker for t in trades}
-        assert "AAPL" in tickers
-        assert "MSFT" in tickers
-        assert "TSLA" in tickers
+        assert tickers == {"AAPL", "MSFT", "TSLA"}
 
     def test_company_names(self):
         trades = parse_openinsider_html(OPENINSIDER_HTML)
@@ -42,6 +41,33 @@ class TestParseOpeninsider:
         assert len(msft) == 1
         assert msft[0].value == 84_000_000
         assert msft[0].shares == 200_000
+        assert msft[0].trade_type == "Sell"
+
+    def test_real_filing_timestamps(self):
+        trades = parse_openinsider_html(OPENINSIDER_HTML)
+        assert [trade.filing_date for trade in trades] == [
+            date(2025, 11, 17),
+            date(2025, 11, 14),
+            date(2025, 11, 10),
+        ]
+
+    def test_signed_sales_persist_with_purchases(self, persistence):
+        trades = parse_openinsider_html(OPENINSIDER_HTML)
+
+        result = persistence.us_trades.upsert(trades)
+
+        assert result.inserted == 3
+        for trade in trades:
+            assert persistence.us_trades.query(
+                trade.ticker,
+                start_date=trade.filing_date,
+                end_date=trade.filing_date,
+            ) == [trade]
+        assert [(trade.trade_type, trade.shares, trade.value) for trade in trades] == [
+            ("Sell", 100_000, 18_550_000),
+            ("Sell", 200_000, 84_000_000),
+            ("Buy", 5_000, 1_550_000),
+        ]
 
     def test_trade_type_classification(self):
         trades = parse_openinsider_html(OPENINSIDER_HTML)
@@ -52,7 +78,23 @@ class TestParseOpeninsider:
         trades = parse_openinsider_html(OPENINSIDER_HTML, ticker="AAPL")
         # When ticker column is present in HTML, it should use that
         tickers = {t.ticker for t in trades}
-        assert len(tickers) >= 1
+        assert len(trades) == 3
+        assert tickers == {"AAPL", "MSFT", "TSLA"}
+
+    def test_ticker_override_used_when_column_missing(self):
+        soup = BeautifulSoup(OPENINSIDER_HTML, "lxml")
+        for row in soup.select("tr"):
+            row.find_all(["th", "td"])[2].decompose()
+
+        trades = parse_openinsider_html(str(soup), ticker="nvda")
+
+        assert len(trades) == 3
+        assert [trade.ticker for trade in trades] == ["NVDA", "NVDA", "NVDA"]
+        assert [trade.insider_name for trade in trades] == [
+            "Cook Timothy D",
+            "Nadella Satya",
+            "Tuberville Tommy",
+        ]
 
     def test_empty_html(self):
         trades = parse_openinsider_html("<html><body></body></html>")
@@ -69,7 +111,8 @@ class TestScrapeOpeninsider:
             status=200,
         )
         trades = scrape_ticker("AAPL", use_cache=False)
-        assert len(trades) >= 1
+        assert len(trades) == 3
+        assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
 
     @responses.activate
     def test_scrape_latest_mocked(self):
@@ -80,7 +123,8 @@ class TestScrapeOpeninsider:
             status=200,
         )
         trades = scrape_latest(count=50, use_cache=False)
-        assert len(trades) >= 1
+        assert len(trades) == 3
+        assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
 
     @responses.activate
     def test_scrape_error(self):
@@ -114,7 +158,8 @@ class TestScrapeOpeninsider:
         assert "fd=-1" in url
         assert "fdr=" in url
         assert "06%2F01%2F2025" in url or "06/01/2025" in url
-        assert len(trades) >= 1
+        assert len(trades) == 3
+        assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
 
     @responses.activate
     def test_scrape_latest_with_dates(self):
@@ -129,6 +174,7 @@ class TestScrapeOpeninsider:
             use_cache=False,
             start_date=date(2025, 1, 1),
         )
-        assert len(trades) >= 1
+        assert len(trades) == 3
+        assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
         url = responses.calls[0].request.url
         assert "td=7" in url

@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 
 from .model import PriceBar
-from .source import PriceSourceError, validate_price_request
+from .source import PriceSourceError, _checked_json, validate_price_request
 
 _CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart"
 _CONNECT_TIMEOUT_SECONDS = 5.0
@@ -124,20 +124,7 @@ class YahooSource:
                 },
                 timeout=_TIMEOUT,
             )
-            if response.status_code >= 400:
-                raise PriceSourceError("Yahoo")
-
-            content = response.content
-            content_type = response.headers.get("Content-Type", "").lower()
-            stripped_content = content.lstrip().lower()
-            if (
-                not stripped_content
-                or "html" in content_type
-                or stripped_content.startswith((b"<html", b"<!doctype html"))
-            ):
-                raise PriceSourceError("Yahoo")
-
-            payload = response.json()
+            payload = _checked_json(response, "Yahoo")
             return parse_yahoo_chart(payload, normalized_symbol)
         except PriceSourceError:
             raise

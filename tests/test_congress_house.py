@@ -160,6 +160,8 @@ class TestNormalizeTxType:
         assert _normalize_tx_type("sale") == "Sale"
         assert _normalize_tx_type("sale (full)") == "Sale"
         assert _normalize_tx_type("sale (partial)") == "Sale"
+        assert _normalize_tx_type("S (partial)") == "Sale"
+        assert _normalize_tx_type("S (full)") == "Sale"
 
     def test_exchange(self):
         assert _normalize_tx_type("E") == "Exchange"
@@ -694,6 +696,13 @@ class TestScrapeHouseTrades:
                 "amount": "$50,001 - $100,000",
                 "cap_gains_over_200": "",
             },
+            {
+                "owner": "SP",
+                "asset": "Berkshire Hathaway (BRK.B) [ST]",
+                "tx_type": "S (partial)",
+                "tx_date": "01/15/2026",
+                "amount": "Spouse/DC Over $1,000,000",
+            },
         ]
 
         with (
@@ -711,7 +720,7 @@ class TestScrapeHouseTrades:
                 date_to=date(2026, 12, 31),
             )
 
-        assert len(trades) == 1
+        assert len(trades) == 2
         t = trades[0]
         assert isinstance(t, CongressTrade)
         assert t.official_name == "Hon. Nancy Pelosi"
@@ -725,6 +734,13 @@ class TestScrapeHouseTrades:
         assert t.source == "house"
         assert t.doc_id == "20034001"
         assert "20034001" in t.source_url
+        sale = trades[1]
+        assert sale.ticker == "BRK.B"
+        assert sale.trade_type == "Sale"
+        assert sale.owner == "Spouse"
+        assert sale.amount_range == "Spouse/DC Over $1,000,000"
+        assert sale.amount_low == 1000000.0
+        assert sale.amount_high == 1000000.0
 
     def test_no_matching_filings(self, tmp_path):
         xml_path = tmp_path / "2026FD.xml"

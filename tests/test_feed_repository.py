@@ -190,11 +190,7 @@ def test_feed_freshness_uses_latest_created_timestamp(engine):
 
 
 def _seed_other_trade(engine) -> None:
-    """Seed a US trade with a non-buy/sell trade_type for OTHER direction tests.
-
-    Uses "Exercise" which is allowed by the schema CHECK constraint and does
-    not match any BUY/SELL terms, so it maps to TransactionDirection.OTHER.
-    """
+    """Seed a neutral US trade for OTHER direction tests."""
     UsTradeRepository(engine).upsert(
         [
             InsiderTrade(
@@ -202,7 +198,7 @@ def _seed_other_trade(engine) -> None:
                 company="Alphabet Inc.",
                 insider_name="Sundar Pichai",
                 insider_title="CEO",
-                trade_type="Exercise",
+                trade_type="Other",
                 trade_date=date(2026, 6, 9),
                 filing_date=date(2026, 6, 10),
                 shares=50,
@@ -260,7 +256,7 @@ def test_feed_repository_filters_by_market(engine):
 
 
 def test_feed_repository_filters_by_direction(engine):
-    """directions filter uses substring matching on transaction_type."""
+    """Direction filters use the shared canonical trade vocabulary."""
     _seed_all_markets(engine)
     _seed_other_trade(engine)
 
@@ -286,6 +282,45 @@ def test_feed_repository_filters_by_direction(engine):
     )
     assert other_page.total_count == 1
     assert other_page.records[0].identifier == "GOOG"
+
+
+@pytest.mark.parametrize(
+    ("market", "label", "expected"),
+    [
+        (FeedMarket.US, "Buy", TransactionDirection.BUY),
+        (FeedMarket.US, "Exercise", TransactionDirection.BUY),
+        (FeedMarket.US, "Sell", TransactionDirection.SELL),
+        (FeedMarket.US, "Other", TransactionDirection.OTHER),
+        (FeedMarket.CONGRESS, "Purchase", TransactionDirection.BUY),
+        (FeedMarket.CONGRESS, "Sale", TransactionDirection.SELL),
+        (FeedMarket.CONGRESS, "Exchange", TransactionDirection.OTHER),
+        (FeedMarket.CONGRESS, "Other", TransactionDirection.OTHER),
+    ],
+)
+def test_feed_filters_agree_with_record_direction(engine, market, label, expected):
+    """Every persisted label has the same meaning in SQL and Python."""
+    if market == FeedMarket.US:
+        UsTradeRepository(engine).upsert(
+            [InsiderTrade(ticker="AAPL", trade_type=label, source="openinsider")]
+        )
+    else:
+        CongressTradeRepository(engine).upsert(
+            [CongressTrade(ticker="AAPL", trade_type=label, source="house")]
+        )
+
+    repository = FeedRepository(engine)
+    for direction in TransactionDirection:
+        page = repository.query(FeedQuery(directions=(direction,)))
+        assert page.total_count == (1 if direction == expected else 0)
+        if page.records:
+            assert page.records[0].direction == expected
+
+
+def test_feed_reexports_shared_direction_enum():
+    """Saved criteria and existing imports keep using the same enum type."""
+    from insider_scanner.core.trade_types import TransactionDirection as SharedDirection
+
+    assert TransactionDirection is SharedDirection
 
 
 def test_feed_repository_filters_by_date_range(engine):

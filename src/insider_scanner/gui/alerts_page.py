@@ -30,12 +30,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.trade_types import TransactionDirection, classify_direction
 from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.gui.trade_display import format_value
 from insider_scanner.persistence.alerts import AlertRule, AlertStore
 from insider_scanner.persistence.feed import FeedCriteria, FeedRecord
-
-_PURCHASE_TYPES: frozenset[str] = frozenset({"buy", "purchase"})
-_SALE_TYPES: frozenset[str] = frozenset({"sell", "sale"})
 
 _RULE_HEADERS = ("On", "Name", "Matches")
 _RESULT_HEADERS = (
@@ -50,12 +49,7 @@ _RESULT_HEADERS = (
 
 
 def _format_value(record: FeedRecord) -> str:
-    if record.value_display:
-        return record.value_display
-    if record.value_sort is None:
-        return "—"
-    suffix = f" {record.currency}" if record.currency else ""
-    return f"{record.value_sort:,.2f}{suffix}"
+    return format_value(record)
 
 
 def _criteria_summary(rule: AlertRule) -> str:
@@ -317,9 +311,9 @@ class AlertsPage(QWidget):
             )
 
     def _type_brush(self, transaction_type: str) -> QBrush | None:
-        normalized = transaction_type.casefold()
-        if normalized in _PURCHASE_TYPES:
+        direction = classify_direction(transaction_type)
+        if direction == TransactionDirection.BUY:
             return QBrush(self._palette.purchase)
-        if normalized in _SALE_TYPES:
+        if direction == TransactionDirection.SELL:
             return QBrush(self._palette.sale)
         return None

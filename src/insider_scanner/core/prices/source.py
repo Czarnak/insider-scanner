@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from datetime import date as Date
 from typing import Protocol, runtime_checkable
 
+import requests
+
 from .model import PriceBar, normalize_symbol
 
 _PROVIDER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}", re.ASCII)
@@ -52,3 +54,23 @@ def validate_price_request(symbol: object, start: object, end: object) -> str:
     if start > end:
         raise ValueError("start must not be after end")
     return normalized_symbol
+
+
+def _checked_json(response: requests.Response, provider: str) -> object:
+    """Decode a nonempty provider response without exposing its body on failure."""
+    if response.status_code >= 400:
+        raise PriceSourceError(provider)
+
+    content_type = response.headers.get("Content-Type", "").lower()
+    content = response.content.lstrip().lower()
+    if (
+        not content
+        or "html" in content_type
+        or content.startswith((b"<html", b"<!doctype html"))
+    ):
+        raise PriceSourceError(provider)
+
+    try:
+        return response.json()
+    except ValueError:
+        raise PriceSourceError(provider) from None

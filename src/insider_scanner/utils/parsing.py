@@ -7,31 +7,36 @@ scrapers.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 
 __all__ = ["classify_trade", "parse_date", "parse_number", "parse_ptr_date"]
 
 
 def parse_date(text: str) -> date | None:
-    """Parse a date from ISO, ``MM/DD/YYYY`` or ``MM-DD-YYYY`` text.
+    """Parse source dates and ISO filing timestamps without changing their day.
 
-    Returns ``None`` for blank values or the ``-`` placeholder.
+    US dates accept two- or four-digit years using ``strptime``'s conventional
+    1969/2068 pivot. Blank values, placeholders and malformed input return None.
     """
     text = text.strip()
-    if not text or text == "-":
+    if not text or text in {"-", "--"}:
         return None
     try:
         return date.fromisoformat(text)
     except ValueError:
         pass
+    # Validate the complete timestamp rather than accepting an arbitrary suffix
+    # after a date prefix. Keep the calendar date reported by the source.
     try:
-        parts = text.replace("/", "-").split("-")
-        if len(parts) == 3:
-            if len(parts[0]) == 4:
-                return date(int(parts[0]), int(parts[1]), int(parts[2]))
-            return date(int(parts[2]), int(parts[0]), int(parts[1]))
-    except (ValueError, IndexError):
+        return datetime.fromisoformat(text).date()
+    except ValueError:
         pass
+    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
     return None
 
 
@@ -61,6 +66,13 @@ def classify_trade(text: str) -> str:
     One of ``"Buy"``, ``"Sell"``, ``"Exercise"`` or ``"Other"``.
     """
     t = text.strip().lower()
+    # OpenInsider's leading transaction code is authoritative: a disposition
+    # labelled "D - Sale to issuer" must not become an open-market sale.
+    coded = re.fullmatch(r"([a-z])(?:\s*-\s*.*)?", t)
+    if coded:
+        return {"p": "Buy", "s": "Sell", "m": "Exercise", "x": "Exercise"}.get(
+            coded.group(1), "Other"
+        )
     if "purchase" in t or "buy" in t or t == "p":
         return "Buy"
     if "sale" in t or "sell" in t or t == "s":
@@ -71,16 +83,5 @@ def classify_trade(text: str) -> str:
 
 
 def parse_ptr_date(text: str) -> date | None:
-    """Parse a date from congressional PTR disclosures (House and Senate).
-
-    Returns ``None`` for blank values or the ``--`` placeholder.
-    """
-    text = text.strip()
-    if not text or text == "--":
-        return None
-    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-    return None
+    """Compatibility entry point for congressional PTR date parsing."""
+    return parse_date(text)
