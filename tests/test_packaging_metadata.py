@@ -23,7 +23,7 @@ def test_console_and_gui_scripts_present():
 
 
 def test_requires_python_floor():
-    assert _load()["project"]["requires-python"] == ">=3.11"
+    assert _load()["project"]["requires-python"] == ">=3.11.5"
 
 
 def test_has_python_version_classifiers():

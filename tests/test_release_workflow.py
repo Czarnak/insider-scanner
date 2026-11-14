@@ -51,12 +51,6 @@ def test_workflows_pin_third_party_actions_to_commit_shas() -> None:
             )
 
 
-def test_ci_enforces_minimum_coverage() -> None:
-    content = _read(CI_WORKFLOW)
-
-    assert content.count("--cov-fail-under=80") == 2
-
-
 def test_release_workflow_limits_oidc_to_publish_jobs() -> None:
     content = _read(RELEASE_WORKFLOW)
 

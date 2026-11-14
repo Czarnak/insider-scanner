@@ -6,14 +6,24 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      QT_QPA_PLATFORM: offscreen
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -23,30 +33,22 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install system dependencies (Linux)
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.5"
+
+      - name: Install Qt system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 xvfb
+          sudo apt-get install -y libegl1
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[gui,dev]"
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev --extra gui
 
-      - name: Run tests (Linux — with xvfb for GUI)
-        if: runner.os == 'Linux'
-        run: |
-          xvfb-run --auto-servernum pytest -m "not live" --cov=insider_scanner --cov-report=xml --cov-fail-under=80 -v
-        env:
-          QT_QPA_PLATFORM: offscreen
-
-      - name: Run tests (Windows — skip GUI widget tests)
-        if: runner.os == 'Windows'
-        run: |
-          pytest -m "not live" --ignore=tests/test_gui.py --cov=insider_scanner --cov-report=xml --cov-fail-under=80 -v
-        env:
-          QT_QPA_PLATFORM: offscreen
+      - name: Run offline tests, including GUI widgets
+        run: uv run --locked --extra dev --extra gui pytest -m "not live" --cov=insider_scanner --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
@@ -55,13 +57,40 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
-  lint:
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check .
-      - run: ruff format --check .
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.5"
+      - name: Install locked validation tools
+        run: uv sync --locked --extra dev --extra gui
+      - name: Lint
+        run: uv run --locked --extra dev --extra gui ruff check .
+      - name: Check formatting
+        run: uv run --locked --extra dev --extra gui ruff format --check .
+      - name: Check types
+        run: uv run --locked --extra dev --extra gui mypy src/insider_scanner
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.5"
+      - name: Install locked audit tool
+        run: uv sync --locked --extra dev --extra gui
+      - name: Export locked dependencies
+        run: uv export --locked --extra dev --extra gui --no-emit-project --format requirements.txt --output-file audit-requirements.txt
+      - name: Audit locked dependencies
+        run: uv run --locked --extra dev --extra gui pip-audit --requirement audit-requirements.txt --require-hashes --disable-pip --strict

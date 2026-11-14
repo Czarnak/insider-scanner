@@ -1,7 +1,7 @@
 """Live integration tests that require internet access.
 
 Run with: pytest -m live
-Skip with: pytest -m "not live" (default in CI)
+Offline tests are selected by default locally and in CI.
 """
 
 from __future__ import annotations
