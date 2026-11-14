@@ -455,7 +455,7 @@ JSON exports. Imports are validated, idempotent, do not modify source files, and
 do not alter scan coverage or refresh state. Each file is limited to 50 MiB by
 default; use `--max-file-size-mib` to set a different positive limit. Any
 malformed, oversized, or invalid record produces a nonzero exit code.
-Imports process chunks of 1,000 source records, grouping writes by trade type;
+Imports process chunks of 1,000 source records, grouping writes by trade domain;
 row errors retain their original JSON record indexes. An operationally failed
 chunk reports its affected rows without replaying the failed transaction, and
 later chunks can still import successfully.
