@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.fetch_outcome import FetchStatus
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.services import (
     CongressScanService,
     EuropeanScanService,
-    ScanError,
     open_persistence,
 )
 
@@ -24,15 +22,16 @@ def test_congress_source_error_preserves_uncovered_interval(tmp_path):
 
     service = CongressScanService(context, adapters={"house": fail})
     try:
-        with pytest.raises(ScanError, match="house.*2026-01-01") as exc:
-            service.scan(
-                "Jane Doe",
-                sources=("house",),
-                start_date=date(2026, 1, 1),
-                end_date=date(2026, 1, 2),
-            )
-
-        assert isinstance(exc.value.__cause__, ConnectionError)
+        result = service.scan(
+            "Jane Doe",
+            sources=("house",),
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 2),
+        )
+        assert result.status == FetchStatus.TRANSIENT_FAILURE
+        assert result.issues[0].source == "house"
+        assert result.issues[0].identifier == "Jane Doe 2026-01-01..2026-01-02"
+        assert result.issues[0].reason == "ConnectionError"
         assert context.coverage.get("congress", "Jane Doe", "house") == ()
     finally:
         context.close()
