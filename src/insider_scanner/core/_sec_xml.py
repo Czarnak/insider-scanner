@@ -83,7 +83,7 @@ def guard_xml_pre_parse(
     if xml_bytes.startswith(_NON_UTF8_BOMS) or b"\x00" in xml_bytes:
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
     for token in _XML_TOKENS.finditer(xml_bytes):
-        if token.group().upper().startswith((b"<!DOCTYPE", b"<!ENTITY")):
+        if token.group()[:9].upper().startswith((b"<!DOCTYPE", b"<!ENTITY")):
             raise SecXmlSecurityError(SecSecurityReason.XML, accession)
 
 
@@ -96,7 +96,7 @@ def guard_xml_tree(
 
     Runs before any expensive field conversion and exits on the first breach.
     """
-    if root.getroottree().docinfo.doctype:
+    if root.getroottree().docinfo.internalDTD is not None:
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
     element_count = 0
     text_chars = 0

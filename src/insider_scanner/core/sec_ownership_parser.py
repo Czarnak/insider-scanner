@@ -533,7 +533,7 @@ def _check_long_text(value: str, ctx: _ParseContext) -> None:
 
 
 def _long_text(el: _Element, ctx: _ParseContext) -> str:
-    text = _WHITESPACE_RE.sub(" ", "".join(el.itertext())).strip()
+    text = _WHITESPACE_RE.sub(" ", "".join(str(text) for text in el.itertext())).strip()
     _check_long_text(text, ctx)
     return text
 
