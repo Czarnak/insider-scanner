@@ -52,7 +52,7 @@ def test_incomplete_description_retains_source_context_and_bounds_details():
     )
     assert describe_incomplete(result) == (
         "Incomplete results (senate Jane Doe: result limit; missing page; "
-        "request failed; 1 more issues)"
+        "request failed; 1 more issue)"
     )
     assert describe_incomplete(FetchResult(status=FetchStatus.UNSUPPORTED)) == (
         "Incomplete results (unsupported)"

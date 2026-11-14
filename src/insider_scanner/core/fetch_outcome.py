@@ -74,6 +74,7 @@ def describe_incomplete(records: list[RecordT]) -> str:
         reason = issue.reason.replace("_", " ")
         details.append(f"{label}: {reason}" if label else reason)
     if len(records.issues) > 3:
-        details.append(f"{len(records.issues) - 3} more issues")
+        count = len(records.issues) - 3
+        details.append(f"{count} more issue{'s' if count != 1 else ''}")
     detail = "; ".join(details) or records.status.value.replace("_", " ")
     return f"Incomplete results ({detail})"

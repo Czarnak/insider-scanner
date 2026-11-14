@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from insider_scanner.core.fetch_outcome import (
     FetchIssue,
     FetchResult,
+    FetchStatus,
     as_fetch_result,
     describe_incomplete,
 )
@@ -403,7 +404,7 @@ class ScanTab(QWidget):
             from insider_scanner.core.merger import merge_trades
 
             all_lists = []
-            issues = []
+            issues: list[FetchIssue] = []
             for i, ticker in enumerate(tickers):
                 if cancel.is_set():
                     break
@@ -425,7 +426,15 @@ class ScanTab(QWidget):
 
             if cancel.is_set():
                 issues.append(FetchIssue("cancelled"))
-            return FetchResult(merge_trades(*all_lists), issues=issues)
+            trades = merge_trades(*all_lists)
+            status = (
+                FetchStatus.UNSUPPORTED
+                if not trades
+                and issues
+                and all(not issue.retryable for issue in issues)
+                else None
+            )
+            return FetchResult(trades, status=status, issues=issues)
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)

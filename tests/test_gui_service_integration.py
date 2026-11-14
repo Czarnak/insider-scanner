@@ -10,7 +10,7 @@ import pytest
 from PySide6.QtCore import QRunnable
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
-from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import open_persistence
@@ -162,6 +162,27 @@ def test_scan_tab_watchlist_preserves_incomplete_metadata_and_other_tickers(
     assert (
         "Incomplete results (openinsider AAPL: result limit)" in tab.status_label.text()
     )
+
+
+def test_scan_tab_watchlist_preserves_permanently_unsupported_outcome(
+    monkeypatch, qtbot
+):
+    from insider_scanner.gui import scan_tab
+
+    result = FetchResult(
+        status=FetchStatus.UNSUPPORTED,
+        issues=[FetchIssue("unsupported_format", source="example", retryable=False)],
+    )
+    monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
+    monkeypatch.setattr("insider_scanner.utils.config.load_watchlist", lambda: ["AAPL"])
+    tab = scan_tab.ScanTab(FakeService(result))
+    qtbot.addWidget(tab)
+
+    tab._run_watchlist()
+
+    assert tab._trades.status == FetchStatus.UNSUPPORTED
+    assert tab._trades.issues == result.issues
+    assert "unsupported format" in tab.status_label.text()
 
 
 @pytest.mark.parametrize("with_rows", [False, True])
