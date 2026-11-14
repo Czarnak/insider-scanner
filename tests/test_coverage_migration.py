@@ -42,6 +42,14 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
                     "covered_at": observed,
                 },
                 {
+                    "domain": "eu",
+                    "identifier": "GB0002875804",
+                    "source": "rns",
+                    "start_date": date(2026, 1, 1),
+                    "end_date": date(2026, 1, 31),
+                    "covered_at": observed,
+                },
+                {
                     "domain": "congress",
                     "identifier": "*",
                     "source": "senate",
@@ -56,19 +64,16 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
     try:
         bootstrap_database(engine)
         repo = CoverageRepository(engine)
-        assert repo.get("us", "AAPL", "secform4") == (
-            DateInterval(date(2026, 2, 1), date(2026, 2, 4)),
-        )
+        assert repo.get("us", "AAPL", "secform4") == ()
         assert repo.get("congress", "*", "house") == ()
-        assert repo.get("congress", "*", "senate") == (
-            DateInterval(date(2026, 1, 1), date(2026, 1, 31)),
-        )
+        assert repo.get("congress", "*", "senate") == ()
         with engine.connect() as connection:
             assert connection.execute(select(us_trades)).all() == before_us
             assert connection.execute(select(congress_trades)).all() == before_congress
-            assert set(
-                connection.execute(select(scan_coverage.c.covered_at)).scalars()
-            ) == {observed}
+            rows = connection.execute(select(scan_coverage)).all()
+            assert len(rows) == 1
+            assert rows[0].domain == "eu"
+            assert rows[0].covered_at == observed
 
         # Applying bootstrap again cannot discard a later successful rescan.
         completed = DateInterval(date(2026, 2, 1), date(2026, 2, 10))
@@ -77,5 +82,31 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
         )
         bootstrap_database(engine)
         assert repo.get("us", "AAPL", "secform4") == (completed,)
+    finally:
+        engine.dispose()
+
+
+def test_legacy_compaction_cannot_hide_an_unfinished_day(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "compacted-coverage.sqlite3")
+    try:
+        bootstrap_database(engine, migrations=MIGRATIONS[:4])
+        # Jan 1 was fetched during Jan 1, then compaction on Jan 2 replaced
+        # covered_at for the combined row. The timestamp cannot prove Jan 1 safe.
+        interval = DateInterval(date(2026, 1, 1), date(2026, 1, 2))
+        with engine.begin() as connection:
+            connection.execute(
+                insert(scan_coverage).values(
+                    domain="us",
+                    identifier="AAPL",
+                    source="openinsider",
+                    start_date=interval.start,
+                    end_date=interval.end,
+                    covered_at=datetime(2026, 1, 2, 9, tzinfo=UTC),
+                )
+            )
+        bootstrap_database(engine)
+        assert CoverageRepository(engine).gaps(
+            "us", "AAPL", "openinsider", interval
+        ) == (interval,)
     finally:
         engine.dispose()
