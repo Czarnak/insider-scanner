@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.engine import Connection
@@ -137,6 +138,34 @@ def _repair_normalized_inputs(connection: Connection) -> None:
             )
 
 
+def _repair_unfinished_scan_coverage(connection: Connection) -> None:
+    """Reopen dates that were still unfinished when legacy coverage was saved.
+
+    Coverage is only a fetch optimization. Retain every trade and its original
+    timestamp while allowing another scan to retrieve later-published filings.
+    """
+    yesterday = datetime.now(UTC).date() - timedelta(days=1)
+    rows = connection.execute(
+        select(scan_coverage).where(scan_coverage.c.domain.in_(("us", "congress")))
+    ).all()
+    for row in rows:
+        completed_end = min(
+            row.end_date,
+            row.covered_at.date() - timedelta(days=1),
+            yesterday,
+        )
+        if completed_end < row.start_date:
+            connection.execute(
+                delete(scan_coverage).where(scan_coverage.c.id == row.id)
+            )
+        elif completed_end < row.end_date:
+            connection.execute(
+                scan_coverage.update()
+                .where(scan_coverage.c.id == row.id)
+                .values(end_date=completed_end)
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -157,5 +186,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=4,
         name="repair_normalized_inputs",
         upgrade=_repair_normalized_inputs,
+    ),
+    Migration(
+        version=5,
+        name="repair_unfinished_scan_coverage",
+        upgrade=_repair_unfinished_scan_coverage,
     ),
 )
