@@ -6,7 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable
 from contextlib import closing
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +18,7 @@ from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
 )
+from insider_scanner.services.sec_downloads import sec_today
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
 
@@ -433,10 +434,25 @@ def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
         f"skipped={summary.transactions_skipped}"
     )
     print(f"  failures:     {summary.failures}")
+    if summary.dates_completed < summary.dates_total:
+        print(
+            "Warning: some SEC dates are incomplete and remain available for retry. "
+            "The current day's index is provisional until that day ends.",
+            file=sys.stderr,
+        )
 
 
 def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> int:
     """Ingest one day of SEC ownership filings into the local database."""
+    today = sec_today()
+    day = args.date
+    if day is None:
+        day = today - timedelta(days=1)
+        while day.weekday() >= 5:
+            day -= timedelta(days=1)
+    if day > today:
+        print("Invalid date: SEC date must not be in the future", file=sys.stderr)
+        return 2
     client = _build_sec_client()
     if client is None:
         return 1
@@ -447,7 +463,6 @@ def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> in
             cleanup=not args.no_cleanup,
             checkpoint_path=None,
         )
-        day = args.date or date.today()
         summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
         _print_sec_summary(summary)
         return 0
@@ -459,6 +474,8 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
 
     try:
         validate_range(args.since, args.until)
+        if args.until > sec_today():
+            raise ValueError("end_date must not be in the future")
     except ValueError as error:
         print(f"Invalid date range: {error}", file=sys.stderr)
         return 2
@@ -541,7 +558,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # scan
-    p_scan = sub.add_parser("scan", help="Scan insider trades for a ticker")
+    p_scan = sub.add_parser(
+        "scan",
+        help="Scan insider trades for a ticker",
+        description=(
+            "Scan the requested ticker from the selected sources. "
+            "Without --since/--until, scan the last six months through today."
+        ),
+    )
     p_scan.add_argument("ticker", help="Stock ticker symbol")
     p_scan.add_argument(
         "--type", choices=["Buy", "Sell", "Exercise", "Other"], default=None
@@ -551,7 +575,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--since", type=_parse_date_arg, default=None)
     p_scan.add_argument("--until", type=_parse_date_arg, default=None)
     p_scan.add_argument("--save", action="store_true")
-    p_scan.add_argument("--no-cache", action="store_true")
+    p_scan.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Fetch again, bypassing stored coverage, refresh freshness and HTTP caches",
+    )
     p_scan.add_argument(
         "--source",
         action="append",
@@ -570,7 +598,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_latest.add_argument("--since", type=_parse_date_arg, default=None)
     p_latest.add_argument("--until", type=_parse_date_arg, default=None)
     p_latest.add_argument("--save", action="store_true")
-    p_latest.add_argument("--no-cache", action="store_true")
+    p_latest.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Fetch again, bypassing refresh freshness and HTTP caches",
+    )
     p_latest.add_argument(
         "--source",
         action="append",
@@ -659,8 +691,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_date_arg,
         default=None,
         help=(
-            "Day to ingest (YYYY-MM-DD); defaults to today. The SEC daily index "
-            "lags the filing date by about one business day."
+            "Day to ingest (YYYY-MM-DD); defaults to the previous weekday in US "
+            "Eastern time. Today's index remains provisional and is retried later."
         ),
     )
     p_sec_daily.add_argument(
