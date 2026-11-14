@@ -13,6 +13,7 @@ from sqlalchemy import String, Table, and_, bindparam, func, or_, select, tuple_
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError, StatementError
+from sqlalchemy.sql.elements import ColumnElement
 
 from insider_scanner.core.congress_identity import MemberIdentity, name_matches
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
@@ -115,6 +116,7 @@ def _validate_values(
     policy: _BatchPolicy, values: dict, connection: Connection
 ) -> None:
     """Reject invalid inputs before a later same-key row can conceal them."""
+    nonnegative: tuple[str, ...]
     for name, value in values.items():
         column = policy.table.c[name]
         if value is None and not column.nullable:
@@ -165,7 +167,7 @@ def _write_batch(
     for _, values in prepared:
         _validate_values(policy, values, connection)
     keys = [values["canonical_key"] for _, values in prepared]
-    condition = policy.table.c.canonical_key.in_(keys)
+    condition: ColumnElement[bool] = policy.table.c.canonical_key.in_(keys)
     if policy.table is congress_trades:
         documents = {
             (trade.doc_id.strip(), trade.source)
