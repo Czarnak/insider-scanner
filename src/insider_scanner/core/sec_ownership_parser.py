@@ -8,25 +8,27 @@ network access.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 
-from lxml import etree
-
 from insider_scanner.core._sec_xml import (
     SecXmlSecurityError,
-    guard_xml_pre_parse,
-    guard_xml_tree,
-    hardened_xml_parser,
 )
-from insider_scanner.core.sec_ownership_document import OwnershipDocument
+from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES
+from insider_scanner.core.sec_ownership_document import (
+    OwnershipDocument,
+    SecOwnershipDocumentError,
+    _validated_ownership_xml,
+)
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
 )
+from insider_scanner.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from lxml.etree import _Element
@@ -54,10 +56,16 @@ class _ParseContext:
 
     policy: SecSecurityPolicy
     accession: str | None
+    warnings: list[str] = field(default_factory=list)
 
 
 # Collapses runs of whitespace (incl. newlines/tabs from flattened markup).
 _WHITESPACE_RE = re.compile(r"\s+")
+_XS_DATE_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))?\Z"
+)
+_GROUPED_NUMBER_RE = re.compile(r"[+-]?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?\Z")
+_log = get_logger("sec_ownership_parser")
 
 # ---------------------------------------------------------------------------
 # Category mapping
@@ -128,6 +136,7 @@ class NonDerivativeTransaction:
     shares_owned_following: Decimal | None
     direct_or_indirect: str | None
     footnote_ids: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +157,7 @@ class DerivativeTransaction:
     shares_owned_following: Decimal | None
     direct_or_indirect: str | None
     footnote_ids: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +173,7 @@ class OwnershipFiling:
     non_derivative_transactions: tuple[NonDerivativeTransaction, ...]
     derivative_transactions: tuple[DerivativeTransaction, ...]
     footnotes: tuple[Footnote, ...]
+    warnings: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -187,37 +198,28 @@ def parse_ownership_document(
     Raises
     ------
     SecOwnershipParseError
-        When required data is missing or a present value cannot be parsed.
+        When the document or required identity/date/code fields are invalid.
     SecXmlSecurityError
         When the XML violates the security policy's resource or field limits.
 
     Notes
     -----
-    The pre-parse and tree guards are applied here independently of
-    ``extract_ownership_document``: this function is a self-contained untrusted
-    boundary that may be called with any policy, so it re-validates the XML
-    rather than trusting a prior extraction pass.
+    Extracted documents reuse their private validated tree under the same policy.
+    Manually constructed documents and changed policies are fully validated.
     """
-    xml_bytes = document.xml_text.encode("utf-8")
-    sha256 = hashlib.sha256(xml_bytes).hexdigest()
-
-    guard_xml_pre_parse(xml_bytes, policy, document.accession_number)
     try:
-        root = etree.fromstring(xml_bytes, hardened_xml_parser())
-    except etree.XMLSyntaxError as exc:
-        acc = document.accession_number
-        raise SecOwnershipParseError(f"XML parse failure (accession={acc})") from exc
-    guard_xml_tree(root, policy, document.accession_number)
+        root, xml_bytes = _validated_ownership_xml(document, policy)
+    except SecOwnershipDocumentError as exc:
+        raise SecOwnershipParseError("Invalid ownership XML document") from exc
+    sha256 = hashlib.sha256(xml_bytes).hexdigest()
 
     ctx = _ParseContext(policy=policy, accession=document.accession_number)
 
     # document_type: prefer XML element, fall back to document.document_type
     xml_doc_type = _text(root, "documentType", ctx)
     document_type = xml_doc_type or document.document_type
-    if not document_type:
-        raise SecOwnershipParseError(
-            f"documentType missing (accession={document.accession_number})"
-        )
+    if document_type not in OWNERSHIP_FORM_TYPES:
+        raise SecOwnershipParseError("Missing or unsupported documentType")
 
     acc = document.accession_number
     base = acc if acc else f"sha256:{sha256}"
@@ -227,6 +229,10 @@ def parse_ownership_document(
 
     issuer = _parse_issuer(root, ctx)
     reporting_owner = _parse_reporting_owner(root, ctx)
+    if not issuer.cik or not reporting_owner.cik:
+        raise SecOwnershipParseError(
+            "Ownership XML requires issuer and reporting-owner CIKs"
+        )
     footnotes = _parse_footnotes(root, ctx)
 
     non_derivative_transactions = _parse_non_derivative_table(root, base, ctx)
@@ -244,6 +250,7 @@ def parse_ownership_document(
         non_derivative_transactions=non_derivative_transactions,
         derivative_transactions=derivative_transactions,
         footnotes=footnotes,
+        warnings=tuple(ctx.warnings),
     )
 
 
@@ -308,8 +315,7 @@ def _parse_footnotes(root: _Element, ctx: _ParseContext) -> tuple[Footnote, ...]
         fid = fn.get("id")
         if fid is None:
             continue
-        text = _WHITESPACE_RE.sub(" ", "".join(str(t) for t in fn.itertext())).strip()
-        _check_long_text(text, ctx)
+        text = _long_text(fn, ctx)
         result.append(Footnote(footnote_id=fid, text=text))
     return tuple(result)
 
@@ -318,7 +324,7 @@ def _parse_transaction_common(el: _Element, ctx: _ParseContext) -> _TransactionC
     """Extract fields shared by both non-derivative and derivative rows.
 
     Returns None for each field when the element or its <value> child is absent.
-    Raises SecOwnershipParseError when a value is present but unparseable.
+    Invalid optional values become None with a payload-free warning.
     """
     amounts = el.find("transactionAmounts")
     if amounts is not None:
@@ -396,6 +402,7 @@ def _parse_derivative_table(
 def _parse_non_derivative_txn(
     el: _Element, row_id: str, ctx: _ParseContext
 ) -> NonDerivativeTransaction:
+    ctx = replace(ctx, warnings=[])
     security_title = _value_text(el, ctx, tag="securityTitle")
     transaction_date = _value_date(el, "transactionDate", ctx, "transactionDate")
 
@@ -404,6 +411,14 @@ def _parse_non_derivative_txn(
         _text(coding, "transactionCode", ctx) if coding is not None else None
     )
 
+    if (
+        transaction_date is None
+        or transaction_code is None
+        or not re.fullmatch(r"[A-Z]", transaction_code)
+    ):
+        raise SecOwnershipParseError(
+            "Transaction requires a valid date and transaction code"
+        )
     common = _parse_transaction_common(el, ctx)
     footnote_ids = _collect_footnote_ids(el)
 
@@ -419,12 +434,14 @@ def _parse_non_derivative_txn(
         shares_owned_following=common.shares_owned_following,
         direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
+        warnings=tuple(ctx.warnings),
     )
 
 
 def _parse_derivative_txn(
     el: _Element, row_id: str, ctx: _ParseContext
 ) -> DerivativeTransaction:
+    ctx = replace(ctx, warnings=[])
     security_title = _value_text(el, ctx, tag="securityTitle")
     transaction_date = _value_date(el, "transactionDate", ctx, "transactionDate")
 
@@ -433,6 +450,14 @@ def _parse_derivative_txn(
         _text(coding, "transactionCode", ctx) if coding is not None else None
     )
 
+    if (
+        transaction_date is None
+        or transaction_code is None
+        or not re.fullmatch(r"[A-Z]", transaction_code)
+    ):
+        raise SecOwnershipParseError(
+            "Transaction requires a valid date and transaction code"
+        )
     common = _parse_transaction_common(el, ctx)
 
     conv_el = el.find("conversionOrExercisePrice")
@@ -480,6 +505,7 @@ def _parse_derivative_txn(
         shares_owned_following=common.shares_owned_following,
         direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
+        warnings=tuple(ctx.warnings),
     )
 
 
@@ -506,16 +532,15 @@ def _check_long_text(value: str, ctx: _ParseContext) -> None:
         raise SecXmlSecurityError(accession=ctx.accession)
 
 
+def _long_text(el: _Element, ctx: _ParseContext) -> str:
+    text = _WHITESPACE_RE.sub(" ", "".join(str(text) for text in el.itertext())).strip()
+    _check_long_text(text, ctx)
+    return text
+
+
 def _remarks(root: _Element, ctx: _ParseContext) -> str | None:
-    """Return the remarks element text, bounded by the long-text limit."""
     el = root.find("remarks")
-    if el is None or el.text is None:
-        return None
-    stripped = el.text.strip()
-    if not stripped:
-        return None
-    _check_long_text(stripped, ctx)
-    return stripped
+    return (_long_text(el, ctx) or None) if el is not None else None
 
 
 def _text(parent: _Element | None, tag: str, ctx: _ParseContext) -> str | None:
@@ -559,7 +584,7 @@ def _value_decimal(
 
     Returns None when the element or its <value> child is absent.
     Raises SecXmlSecurityError when the lexeme exceeds the numeric limit, and
-    SecOwnershipParseError when the value is present but unparseable.
+    returns None with a warning for an invalid optional value.
     """
     if el is None:
         return None
@@ -570,58 +595,56 @@ def _value_decimal(
     if not raw:
         return None
     _check_numeric(raw, ctx)
+    normalized = raw.removeprefix("$").strip()
+    if _GROUPED_NUMBER_RE.fullmatch(normalized):
+        normalized = normalized.replace(",", "")
     try:
-        return Decimal(raw)
-    except InvalidOperation as exc:
-        raise SecOwnershipParseError(
-            f"Invalid decimal for field '{field}' (accession={ctx.accession})"
-        ) from exc
+        value = Decimal(normalized)
+        if not value.is_finite() or not math.isfinite(float(value)):
+            raise ValueError("non-finite numeric value")
+        return value
+    except (InvalidOperation, ValueError, OverflowError):
+        _optional_warning(ctx, field, "invalid_decimal")
+        return None
+
+
+def _optional_warning(ctx: _ParseContext, field: str, reason: str) -> None:
+    # Only schema field names and stable reason codes are retained or logged.
+    ctx.warnings.append(f"{reason}:{field}")
+    _log.warning("SEC optional field ignored field=%s reason=%s", field, reason)
+
+
+def _date_value(
+    raw: str, ctx: _ParseContext, field: str, *, required: bool = False
+) -> date | None:
+    _check_numeric(raw, ctx)
+    try:
+        if _XS_DATE_RE.fullmatch(raw) is None:
+            raise ValueError("invalid xs:date")
+        return date.fromisoformat(raw[:10])
+    except ValueError as exc:
+        if required:
+            raise SecOwnershipParseError("Invalid transactionDate") from exc
+        _optional_warning(ctx, field, "invalid_date")
+        return None
 
 
 def _value_date(
     parent: _Element, tag: str, ctx: _ParseContext, field: str
 ) -> date | None:
-    """Parse a date from the <value> child of parent[tag].
-
-    Returns None when the element or <value> is absent.
-    Raises SecXmlSecurityError when the lexeme exceeds the numeric limit, and
-    SecOwnershipParseError when the value is present but unparseable.
-    """
-    el = parent.find(tag)
-    if el is None:
-        return None
-    val = el.find("value")
-    if val is None or val.text is None:
-        return None
-    raw = val.text.strip()
-    if not raw:
-        return None
-    _check_numeric(raw, ctx)
-    try:
-        return date.fromisoformat(raw)
-    except ValueError as exc:
-        raise SecOwnershipParseError(
-            f"Invalid date for field '{field}' (accession={ctx.accession})"
-        ) from exc
+    el = parent.find(f"{tag}/value")
+    raw = (el.text or "").strip() if el is not None else ""
+    return (
+        _date_value(raw, ctx, field, required=tag == "transactionDate") if raw else None
+    )
 
 
 def _parse_date_elem(
     root: _Element, tag: str, ctx: _ParseContext, field: str
 ) -> date | None:
-    """Parse a bare text date element (not wrapped in <value>) from root."""
     el = root.find(tag)
-    if el is None or el.text is None:
-        return None
-    raw = el.text.strip()
-    if not raw:
-        return None
-    _check_numeric(raw, ctx)
-    try:
-        return date.fromisoformat(raw)
-    except ValueError as exc:
-        raise SecOwnershipParseError(
-            f"Invalid date for field '{field}' (accession={ctx.accession})"
-        ) from exc
+    raw = (el.text or "").strip() if el is not None else ""
+    return _date_value(raw, ctx, field) if raw else None
 
 
 def _bool_flag(parent: _Element | None, tag: str) -> bool:

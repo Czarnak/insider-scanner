@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 
 from insider_scanner.core import edgar
 from insider_scanner.core._sec_paths import resolves_within
+from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES as OWNERSHIP_FORMS
 from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
@@ -33,7 +34,6 @@ from insider_scanner.core.sec_security import (
 # Public constants
 # ---------------------------------------------------------------------------
 
-OWNERSHIP_FORMS: frozenset[str] = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 
 # ---------------------------------------------------------------------------
 # Filename patterns

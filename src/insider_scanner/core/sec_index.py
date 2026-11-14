@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from insider_scanner.core import edgar
-
-OWNERSHIP_FORMS = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
+from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES as OWNERSHIP_FORMS
 
 
 @dataclass(frozen=True, slots=True)

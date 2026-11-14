@@ -3,9 +3,8 @@
 SEC filing XML is untrusted input.  Every parse of such XML must disable
 external-entity resolution and network access and avoid loading DTDs so a
 malicious filing cannot trigger out-of-band fetches or entity-expansion
-attacks.  Both ``sec_ownership_document`` and ``sec_ownership_parser`` build
-their parser here and share the byte/declaration/tree guards so the hardening
-configuration can never drift between the two parse sites.
+attacks.  The extraction boundary builds its parser here; standalone documents use the
+same validation path before transaction parsing.
 
 Limit violations raise a reason-coded, payload-free :class:`SecXmlSecurityError`
 (mirroring the SEC client/downloader security errors).  Callers map a raw
@@ -15,7 +14,6 @@ this module deliberately does not parse on the caller's behalf.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 from lxml import etree
@@ -28,11 +26,11 @@ if TYPE_CHECKING:
 
 # A DTD or entity declaration in untrusted SEC XML is always rejected, in
 # addition to lxml's disabled DTD/entity resolution (defense in depth).
-_DTD_OR_ENTITY_DECL = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+
 
 # Byte-order marks for non-UTF-8 encodings.  The declaration scan below is a
 # UTF-8 byte pattern, so UTF-16/UTF-32 input would slip past it; we reject those
-# encodings outright (callers always hand us UTF-8 bytes).  The two-byte UTF-16
+# encodings outright. ASCII-compatible declared encodings remain supported.  The two-byte UTF-16
 # LE mark also prefixes the UTF-32 LE mark, so it covers both.
 _NON_UTF8_BOMS = (b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")
 
@@ -78,10 +76,32 @@ def guard_xml_pre_parse(
     """Reject oversized payloads and DTD/entity declarations before parsing."""
     if len(xml_bytes) > policy.xml_max_bytes:
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-    if xml_bytes.startswith(_NON_UTF8_BOMS):
+    if xml_bytes.startswith(_NON_UTF8_BOMS) or b"\x00" in xml_bytes:
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-    if _DTD_OR_ENTITY_DECL.search(xml_bytes) is not None:
-        raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+    cursor = 0
+    while (start := xml_bytes.find(b"<", cursor)) != -1:
+        # Consume each literal once. Regex searches for a closing delimiter can
+        # retry at every unterminated opener and become quadratic on bad input.
+        terminator = None
+        if xml_bytes.startswith(b"<!--", start):
+            terminator = b"-->"
+        elif xml_bytes.startswith(b"<![CDATA[", start):
+            terminator = b"]]>"
+        elif xml_bytes.startswith(b"<?", start):
+            terminator = b"?>"
+        if terminator is not None:
+            end = xml_bytes.find(terminator, start + 2)
+            if end == -1:
+                raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+            cursor = end + len(terminator)
+        else:
+            if (
+                xml_bytes[start : start + 9]
+                .upper()
+                .startswith((b"<!DOCTYPE", b"<!ENTITY"))
+            ):
+                raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+            cursor = start + 1
 
 
 def guard_xml_tree(
@@ -93,26 +113,34 @@ def guard_xml_tree(
 
     Runs before any expensive field conversion and exits on the first breach.
     """
+    if root.getroottree().docinfo.internalDTD is not None:
+        raise SecXmlSecurityError(SecSecurityReason.XML, accession)
     element_count = 0
-    text_bytes = 0
-    stack: list[tuple[_Element, int]] = [(root, 1)]
-    while stack:
-        element, depth = stack.pop()
+    text_chars = 0
+    depth = 0
+    for event, element in etree.iterwalk(
+        root, events=("start", "end", "comment", "pi")
+    ):
+        if event == "end":
+            depth -= 1
+            continue
+        node_depth = depth + 1
+        if event == "start":
+            depth = node_depth
         element_count += 1
-        if element_count > policy.xml_max_elements:
+        if element_count > policy.xml_max_elements or node_depth > policy.xml_max_depth:
             raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-        if depth > policy.xml_max_depth:
+        text_chars += len(element.text or "") + len(element.tail or "")
+        text_chars += sum(len(value) for value in element.attrib.values())
+        if text_chars > policy.xml_max_text_bytes:
             raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-        if element.text:
-            text_bytes += len(element.text.encode("utf-8"))
-        if element.tail:
-            text_bytes += len(element.tail.encode("utf-8"))
-        for attr_value in element.attrib.values():
-            text_bytes += len(
-                attr_value
-                if isinstance(attr_value, bytes)
-                else attr_value.encode("utf-8")
-            )
-        if text_bytes > policy.xml_max_text_bytes:
-            raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-        stack.extend((child, depth + 1) for child in element)
+    # UTF-8 requires at most four bytes per Unicode character. Most documents
+    # are comfortably below the limit, so exact encodings are needed only near
+    # the boundary. Include comments, PIs, tails and attributes in both passes.
+    if text_chars * 4 > policy.xml_max_text_bytes:
+        text_bytes = 0
+        for element in root.iter():
+            values = (element.text or "", element.tail or "", *element.attrib.values())
+            text_bytes += sum(len(value.encode("utf-8")) for value in values)
+            if text_bytes > policy.xml_max_text_bytes:
+                raise SecXmlSecurityError(SecSecurityReason.XML, accession)

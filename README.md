@@ -217,6 +217,20 @@ even when another filing fails or an optional validated-cache write fails.
 Deterministic rejections and non-XML ownership filings are reported separately
 from retryable failures; unsupported legacy filings do not count as parse errors.
 
+Ownership XML preserves declared ASCII-compatible encodings, including UTF-8,
+ISO-8859-1 and Windows-1252; unrelated submission attachments are not decoded.
+Already-decoded text is handled as Unicode. Namespaced ownership roots and
+UTF-16/UTF-32 XML are rejected explicitly. DTDs, entities and XML resource-limit
+violations remain rejected. Extraction and transaction parsing share one
+validated tree when using the same security policy.
+
+Timezone suffixes on XML dates preserve the disclosed calendar date. Invalid
+optional numeric/date values become missing values with field-specific warnings;
+date-order anomalies also retain the affected rows. These warnings are stored in
+`sec_detail_json` without the invalid source text. Missing issuer/owner CIKs or
+invalid transaction dates/codes fail parsing. Non-finite or overflowing numeric
+values cannot reach numeric database fields.
+
 #### SEC full bulk backfill
 
 For a one-time historical import of all SEC ownership filings you can download the
