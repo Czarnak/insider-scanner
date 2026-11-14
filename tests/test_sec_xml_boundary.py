@@ -98,7 +98,11 @@ def test_namespaced_ownership_is_explicitly_rejected(root):
 
 def test_form_vocabulary_is_shared():
     from insider_scanner.core.sec_bulk import OWNERSHIP_FORMS as bulk
-    from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES
+    from insider_scanner.core.sec_forms import (
+        OWNERSHIP_FORM_TYPES,
+        TRANSACTION_FORM_TYPES,
+    )
     from insider_scanner.core.sec_index import OWNERSHIP_FORMS as daily
 
-    assert bulk is daily is OWNERSHIP_FORM_TYPES
+    assert bulk is daily is TRANSACTION_FORM_TYPES
+    assert TRANSACTION_FORM_TYPES < OWNERSHIP_FORM_TYPES
