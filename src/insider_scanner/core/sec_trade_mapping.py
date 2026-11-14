@@ -9,10 +9,9 @@ Field mapping rules
 * ``trade_type`` derives from the parser ``category`` field:
   purchase→Buy, sale→Sell, exercise→Exercise, everything else→Other.
 * ``ticker`` = ``filing.issuer.trading_symbol`` when truthy, else ``""``.
-* ``company`` = ``filing.issuer.name`` when truthy, else
-  ``index_row.company_name`` (fall-through to index authoritative name).
-* ``insider_title`` = ``officer_title`` when truthy, else a joined string of
-  the active boolean-role flags (Director / Officer / 10% Owner / Other).
+* The index company name is a fallback only for the issuer's own index row.
+* The primary owner's columns remain stable; all reporting owners and roles
+  are retained in ``sec_detail_json`` without duplicating transactions.
 * ``value`` = ``float(shares * price_per_share)`` when BOTH numeric fields are
   present, else ``0.0``.
 * ``sec_detail_json`` is serialized with ``sort_keys=True`` so repeated calls
@@ -35,6 +34,7 @@ from insider_scanner.core.sec_ownership_parser import (
     Footnote,
     NonDerivativeTransaction,
     OwnershipFiling,
+    ReportingOwner,
 )
 from insider_scanner.utils.logging import get_logger
 
@@ -77,19 +77,40 @@ def _insider_title(
     is_officer: bool,
     is_ten_percent_owner: bool,
     is_other: bool,
+    other_text: str | None = None,
 ) -> str:
-    if officer_title:
-        return officer_title
-    roles: list[str] = []
+    roles: list[str] = [officer_title] if officer_title else []
     if is_director:
         roles.append("Director")
-    if is_officer:
+    if is_officer and not officer_title:
         roles.append("Officer")
     if is_ten_percent_owner:
         roles.append("10% Owner")
     if is_other:
-        roles.append("Other")
+        roles.append(other_text or "Other")
     return ", ".join(roles)
+
+
+def _normalized_cik(cik: str | None) -> str:
+    if not cik:
+        return ""
+    try:
+        return edgar.normalize_cik(cik.strip())
+    except (TypeError, ValueError) as exc:
+        raise SecTradeMappingError("SEC CIK is invalid") from exc
+
+
+def _owner_detail(owner: ReportingOwner) -> dict[str, object]:
+    return {
+        "cik": _normalized_cik(owner.cik),
+        "name": owner.name,
+        "officer_title": owner.officer_title,
+        "is_director": owner.is_director,
+        "is_officer": owner.is_officer,
+        "is_ten_percent_owner": owner.is_ten_percent_owner,
+        "is_other": owner.is_other,
+        "other_text": owner.other_text,
+    }
 
 
 def _footnote_index(footnotes: tuple[Footnote, ...]) -> dict[str, str]:
@@ -165,6 +186,10 @@ def _build_detail(
         "footnote_ids": list(capped_ids),
         "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},
         "security_title": txn.security_title,
+        "reporting_owners": [
+            _owner_detail(owner)
+            for owner in (ctx.filing.reporting_owners or (ctx.filing.reporting_owner,))
+        ],
     }
     warnings = [*ctx.warnings, *txn.warnings]
     if isinstance(txn, DerivativeTransaction):
@@ -277,11 +302,14 @@ def ownership_filing_to_trades(
         _log.warning(
             "SEC data-quality warning reason=period_of_report_after_filing_date"
         )
+    cik_issuer = _normalized_cik(filing.issuer.cik)
+    index_cik = _normalized_cik(index_row.cik)
     ctx = _MappingContext(
         filing=filing,
         index_row=index_row,
         ticker=filing.issuer.trading_symbol or "",
-        company=filing.issuer.name or index_row.company_name,
+        company=filing.issuer.name
+        or (index_row.company_name if cik_issuer and cik_issuer == index_cik else ""),
         insider_name=filing.reporting_owner.name or "",
         insider_title=_insider_title(
             filing.reporting_owner.officer_title,
@@ -289,10 +317,11 @@ def ownership_filing_to_trades(
             filing.reporting_owner.is_officer,
             filing.reporting_owner.is_ten_percent_owner,
             filing.reporting_owner.is_other,
+            filing.reporting_owner.other_text,
         ),
         edgar_url=edgar.build_filing_archive_url(index_row.archive_path),
-        cik_issuer=filing.issuer.cik or "",
-        cik_insider=filing.reporting_owner.cik or "",
+        cik_issuer=cik_issuer,
+        cik_insider=_normalized_cik(filing.reporting_owner.cik),
         footnotes=_footnote_index(filing.footnotes),
         warnings=tuple(warnings),
     )

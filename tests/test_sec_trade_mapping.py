@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -317,9 +318,17 @@ class TestTickerCompanyFallback:
     def test_company_falls_back_to_index_row_name_when_issuer_name_none(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(
-            _filing(non_derivs=(nd,), issuer=_issuer(name=None)), _INDEX_ROW
+            _filing(non_derivs=(nd,), issuer=_issuer(name=None, cik="1234567")),
+            _INDEX_ROW,
         )
         assert trades[0].company == _INDEX_ROW.company_name
+
+    def test_owner_index_name_is_never_used_as_company(self) -> None:
+        trade = ownership_filing_to_trades(
+            _filing(non_derivs=(_non_deriv(),), issuer=_issuer(name=None)),
+            replace(_INDEX_ROW, company_name="OWNER NAME"),
+        )[0]
+        assert trade.company == ""
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +337,19 @@ class TestTickerCompanyFallback:
 
 
 class TestInsiderTitle:
+    def test_officer_title_preserves_all_active_roles(self) -> None:
+        owner = replace(
+            _owner(),
+            is_director=True,
+            is_ten_percent_owner=True,
+            is_other=True,
+            other_text="Investment manager",
+        )
+        trade = ownership_filing_to_trades(
+            _filing(non_derivs=(_non_deriv(),), owner=owner), _INDEX_ROW
+        )[0]
+        assert trade.insider_title == "CEO, Director, 10% Owner, Investment manager"
+
     def test_officer_title_used_when_present(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(
@@ -384,6 +406,33 @@ class TestInsiderTitle:
 
 
 class TestFirstClassSecFields:
+    def test_all_reporting_owners_retained_without_expanding_transactions(self) -> None:
+        primary = replace(_owner(), cik="1111111")
+        joint = replace(
+            _owner(name="Joint Fund"),
+            cik="2222222",
+            is_other=True,
+            other_text="General partner",
+        )
+        filing = replace(
+            _filing(non_derivs=(_non_deriv(row_id="stable-row"),), owner=primary),
+            reporting_owners=(primary, joint),
+            issuer=_issuer(cik="9876543"),
+        )
+        trades = ownership_filing_to_trades(filing, _INDEX_ROW)
+        assert len(trades) == 1
+        trade = trades[0]
+        assert (trade.cik_issuer, trade.cik_insider, trade.sec_row_id) == (
+            "0009876543",
+            "0001111111",
+            "stable-row",
+        )
+        owners = json.loads(trade.sec_detail_json)["reporting_owners"]
+        assert [owner["cik"] for owner in owners] == ["0001111111", "0002222222"]
+        assert owners[1]["name"] == "Joint Fund"
+        assert owners[1]["is_other"] is True
+        assert owners[1]["other_text"] == "General partner"
+
     def test_source_is_sec_edgar(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
