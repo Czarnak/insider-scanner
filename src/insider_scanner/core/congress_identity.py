@@ -230,6 +230,11 @@ def name_matches(
 ) -> bool:
     """Match surname and first name/initial without substring containment."""
     identity = identity_for(candidate) if not isinstance(candidate, str) else None
+    candidate_name = (
+        candidate
+        if isinstance(candidate, str)
+        else identity_for(candidate).official_name
+    )
     if isinstance(query, str):
         known = resolve_member(query)
         if known is None and identity is not None:
@@ -240,11 +245,13 @@ def name_matches(
     if identity is not None:
         if query_identity.key == identity.key:
             return True
-        candidate = identity.official_name
+        candidate_name = identity.official_name
     if not query_identity.first_name and allow_surname:
         surname = name_tokens(query_identity.last_name)
-        tokens = name_tokens(candidate)
+        tokens = name_tokens(candidate_name)
         return bool(surname) and (
             tokens[-len(surname) :] == surname or tokens[: len(surname)] == surname
         )
-    return _matches_identity(query_identity, candidate, allow_surname=allow_surname)
+    return _matches_identity(
+        query_identity, candidate_name, allow_surname=allow_surname
+    )

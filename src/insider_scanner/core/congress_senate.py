@@ -668,11 +668,8 @@ def scrape_senate_trades(
     """
     # Prefer structured fields over any display-name parsing. The remote first
     # name search is strict, so filter the returned surname filings locally.
-    query = (
-        identity_for(member if member is not None else official_name)
-        if member is not None or official_name
-        else None
-    )
+    requested_member = member if member is not None else official_name
+    query = identity_for(requested_member) if requested_member is not None else None
     if query is not None:
         first_name, last_name = query.first_name, query.last_name
 
