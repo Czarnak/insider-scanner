@@ -17,7 +17,11 @@ from pathlib import Path
 
 from insider_scanner.persistence.feed import FeedCriteria
 from insider_scanner.persistence.feed_state import criteria_from_dict, criteria_to_dict
-from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
+from insider_scanner.persistence.json_state import (
+    atomic_write_json,
+    preserve_json_state,
+    read_json_dict,
+)
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("alerts")
@@ -179,12 +183,13 @@ def load_alerts(path: Path) -> AlertStore:
         return store_from_dict(data)
     except Exception as exc:  # noqa: BLE001 - never fail a load
         _log.warning("Failed to parse alerts from %s: %s", path, exc)
+        preserve_json_state(path)
         return AlertStore()
 
 
 def save_alerts(path: Path, store: AlertStore) -> None:
     """Atomically write *store* to *path* as JSON."""
-    atomic_write_json(path, store_to_dict(store))
+    atomic_write_json(path, store_to_dict(store), protect_existing=True)
 
 
 def alerts_path(data_dir: Path) -> Path:
