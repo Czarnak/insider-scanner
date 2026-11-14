@@ -72,6 +72,8 @@ _XML_WRAPPER_RE = re.compile(r"<XML>(.*?)</XML>", re.DOTALL | re.IGNORECASE)
 _DOCUMENT_TYPE_ELEMENT_RE = re.compile(
     r"<documentType>\s*([^<]+?)\s*</documentType>", re.IGNORECASE
 )
+_XML_PREAMBLE_RE = re.compile(r"\A(?:\s+|<!--.*?-->|<\?.*?\?>)*", re.DOTALL)
+_OWNERSHIP_ROOT_START_RE = re.compile(r"<(?:[^\s<>/:]+:)?ownershipDocument(?=[\s/>])")
 
 # Presence of any of these tags means it is a full submission envelope.
 _FULL_SUBMISSION_MARKERS = ("<SEC-DOCUMENT", "<SEC-HEADER", "<DOCUMENT>")
@@ -201,13 +203,27 @@ def _extract_xml_from_block(block_body: str) -> str:
         return xml_match.group(1).strip()
 
     xml_text = text_content.strip()
-    if not xml_text.startswith(
-        ("<?xml", "<ownershipDocument", "<!DOCTYPE", "<!ENTITY")
-    ):
+    if not _looks_like_ownership_xml(xml_text):
         raise UnsupportedOwnershipDocumentError(
             "Ownership filing is not available as machine-readable XML."
         )
     return xml_text
+
+
+def _looks_like_ownership_xml(text: str) -> bool:
+    """Recognize XML without sending legacy HTML/text through the parser.
+
+    Comments, processing instructions and qualified roots are valid XML. Keep
+    declarations in the XML path so the existing guards still reject DTDs and
+    entities, including declarations after a comment or processing instruction.
+    """
+    candidate = text.lstrip("\ufeff \t\r\n")
+    if candidate.startswith("<?xml"):
+        return True
+    candidate = _XML_PREAMBLE_RE.sub("", candidate, count=1)
+    return candidate.startswith(("<!DOCTYPE", "<!ENTITY")) or bool(
+        _OWNERSHIP_ROOT_START_RE.match(candidate)
+    )
 
 
 def _extract_direct_xml(
