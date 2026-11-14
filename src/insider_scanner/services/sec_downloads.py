@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
+from enum import Enum
 from pathlib import Path
 
 from insider_scanner.core import edgar, sec_index
@@ -26,10 +27,12 @@ from insider_scanner.core.sec_client import (
     SecClientError,
     SecClientSecurityError,
     SecFilingNotFoundError,
+    SecHttpError,
 )
 from insider_scanner.core.sec_downloader import (
     PendingSecFiling,
     SecDownloadError,
+    SecDownloadSecurityError,
     fetch_filing,
     promote_validated_filing,
     purge_stale_cache,
@@ -37,6 +40,7 @@ from insider_scanner.core.sec_downloader import (
 )
 from insider_scanner.core.sec_ownership_document import (
     SecOwnershipDocumentError,
+    UnsupportedOwnershipDocumentError,
     extract_ownership_document,
 )
 from insider_scanner.core.sec_ownership_parser import (
@@ -49,6 +53,7 @@ from insider_scanner.core.sec_security import (
     SecResourceProfile,
     SecSecurityPolicy,
 )
+from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
@@ -68,6 +73,27 @@ _RECOVERABLE = (
     SecOwnershipParseError,
     SecXmlSecurityError,
 )
+
+
+class SecFilingStatus(str, Enum):
+    SUCCESS = "success"
+    RETRYABLE_FAILURE = "retryable_failure"
+    PERMANENT_FAILURE = "permanent_failure"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True, slots=True)
+class SecFilingOutcome:
+    """One filing's disposition, with sanitized provenance for retries."""
+
+    accession: str | None
+    status: SecFilingStatus
+    stage: str = ""
+    reason: str = ""
+
+    @property
+    def complete(self) -> bool:
+        return self.status is not SecFilingStatus.RETRYABLE_FAILURE
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +129,10 @@ class SecDownloadReport:
     parsed: int
     skipped: int
     failed: int
+    unsupported: int = 0
+    outcomes: tuple[SecFilingOutcome, ...] = ()
+    cancelled: bool = False
+    stopped_on_error: bool = False
 
 
 def download_filings_in_range(
@@ -135,6 +165,8 @@ def download_filings_in_range(
 
     completed, counters = _load_checkpoint(checkpoint_path, interval)
     interrupted = False
+    stopped_on_error = False
+    outcomes: list[SecFilingOutcome] = []
 
     for day in all_dates:
         if day in completed:
@@ -151,6 +183,7 @@ def download_filings_in_range(
             retain_failed_downloads=retain_failed_downloads,
             policy=policy,
             on_filing_parsed=on_filing_parsed,
+            outcomes=outcomes,
         )
         if outcome is None:  # cancelled mid-date — leave the date uncovered
             interrupted = True
@@ -160,7 +193,7 @@ def download_filings_in_range(
             _save_checkpoint(checkpoint_path, interval, completed, counters)
             _emit_progress(on_progress, day, len(completed), len(all_dates), counters)
         elif not continue_on_error:
-            interrupted = True
+            stopped_on_error = True
             break
 
     fully_done = len(completed) >= len(all_dates) and not interrupted
@@ -174,6 +207,12 @@ def download_filings_in_range(
         interval=interval,
         dates_total=len(all_dates),
         dates_completed=len(completed),
+        unsupported=sum(
+            item.status is SecFilingStatus.UNSUPPORTED for item in outcomes
+        ),
+        outcomes=tuple(outcomes),
+        cancelled=interrupted,
+        stopped_on_error=stopped_on_error,
         **{key: counters[key] for key in _COUNTER_KEYS},
     )
 
@@ -189,6 +228,7 @@ def _process_date(
     policy: SecSecurityPolicy,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
+    outcomes: list[SecFilingOutcome] | None = None,
 ) -> bool | None:
     """Process one calendar day.
 
@@ -210,15 +250,21 @@ def _process_date(
             day.isoformat(),
             exc,
         )
+        if outcomes is not None:
+            outcomes.append(
+                SecFilingOutcome(
+                    None, SecFilingStatus.RETRYABLE_FAILURE, "index", type(exc).__name__
+                )
+            )
         return False
 
     rows = sec_index.parse_master_index(index_text)
     counters["discovered"] += len(rows)
-    any_sink_failure = False
+    any_retryable_failure = False
     for row in rows:
         if cancelled():
             return None
-        ok = process_filing_row(
+        outcome = process_filing_row(
             row,
             client=client,
             cache_root=cache_root,
@@ -227,9 +273,11 @@ def _process_date(
             policy=policy,
             on_filing_parsed=on_filing_parsed,
         )
-        if not ok:
-            any_sink_failure = True
-    return not any_sink_failure
+        if outcomes is not None and outcome.status is not SecFilingStatus.SUCCESS:
+            outcomes.append(outcome)
+        if not outcome.complete:
+            any_retryable_failure = True
+    return not any_retryable_failure
 
 
 def process_filing_row(
@@ -242,13 +290,14 @@ def process_filing_row(
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
-) -> bool:
+) -> SecFilingOutcome:
     """Process a single filing.
 
-    Returns True in all normal code paths (fetch/parse/promote failures keep the
-    existing behavior — the date still completes). Returns False only when the
-    on_filing_parsed sink raises, signalling a date-level retry.
+    Transient fetch and sink failures leave the filing retryable. Deterministic
+    rejections and unsupported legacy documents are terminal, explicit outcomes.
+    Optional validated-cache writes never prevent the persist sink from running.
     """
+    accession = _accession_from_path(row.archive_path)
     try:
         pending = fetch_filing(row, client=client, cache_root=cache_root)
     except SecBlockedError:
@@ -258,14 +307,15 @@ def process_filing_row(
         _log_recoverable_level(
             "SEC filing failed stage=fetch cik=%s reason=%s", row.cik, exc
         )
-        return True
+        return SecFilingOutcome(
+            accession, _fetch_failure_status(exc), "fetch", type(exc).__name__
+        )
 
     if pending.from_cache:
         counters["skipped"] += 1
     else:
         counters["downloaded"] += 1
 
-    accession = _accession_from_path(row.archive_path)
     try:
         document = extract_ownership_document(
             pending.content, accession_number=accession, policy=policy
@@ -273,6 +323,15 @@ def process_filing_row(
         filing = parse_ownership_document(document, policy=policy)
     except SecBlockedError:
         raise
+    except UnsupportedOwnershipDocumentError as exc:
+        _log.info(
+            "SEC filing unsupported accession=%s reason=%s",
+            accession,
+            type(exc).__name__,
+        )
+        return SecFilingOutcome(
+            accession, SecFilingStatus.UNSUPPORTED, "parse", type(exc).__name__
+        )
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
@@ -281,16 +340,9 @@ def process_filing_row(
         _maybe_quarantine(
             pending, cache_root=cache_root, enabled=retain_failed_downloads
         )
-        return True
-
-    try:
-        promote_validated_filing(pending, cache_root=cache_root)
-    except SecDownloadError as exc:
-        counters["failed"] += 1
-        _log_recoverable_level(
-            "SEC filing failed stage=promote cik=%s reason=%s", row.cik, exc
+        return SecFilingOutcome(
+            accession, SecFilingStatus.PERMANENT_FAILURE, "parse", type(exc).__name__
         )
-        return True
     counters["parsed"] += 1
 
     if on_filing_parsed is not None:
@@ -298,14 +350,39 @@ def process_filing_row(
             on_filing_parsed(row, filing)
         except SecBlockedError:
             raise
-        except (*_RECOVERABLE, PersistenceError) as exc:
+        except (*_RECOVERABLE, PersistenceError, SecTradeMappingError) as exc:
             counters["failed"] += 1
             _log_recoverable_level(
                 "SEC filing failed stage=persist cik=%s reason=%s", row.cik, exc
             )
-            return False
+            stage = "mapping" if isinstance(exc, SecTradeMappingError) else "persist"
+            return SecFilingOutcome(
+                accession, SecFilingStatus.RETRYABLE_FAILURE, stage, type(exc).__name__
+            )
 
-    return True
+    try:
+        promote_validated_filing(pending, cache_root=cache_root)
+    except SecDownloadError as exc:
+        _log.warning(
+            "SEC optional cache write failed accession=%s reason=%s",
+            accession,
+            type(exc).__name__,
+        )
+    return SecFilingOutcome(accession, SecFilingStatus.SUCCESS)
+
+
+def _fetch_failure_status(exc: Exception) -> SecFilingStatus:
+    if isinstance(
+        exc, (SecFilingNotFoundError, SecClientSecurityError, SecDownloadSecurityError)
+    ):
+        return SecFilingStatus.PERMANENT_FAILURE
+    if (
+        isinstance(exc, SecHttpError)
+        and 400 <= exc.status_code < 500
+        and exc.status_code not in {403, 408, 429}
+    ):
+        return SecFilingStatus.PERMANENT_FAILURE
+    return SecFilingStatus.RETRYABLE_FAILURE
 
 
 def _log_recoverable_level(message: str, identifier: str, exc: Exception) -> None:

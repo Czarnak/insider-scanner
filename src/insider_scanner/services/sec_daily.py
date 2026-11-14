@@ -11,10 +11,8 @@ Error model
 -----------
 The persist sink distinguishes two failure classes:
 
-* ``SecTradeMappingError`` (malformed filing) — swallowed at filing level. A
-  malformed filing fails mapping deterministically on every retry, so triggering
-  a date-level retry would be a poison pill. The filing is logged, counted in
-  ``mapping_failures``, and skipped; the date still completes.
+* ``SecTradeMappingError`` — logged with the accession and propagated so a
+  later run with repaired mapping logic can retry the filing.
 * :class:`PersistenceError` (transient DB issue) — propagated. The downloader
   hook catches it, counts a ``failed``, and leaves the date uncovered so the next
   run retries it. Already-persisted rows from the partial date are harmless
@@ -47,6 +45,7 @@ from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_downloads import (
     SecDownloadProgress,
     SecDownloadReport,
+    SecFilingOutcome,
     download_filings_in_range,
 )
 from insider_scanner.utils.logging import get_logger
@@ -73,11 +72,9 @@ _COVERAGE_SOURCE = "sec_edgar"
 class SecDailyIngestionSummary:
     """Aggregate result of one ingest run.
 
-    ``failures`` = ``download_failed`` + ``mapping_failures``. The two never
-    overlap: ``download_failed`` counts fetch/parse/promote failures and any
-    :class:`PersistenceError` the sink raised and the downloader caught;
-    ``mapping_failures`` counts ``SecTradeMappingError``s the sink swallowed,
-    which are never reflected in the downloader's ``failed`` tally.
+    ``failures`` counts fetch/parse/mapping/persistence failures; optional cache
+    writes are best-effort and unsupported legacy documents have a separate
+    counter. ``outcomes`` identifies rejected or retryable filings.
 
     Note: ``filings_parsed`` counts every successfully-parsed filing handed to
     the persist sink, including any whose sink later raised a
@@ -94,6 +91,10 @@ class SecDailyIngestionSummary:
     transactions_updated: int
     transactions_skipped: int
     failures: int
+    unsupported: int = 0
+    outcomes: tuple[SecFilingOutcome, ...] = ()
+    cancelled: bool = False
+    stopped_on_error: bool = False
 
 
 @dataclass(slots=True)
@@ -101,7 +102,6 @@ class _RunState:
     """Mutable accumulators for one ingest run (never escapes the call)."""
 
     upserts: UpsertResult = field(default_factory=UpsertResult)
-    mapping_failures: int = 0
 
 
 class SecDailyIngestionService:
@@ -169,11 +169,15 @@ class SecDailyIngestionService:
         filings_parsed = 0
         download_failed = 0
         gap_dates_completed = 0
-        total_gap_days = 0
+        total_gap_days = sum(_day_count(gap) for gap in gaps)
+        outcomes: list[SecFilingOutcome] = []
+        unsupported = 0
+        was_cancelled = False
+        stopped_on_error = False
         for gap in gaps:
             if cancelled():
+                was_cancelled = True
                 break
-            total_gap_days += _day_count(gap)
             report = self._download_gap(
                 gap, sink=sink, on_progress=progress, cancelled=cancelled
             )
@@ -181,6 +185,12 @@ class SecDailyIngestionService:
             filings_parsed += report.parsed
             download_failed += report.failed
             gap_dates_completed += report.dates_completed
+            unsupported += report.unsupported
+            outcomes.extend(report.outcomes)
+            was_cancelled = report.cancelled
+            stopped_on_error = report.stopped_on_error
+            if was_cancelled or stopped_on_error:
+                break
 
         already_covered_days = dates_total - total_gap_days
         dates_completed = already_covered_days + gap_dates_completed
@@ -194,7 +204,11 @@ class SecDailyIngestionService:
             transactions_inserted=state.upserts.inserted,
             transactions_updated=state.upserts.updated,
             transactions_skipped=state.upserts.skipped,
-            failures=download_failed + state.mapping_failures,
+            failures=download_failed,
+            unsupported=unsupported,
+            outcomes=tuple(outcomes),
+            cancelled=was_cancelled,
+            stopped_on_error=stopped_on_error,
         )
 
     def _download_gap(
@@ -224,22 +238,20 @@ class SecDailyIngestionService:
     ) -> Callable[[SecMasterIndexRow, OwnershipFiling], None]:
         """Build the per-run persist sink closure.
 
-        ``SecTradeMappingError`` is swallowed (filing-level skip). Any
-        :class:`PersistenceError` from ``upsert`` propagates so the downloader
-        treats it as a date-level retry.
+        Mapping and persistence failures propagate so the downloader records the
+        accession and leaves its date uncovered for a later retry.
         """
 
         def _sink(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
             try:
                 trades = ownership_filing_to_trades(filing, row)
             except SecTradeMappingError as exc:
-                state.mapping_failures += 1
                 _log.warning(
                     "SEC daily mapping failed accession=%s reason=%s",
                     _safe_for_log(filing.accession_number),
                     type(exc).__name__,
                 )
-                return
+                raise
             result = self._persistence.us_trades.upsert(trades)
             state.upserts = state.upserts + result
 

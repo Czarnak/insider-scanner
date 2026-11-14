@@ -54,6 +54,10 @@ class NonOwnershipDocumentError(SecOwnershipDocumentError):
     """Raised when no Form 3/4/5 ownership document can be located."""
 
 
+class UnsupportedOwnershipDocumentError(NonOwnershipDocumentError):
+    """An ownership filing uses a text or HTML format rather than ownership XML."""
+
+
 # ---------------------------------------------------------------------------
 # Patterns
 # ---------------------------------------------------------------------------
@@ -107,6 +111,8 @@ def extract_ownership_document(
     NonOwnershipDocumentError
         No Form 3/4/5 block can be located, or the XML root element is not
         ``ownershipDocument``.
+    UnsupportedOwnershipDocumentError
+        An ownership-typed submission block contains legacy text or HTML.
     """
     if not isinstance(content, (bytes, str)):
         raise TypeError(f"content must be bytes or str, got {type(content).__name__!r}")
@@ -194,7 +200,14 @@ def _extract_xml_from_block(block_body: str) -> str:
     if xml_match is not None:
         return xml_match.group(1).strip()
 
-    return text_content.strip()
+    xml_text = text_content.strip()
+    if not xml_text.startswith(
+        ("<?xml", "<ownershipDocument", "<!DOCTYPE", "<!ENTITY")
+    ):
+        raise UnsupportedOwnershipDocumentError(
+            "Ownership filing is not available as machine-readable XML."
+        )
+    return xml_text
 
 
 def _extract_direct_xml(
