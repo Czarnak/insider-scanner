@@ -126,12 +126,14 @@ def _publish_seed_without_link(staged: Path, target: Path) -> None:
             destination.flush()
             os.fsync(destination.fileno())
         except BaseException:
-            destination.close()
             try:
-                if os.path.samestat(created_file, target.lstat()):
-                    target.unlink()
-            except FileNotFoundError:
-                pass
+                destination.close()
+            finally:
+                try:
+                    if os.path.samestat(created_file, target.lstat()):
+                        target.unlink()
+                except FileNotFoundError:
+                    pass
             raise
 
 

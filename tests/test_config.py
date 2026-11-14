@@ -114,6 +114,53 @@ class TestRuntimePaths:
 
 
 class TestPackagedSeeds:
+    def test_failed_exclusive_copy_cleans_up_even_when_close_raises(
+        self, monkeypatch, tmp_path
+    ):
+        from insider_scanner.utils import config
+
+        staged = tmp_path / "staged"
+        staged.write_bytes(b"packaged seed")
+        target = tmp_path / "seed.txt"
+        real_open = Path.open
+
+        class CloseFails:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def close(self):
+                self.handle.close()
+                raise OSError("close failed")
+
+        def open_with_failing_close(path, mode="r", *args, **kwargs):
+            handle = real_open(path, mode, *args, **kwargs)
+            return CloseFails(handle) if path == target and mode == "xb" else handle
+
+        def interrupted_copy(*args):
+            raise OSError("copy interrupted")
+
+        monkeypatch.setattr(Path, "open", open_with_failing_close)
+        monkeypatch.setattr(
+            config,
+            "os",
+            SimpleNamespace(name="posix", fsync=os.fsync, fstat=os.fstat, path=os.path),
+        )
+        monkeypatch.setattr(config.shutil, "copyfileobj", interrupted_copy)
+
+        with pytest.raises(OSError, match="close failed"):
+            config._publish_seed_without_link(staged, target)
+
+        assert not target.exists()
+
     @pytest.mark.parametrize("replace_target", [False, True])
     def test_failed_exclusive_copy_only_removes_its_own_file(
         self, monkeypatch, tmp_path, replace_target
