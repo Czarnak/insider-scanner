@@ -14,7 +14,6 @@ this module deliberately does not parse on the caller's behalf.
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 from lxml import etree
@@ -27,10 +26,7 @@ if TYPE_CHECKING:
 
 # A DTD or entity declaration in untrusted SEC XML is always rejected, in
 # addition to lxml's disabled DTD/entity resolution (defense in depth).
-_XML_TOKENS = re.compile(
-    rb"<!--.*?-->|<!\[CDATA\[.*?\]\]>|<\?.*?\?>|<!(?:DOCTYPE|ENTITY)",
-    re.IGNORECASE | re.DOTALL,
-)
+
 
 # Byte-order marks for non-UTF-8 encodings.  The declaration scan below is a
 # UTF-8 byte pattern, so UTF-16/UTF-32 input would slip past it; we reject those
@@ -82,9 +78,30 @@ def guard_xml_pre_parse(
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
     if xml_bytes.startswith(_NON_UTF8_BOMS) or b"\x00" in xml_bytes:
         raise SecXmlSecurityError(SecSecurityReason.XML, accession)
-    for token in _XML_TOKENS.finditer(xml_bytes):
-        if token.group()[:9].upper().startswith((b"<!DOCTYPE", b"<!ENTITY")):
-            raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+    cursor = 0
+    while (start := xml_bytes.find(b"<", cursor)) != -1:
+        # Consume each literal once. Regex searches for a closing delimiter can
+        # retry at every unterminated opener and become quadratic on bad input.
+        terminator = None
+        if xml_bytes.startswith(b"<!--", start):
+            terminator = b"-->"
+        elif xml_bytes.startswith(b"<![CDATA[", start):
+            terminator = b"]]>"
+        elif xml_bytes.startswith(b"<?", start):
+            terminator = b"?>"
+        if terminator is not None:
+            end = xml_bytes.find(terminator, start + 2)
+            if end == -1:
+                raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+            cursor = end + len(terminator)
+        else:
+            if (
+                xml_bytes[start : start + 9]
+                .upper()
+                .startswith((b"<!DOCTYPE", b"<!ENTITY"))
+            ):
+                raise SecXmlSecurityError(SecSecurityReason.XML, accession)
+            cursor = start + 1
 
 
 def guard_xml_tree(

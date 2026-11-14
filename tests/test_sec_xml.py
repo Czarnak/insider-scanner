@@ -137,6 +137,12 @@ def test_literal_before_real_dtd_does_not_hide_declaration():
         )
 
 
+@pytest.mark.parametrize("opener", [b"<!--", b"<![CDATA[", b"<?pi "])
+def test_repeated_unterminated_literals_are_rejected_in_one_scan(opener):
+    with pytest.raises(SecXmlSecurityError):
+        guard_xml_pre_parse(opener * 20_000, DEFAULT_SEC_SECURITY_POLICY)
+
+
 @pytest.mark.parametrize(
     "encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
 )
