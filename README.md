@@ -183,7 +183,7 @@ Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` t
 
 ### SEC EDGAR ingestion CLI
 
-Ingest SEC ownership filings (Forms 3/4/5) directly from EDGAR into the local
+Ingest SEC transactions (Forms 4/5 and their amendments) directly into the local
 database. These commands require a valid `SEC_USER_AGENT` (see SEC fair access
 below), so set it first:
 
@@ -230,6 +230,35 @@ date-order anomalies also retain the affected rows. These warnings are stored in
 `sec_detail_json` without the invalid source text. Missing issuer/owner CIKs or
 invalid transaction dates/codes fail parsing. Non-finite or overflowing numeric
 values cannot reach numeric database fields.
+
+Transaction discovery excludes Forms 3/3/A because they report initial holdings.
+The XML API still accepts those documents, but holding rows in Forms 3/4/5 do not
+become trades. Each transaction keeps one stable accession/row identity: the
+first reporting owner supplies the existing insider columns, while
+`sec_detail_json.reporting_owners` retains every owner, CIK and role, including
+`otherText`. Officer titles include other active roles. CIKs use ten digits;
+placeholder ticker symbols become empty. An absent issuer name uses the index
+name only when that index row belongs to the issuer.
+
+Derivative rows remain stored with `is_derivative=true`, but use the neutral
+`Other` trade label so an option exercise's derivative leg does not count as a
+second stock acquisition. The original transaction code, category, derivative
+units and premium remain available. Transaction total values, holdings values
+and underlying-security values are retained separately from share quantities;
+a reported transaction total supplies the trade value when shares times price
+is unavailable. Code categories follow the [SEC ownership code table](https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html),
+including inheritance (`W`) and voting trusts (`Z`).
+
+New SEC parses distinguish unavailable shares, price, value and holdings with
+`shares_missing`, `price_missing`, `value_missing` and
+`shares_owned_after_missing`. Displays show `N/A`; explicit value thresholds
+exclude unknown values, including at a zero threshold. Reported zeros remain
+zero. Detail JSON retains raw numeric values and price-specific footnote IDs.
+Migration 6 preserves existing rows and keys, normalizes valid native SEC CIKs,
+and relabels existing derivatives. Older numeric zeros cannot reliably be
+classified as missing because their original values were not stored; their
+flags retain legacy defaults. Recovering those distinctions requires the
+original filing data.
 
 #### SEC full bulk backfill
 
