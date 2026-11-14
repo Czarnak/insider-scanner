@@ -23,6 +23,7 @@ from insider_scanner.services.common import (
     latest_refresh_mode,
     normalize_identifier,
     not_cancelled,
+    persistence_issues,
     record_completed_scan,
     scan_result,
     source_issues,
@@ -120,8 +121,11 @@ class UsScanService:
                     for trade in fetched
                 ]
                 issues.extend(source_issues(fetched, source=source, identifier=context))
-                self._persistence.us_trades.upsert(trades)
-                if fetched.complete:
+                persisted = self._persistence.us_trades.upsert(trades)
+                issues.extend(
+                    persistence_issues(persisted, source=source, identifier=context)
+                )
+                if fetched.complete and not persisted.errors:
                     record_completed_scan(
                         self._persistence,
                         "us",
@@ -218,10 +222,13 @@ class UsScanService:
                 issues.append(FetchIssue("cancelled", source, "latest"))
                 break
             issues.extend(source_issues(trades, source=source, identifier="latest"))
-            self._persistence.us_trades.upsert(
+            persisted = self._persistence.us_trades.upsert(
                 [replace(trade, source=source) for trade in trades]
             )
-            if trades.complete:
+            issues.extend(
+                persistence_issues(persisted, source=source, identifier="latest")
+            )
+            if trades.complete and not persisted.errors:
                 self._persistence.refresh.set("us", "*", source, mode, now)
         return issues
 
@@ -262,8 +269,11 @@ class UsScanService:
                 issues.append(FetchIssue("cancelled", source, context))
                 break
             issues.extend(source_issues(trades, source=source, identifier=context))
-            self._persistence.us_trades.upsert(
+            persisted = self._persistence.us_trades.upsert(
                 [replace(trade, source=source) for trade in trades]
+            )
+            issues.extend(
+                persistence_issues(persisted, source=source, identifier=context)
             )
         return scan_result(
             flag_congress_copies(

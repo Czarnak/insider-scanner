@@ -13,6 +13,7 @@ from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.senate import flag_congress_trades
 from insider_scanner.persistence.coverage import DateInterval, normalize_intervals
 from insider_scanner.persistence.refresh import is_fresh
+from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.utils.config import DEFAULT_CACHE_TTL as CACHE_TTL_SECONDS
 
@@ -76,9 +77,29 @@ def source_issues(
 
 def scan_result(records: list[TradeT], issues: list[FetchIssue]) -> FetchResult[TradeT]:
     status = None
-    if issues and not records and all(not issue.retryable for issue in issues):
+    if (
+        issues
+        and not records
+        and all(not issue.retryable for issue in issues)
+        and not any(issue.reason.startswith("persistence_error:") for issue in issues)
+    ):
         status = FetchStatus.UNSUPPORTED
     return FetchResult(records, issues=issues, status=status)
+
+
+def persistence_issues(
+    result: UpsertResult, *, source: str, identifier: str
+) -> list[FetchIssue]:
+    """Expose rejected input positions without claiming successful coverage."""
+    return [
+        FetchIssue(
+            f"persistence_error: {error.message}",
+            source,
+            f"{identifier}: row {error.index}",
+            retryable=error.retryable,
+        )
+        for error in result.errors
+    ]
 
 
 def normalize_identifier(value: str, label: str) -> str:

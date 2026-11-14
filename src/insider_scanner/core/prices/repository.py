@@ -31,56 +31,36 @@ def upsert_bars(engine: Engine, bars: list[PriceBar], source: str = "") -> int:
     if not bars:
         return 0
 
-    written = 0
+    statement = insert(price_history)
+    update_values = {
+        name: getattr(statement.excluded, name)
+        for name in ("open", "high", "low", "close", "volume", "adjusted_close")
+    }
+    if source:
+        update_values["source"] = statement.excluded.source
+    statement = statement.on_conflict_do_update(
+        index_elements=[price_history.c.symbol, price_history.c.price_date],
+        set_=update_values,
+    )
     with immediate_transaction(engine) as connection:
-        for bar in bars:
-            existing_row = (
-                connection.execute(
-                    select(price_history).where(
-                        price_history.c.symbol == bar.symbol,
-                        price_history.c.price_date == bar.date,
-                    )
-                )
-                .mappings()
-                .first()
-            )
-
-            if existing_row is None:
-                connection.execute(
-                    insert(price_history).values(
-                        symbol=bar.symbol,
-                        price_date=bar.date,
-                        open=bar.open,
-                        high=bar.high,
-                        low=bar.low,
-                        close=bar.close,
-                        volume=bar.volume,
-                        adjusted_close=bar.adjusted_close,
-                        source=source,
-                    )
-                )
-            else:
-                update_values = {
+        connection.execute(
+            statement,
+            [
+                {
+                    "symbol": bar.symbol,
+                    "price_date": bar.date,
                     "open": bar.open,
                     "high": bar.high,
                     "low": bar.low,
                     "close": bar.close,
                     "volume": bar.volume,
                     "adjusted_close": bar.adjusted_close,
+                    "source": source,
                 }
-                if source:
-                    update_values["source"] = source
-
-                connection.execute(
-                    price_history.update()
-                    .where(
-                        price_history.c.symbol == bar.symbol,
-                        price_history.c.price_date == bar.date,
-                    )
-                    .values(**update_values)
-                )
-            written += 1
-    return written
+                for bar in bars
+            ],
+        )
+    return len(bars)
 
 
 def get_bars(engine: Engine, symbol: str, start: date, end: date) -> list[PriceBar]:

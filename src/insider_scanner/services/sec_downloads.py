@@ -162,6 +162,7 @@ def download_filings_in_range(
     on_progress: Callable[[SecDownloadProgress], None] | None = None,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
+    on_date_flush: Callable[[], tuple[SecFilingOutcome, ...]] | None = None,
     cancelled: Callable[[], bool] = not_cancelled,
     continue_on_error: bool = True,
     cleanup: bool = True,
@@ -173,6 +174,12 @@ def download_filings_in_range(
 
     Resumes from *checkpoint_path* when its recorded range matches the request.
     Returns a :class:`SecDownloadReport`; never writes to the database.
+
+    A buffered filing sink may supply ``on_date_flush`` to commit pending rows
+    before a date is checkpointed or progress is emitted. It returns one retryable
+    failure outcome per filing that did not persist. The hook also runs after a
+    partial date, cancellation or an exception, preserving valid pending rows
+    without marking the affected date complete.
     """
     if type(client) is not SecClient:
         raise TypeError("client must be exactly SecClient")
@@ -197,18 +204,37 @@ def download_filings_in_range(
         if cancelled():
             interrupted = True
             break
-        outcome = _process_date(
-            day,
-            client=client,
-            cache_root=cache_root,
-            counters=counters,
-            cancelled=cancelled,
-            retain_failed_downloads=retain_failed_downloads,
-            policy=policy,
-            on_filing_parsed=on_filing_parsed,
-            outcomes=outcomes,
-            today=today,
-        )
+        try:
+            outcome = _process_date(
+                day,
+                client=client,
+                cache_root=cache_root,
+                counters=counters,
+                cancelled=cancelled,
+                retain_failed_downloads=retain_failed_downloads,
+                policy=policy,
+                on_filing_parsed=on_filing_parsed,
+                outcomes=outcomes,
+                today=today,
+            )
+        except BaseException:
+            if on_date_flush is not None:
+                try:
+                    on_date_flush()
+                except BaseException as flush_error:  # noqa: BLE001 - preserve the original abort
+                    # Preserve the original block/interruption even if cleanup
+                    # fails. Pending accessions remain eligible for the retry.
+                    _log.warning(
+                        "SEC pending filing flush failed while aborting exception=%s",
+                        type(flush_error).__name__,
+                    )
+            raise
+        if on_date_flush is not None:
+            flush_failures = on_date_flush()
+            outcomes.extend(flush_failures)
+            counters["failed"] += len(flush_failures)
+            if flush_failures and outcome is not None:
+                outcome = False
         if outcome is None:  # cancelled mid-date — leave the date uncovered
             interrupted = True
             break

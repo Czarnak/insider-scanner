@@ -11,6 +11,7 @@ from pathlib import Path
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.utils.logging import get_logger
@@ -32,6 +33,8 @@ _EU_ENUMS = {
 }
 _EU_SOURCE_ALIASES = {"amf_bdif": "amf"}
 DEFAULT_MAX_LEGACY_FILE_SIZE_BYTES = 50 * 1024 * 1024
+_IMPORT_BATCH_SIZE = 1_000
+_ImportedTrade = InsiderTrade | CongressTrade | EuropeanInsiderTrade
 
 
 @dataclass(frozen=True)
@@ -280,8 +283,44 @@ def _parse_record(record_type: str, item: dict):
 
 
 def _log_import_error(message: str, error: Exception, **context: object) -> None:
+    if isinstance(error, PersistenceError):
+        context["reason"] = str(error)
     details = " ".join(f"{key}={value}" for key, value in context.items())
     log.error("%s: %s exception=%s", message, details, type(error).__name__)
+
+
+def _persist_batch(
+    path: Path,
+    persistence: PersistenceContext,
+    record_type: str,
+    records: list[tuple[int, _ImportedTrade]],
+) -> tuple[UpsertResult, dict[int, str]]:
+    repository = getattr(persistence, f"{record_type}_trades")
+    try:
+        result = repository.upsert([trade for _, trade in records])
+    except Exception as error:  # noqa: BLE001 - isolate a rolled-back adapter batch
+        for index, _trade in records:
+            _log_import_error(
+                "Legacy record persistence failed",
+                error,
+                path=path,
+                index=index,
+                type=record_type,
+            )
+        return UpsertResult(), {index: "persistence_error" for index, _ in records}
+
+    failures: dict[int, str] = {}
+    for row_error in result.errors:
+        index = records[row_error.index][0]
+        failures[index] = "persistence_error"
+        log.error(
+            "Legacy record persistence failed: path=%s index=%d type=%s reason=%s",
+            path,
+            index,
+            record_type,
+            row_error.message,
+        )
+    return result, failures
 
 
 def _import_file(
@@ -316,56 +355,43 @@ def _import_file(
         return LegacyFileReport(path, 0, 0, 0, 1, ("file: invalid_document",))
 
     outcome = UpsertResult()
-    errors = 0
-    messages: list[str] = []
-    for index, item in enumerate(payload):
-        if not isinstance(item, dict):
-            errors += 1
-            messages.append(f"record {index}: invalid_record")
-            continue
-        record_type = _record_type(item)
-        if record_type is None:
-            errors += 1
-            messages.append(f"record {index}: invalid_record")
-            continue
-        try:
-            trade = _parse_record(record_type, item)
-            if record_type == "us":
-                result = persistence.us_trades.upsert((trade,))
-            elif record_type == "congress":
-                result = persistence.congress_trades.upsert((trade,))
-            else:
-                result = persistence.european_trades.upsert((trade,))
-        except (TypeError, ValueError, OverflowError) as error:
-            _log_import_error(
-                "Legacy record validation failed",
-                error,
-                path=path,
-                index=index,
-                type=record_type,
+    failures: dict[int, str] = {}
+    for offset in range(0, len(payload), _IMPORT_BATCH_SIZE):
+        groups: dict[str, list[tuple[int, _ImportedTrade]]] = {}
+        for index in range(offset, min(offset + _IMPORT_BATCH_SIZE, len(payload))):
+            item = payload[index]
+            record_type = _record_type(item) if isinstance(item, dict) else None
+            if record_type is None:
+                failures[index] = "invalid_record"
+                continue
+            try:
+                trade = _parse_record(record_type, item)
+            except (TypeError, ValueError, OverflowError) as error:
+                _log_import_error(
+                    "Legacy record validation failed",
+                    error,
+                    path=path,
+                    index=index,
+                    type=record_type,
+                )
+                failures[index] = "invalid_record"
+                continue
+            groups.setdefault(record_type, []).append((index, trade))
+        for record_type, records in groups.items():
+            result, batch_failures = _persist_batch(
+                path, persistence, record_type, records
             )
-            errors += 1
-            messages.append(f"record {index}: invalid_record")
-            continue
-        except Exception as error:  # noqa: BLE001 - isolate failures from persistence adapters per record
-            _log_import_error(
-                "Legacy record persistence failed",
-                error,
-                path=path,
-                index=index,
-                type=record_type,
-            )
-            errors += 1
-            messages.append(f"record {index}: persistence_error")
-            continue
-        outcome += result
+            outcome += result
+            failures.update(batch_failures)
     return LegacyFileReport(
         path,
         outcome.inserted,
         outcome.updated,
         outcome.skipped,
-        errors,
-        tuple(messages),
+        len(failures),
+        tuple(
+            f"record {index}: {reason}" for index, reason in sorted(failures.items())
+        ),
     )
 
 

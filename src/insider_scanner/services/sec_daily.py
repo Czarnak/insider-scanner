@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 
@@ -39,7 +39,6 @@ from insider_scanner.core.sec_trade_mapping import (
     ownership_filing_to_trades,
 )
 from insider_scanner.persistence.coverage import DateInterval, normalize_intervals
-from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.common import not_cancelled, validate_range
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_downloads import (
@@ -49,6 +48,7 @@ from insider_scanner.services.sec_downloads import (
     download_filings_in_range,
     sec_today,
 )
+from insider_scanner.services.sec_persistence import SecTradeBatch
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_daily")
@@ -102,7 +102,7 @@ class SecDailyIngestionSummary:
 class _RunState:
     """Mutable accumulators for one ingest run (never escapes the call)."""
 
-    upserts: UpsertResult = field(default_factory=UpsertResult)
+    batch: SecTradeBatch
 
 
 class SecDailyIngestionService:
@@ -119,6 +119,8 @@ class SecDailyIngestionService:
         cleanup: bool = True,
         continue_on_error: bool = True,
         checkpoint_path: Path | None = None,
+        batch_filings: int = 200,
+        batch_rows: int = 5_000,
     ) -> None:
         self._persistence = persistence
         self._client = client
@@ -128,6 +130,10 @@ class SecDailyIngestionService:
         self._cleanup = cleanup
         self._continue_on_error = continue_on_error
         self._checkpoint_path = checkpoint_path
+        if batch_filings < 1 or batch_rows < 1:
+            raise ValueError("SEC batch limits must be positive")
+        self._batch_filings = batch_filings
+        self._batch_rows = batch_rows
 
     def ingest_date(
         self,
@@ -159,7 +165,13 @@ class SecDailyIngestionService:
             raise ValueError("end_date must not be in the future")
         dates_total = _day_count(requested)
 
-        state = _RunState()
+        state = _RunState(
+            SecTradeBatch(
+                self._persistence.us_trades.upsert,
+                max_filings=self._batch_filings,
+                max_rows=self._batch_rows,
+            )
+        )
         sink = self._make_sink(state)
         progress = _compose_progress(self._make_coverage_recorder(), on_progress)
 
@@ -183,7 +195,15 @@ class SecDailyIngestionService:
                 was_cancelled = True
                 break
             report = self._download_gap(
-                gap, sink=sink, on_progress=progress, cancelled=cancelled
+                gap,
+                sink=sink,
+                on_progress=progress,
+                cancelled=cancelled,
+                on_date_flush=lambda: tuple(
+                    item
+                    for item in state.batch.take_outcomes(flush=True)
+                    if not item.complete
+                ),
             )
             filings_discovered += report.discovered
             filings_parsed += report.parsed
@@ -205,9 +225,9 @@ class SecDailyIngestionService:
             dates_completed=dates_completed,
             filings_discovered=filings_discovered,
             filings_parsed=filings_parsed,
-            transactions_inserted=state.upserts.inserted,
-            transactions_updated=state.upserts.updated,
-            transactions_skipped=state.upserts.skipped,
+            transactions_inserted=state.batch.upserts.inserted,
+            transactions_updated=state.batch.upserts.updated,
+            transactions_skipped=state.batch.upserts.skipped,
             failures=download_failed,
             unsupported=unsupported,
             outcomes=tuple(outcomes),
@@ -222,6 +242,7 @@ class SecDailyIngestionService:
         sink: Callable[[SecMasterIndexRow, OwnershipFiling], None],
         on_progress: Callable[[SecDownloadProgress], None],
         cancelled: Callable[[], bool],
+        on_date_flush: Callable[[], tuple[SecFilingOutcome, ...]],
     ) -> SecDownloadReport:
         return download_filings_in_range(
             start_date=gap.start,
@@ -235,6 +256,7 @@ class SecDailyIngestionService:
             cancelled=cancelled,
             on_filing_parsed=sink,
             on_progress=on_progress,
+            on_date_flush=on_date_flush,
             clock=self._clock,
         )
 
@@ -257,8 +279,8 @@ class SecDailyIngestionService:
                     type(exc).__name__,
                 )
                 raise
-            result = self._persistence.us_trades.upsert(trades)
-            state.upserts = state.upserts + result
+            accession = row.archive_path.rsplit("/", 1)[-1].removesuffix(".txt")
+            state.batch.add(accession, trades)
 
         return _sink
 

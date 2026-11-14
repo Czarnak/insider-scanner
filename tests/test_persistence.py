@@ -24,6 +24,7 @@ from insider_scanner.persistence.schema import (
     congress_trades,
     european_trades,
     metadata,
+    price_history,
     refresh_state,
     scan_coverage,
     schema_version,
@@ -64,9 +65,9 @@ EXPECTED_INDEXES = {
         "ix_european_trades_isin_trade_date",
         "ix_european_trades_source_trade_date",
     },
-    "scan_coverage": {"ix_scan_coverage_lookup"},
+    "scan_coverage": set(),
     "refresh_state": {"ix_refresh_state_refreshed_at"},
-    "price_history": {"ix_price_history_symbol_date"},
+    "price_history": set(),
 }
 
 
@@ -138,7 +139,7 @@ def test_bootstrap_creates_all_tables_constraints_and_indexes(engine):
         assert expected_names <= actual_names
     for table_name, expected_names in EXPECTED_INDEXES.items():
         actual_names = {index["name"] for index in inspector.get_indexes(table_name)}
-        assert expected_names <= actual_names
+        assert expected_names == actual_names
 
     coverage_checks = {
         constraint["name"]
@@ -160,6 +161,59 @@ def test_migration_one_ignores_tables_added_to_runtime_metadata(tmp_path):
     finally:
         isolated_engine.dispose()
         metadata.remove(runtime_only)
+
+
+def test_duplicate_index_upgrade_preserves_rows_and_unique_constraints(engine):
+    bootstrap_database(engine, migrations=MIGRATIONS[:7])
+    assert {
+        index["name"] for index in inspect(engine).get_indexes("scan_coverage")
+    } == {"ix_scan_coverage_lookup"}
+    assert {
+        index["name"] for index in inspect(engine).get_indexes("price_history")
+    } == {"ix_price_history_symbol_date"}
+
+    coverage_values = {
+        "domain": "us",
+        "source": "sec_edgar",
+        "identifier": "AAPL",
+        "start_date": date(2026, 1, 1),
+        "end_date": date(2026, 1, 2),
+    }
+    price_values = {
+        "symbol": "AAPL",
+        "price_date": date(2026, 1, 1),
+        "open": 100.0,
+        "high": 105.0,
+        "low": 99.0,
+        "close": 104.0,
+        "source": "test",
+    }
+    with engine.begin() as connection:
+        connection.execute(insert(scan_coverage).values(**coverage_values))
+        connection.execute(insert(price_history).values(**price_values))
+        rows_before = {
+            table.name: connection.execute(select(table)).mappings().all()
+            for table in (scan_coverage, price_history)
+        }
+
+    bootstrap_database(engine)
+
+    with engine.connect() as connection:
+        rows_after = {
+            table.name: connection.execute(select(table)).mappings().all()
+            for table in (scan_coverage, price_history)
+        }
+    assert rows_after == rows_before
+
+    inspector = inspect(engine)
+    for table, values in (
+        (scan_coverage, coverage_values),
+        (price_history, price_values),
+    ):
+        assert inspector.get_indexes(table.name) == []
+        assert table.indexes == set()
+        with pytest.raises(IntegrityError), engine.begin() as connection:
+            connection.execute(insert(table).values(**values))
 
 
 def test_schema_uses_date_columns_for_domain_dates():
@@ -247,7 +301,7 @@ def test_bootstrap_sets_schema_version_to_one(engine):
             select(schema_version.c.version).order_by(schema_version.c.version)
         ).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5, 6, 7]
+        assert list(versions) == [migration.version for migration in MIGRATIONS]
 
 
 def test_bootstrap_is_idempotent(engine):
@@ -257,7 +311,7 @@ def test_bootstrap_is_idempotent(engine):
     with engine.connect() as connection:
         versions = connection.execute(select(schema_version.c.version)).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5, 6, 7]
+        assert list(versions) == [migration.version for migration in MIGRATIONS]
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
 
 
@@ -506,7 +560,7 @@ def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
                     select(schema_version.c.version).order_by(schema_version.c.version)
                 ).scalars()
             )
-            assert versions == [1, 2, 3, 4, 5, 6, 7]
+            assert versions == [migration.version for migration in MIGRATIONS]
 
             # Legacy row preserved with v3 column defaults
             row = (

@@ -38,7 +38,6 @@ from insider_scanner.core.sec_trade_mapping import (
     ownership_filing_to_trades,
 )
 from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
-from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.common import not_cancelled
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_downloads import (
@@ -47,6 +46,7 @@ from insider_scanner.services.sec_downloads import (
     new_counters,
     process_filing_row,
 )
+from insider_scanner.services.sec_persistence import SecTradeBatch
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_backfill")
@@ -90,6 +90,8 @@ class SecBackfillService:
         policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
         cleanup: bool = True,
         checkpoint_path: Path | None = None,
+        batch_filings: int = 200,
+        batch_rows: int = 5_000,
     ) -> None:
         self._persistence = persistence
         self._client = client
@@ -97,6 +99,10 @@ class SecBackfillService:
         self._policy = policy
         self._cleanup = cleanup
         self._checkpoint_path = checkpoint_path
+        if batch_filings < 1 or batch_rows < 1:
+            raise ValueError("SEC batch limits must be positive")
+        self._batch_filings = batch_filings
+        self._batch_rows = batch_rows
 
     def run(
         self,
@@ -113,7 +119,11 @@ class SecBackfillService:
             )
 
         counters = new_counters()
-        upserts = UpsertResult()
+        batch = SecTradeBatch(
+            self._persistence.us_trades.upsert,
+            max_filings=self._batch_filings,
+            max_rows=self._batch_rows,
+        )
         skipped_resume = 0
         skipped_metadata = 0
         discovered = 0
@@ -121,6 +131,23 @@ class SecBackfillService:
         has_retryable_failures = False
 
         completed = self._load_completed(zip_path)
+
+        def record_committed(*, flush: bool = False) -> None:
+            nonlocal has_retryable_failures
+            committed = batch.take_outcomes(flush=flush)
+            changed = False
+            for item in committed:
+                if item.complete:
+                    if item.accession is not None:
+                        completed.add(item.accession)
+                        changed = True
+                else:
+                    outcomes.append(item)
+                    counters["failed"] += 1
+                    has_retryable_failures = True
+            if changed:
+                self._save_completed(zip_path, completed)
+
         gen = iter_ownership_filings(
             zip_path, cache_root=zip_path.parent, policy=self._policy, ciks=ciks
         )
@@ -144,7 +171,6 @@ class SecBackfillService:
                     r: SecMasterIndexRow,
                     filing: OwnershipFiling,
                 ) -> None:
-                    nonlocal upserts
                     try:
                         trades = ownership_filing_to_trades(filing, r)
                     except SecTradeMappingError as exc:
@@ -154,7 +180,8 @@ class SecBackfillService:
                             type(exc).__name__,
                         )
                         raise
-                    upserts = upserts + self._persistence.us_trades.upsert(trades)
+                    accession = r.archive_path.rsplit("/", 1)[-1].removesuffix(".txt")
+                    batch.add(accession, trades)
 
                 outcome = process_filing_row(
                     row,
@@ -166,13 +193,16 @@ class SecBackfillService:
                 )
                 if outcome.status is not SecFilingStatus.SUCCESS:
                     outcomes.append(outcome)
-                if outcome.complete:
+                if outcome.complete and outcome.status is not SecFilingStatus.SUCCESS:
                     completed.add(meta.accession_number)
                     self._save_completed(zip_path, completed)
-                else:
+                elif not outcome.complete:
                     has_retryable_failures = True
+                record_committed()
         finally:
             gen.close()  # release the ZIP handle promptly on early exit
+            # Keep previously parsed filings on cancellation or a blocked fetch.
+            record_committed(flush=True)
 
         fully_done = not interrupted and not has_retryable_failures
         if fully_done:
@@ -183,9 +213,9 @@ class SecBackfillService:
         summary = SecBackfillSummary(
             filings_discovered=discovered,
             filings_parsed=counters["parsed"],
-            transactions_inserted=upserts.inserted,
-            transactions_updated=upserts.updated,
-            transactions_skipped=upserts.skipped,
+            transactions_inserted=batch.upserts.inserted,
+            transactions_updated=batch.upserts.updated,
+            transactions_skipped=batch.upserts.skipped,
             skipped_resume=skipped_resume,
             skipped_metadata=skipped_metadata,
             failures=counters["failed"],

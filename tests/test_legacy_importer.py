@@ -7,6 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from insider_scanner.persistence.coverage import DateInterval
+from insider_scanner.persistence.errors import PersistenceError
+from insider_scanner.persistence.repositories import UpsertResult
+from insider_scanner.services import importer
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.importer import import_legacy_path
 
@@ -375,3 +378,101 @@ def test_persistence_failure_log_is_detailed_but_sanitized(tmp_path, caplog):
     assert "RuntimeError" in caplog.text
     assert "SELECT *" not in caplog.text
     assert "raw-record" not in caplog.text
+
+
+def test_import_groups_validated_records_in_bounded_batches(tmp_path, monkeypatch):
+    monkeypatch.setattr(importer, "_IMPORT_BATCH_SIZE", 4)
+    records = [
+        _us_record(),
+        "invalid",
+        _congress_record(),
+        _eu_record(),
+        *[{**_us_record(), "insider_name": f"Person {index}"} for index in range(7)],
+    ]
+    path = tmp_path / "mixed.json"
+    path.write_text(json.dumps(records), encoding="utf-8")
+
+    class RecordingRepository:
+        def __init__(self):
+            self.batches = []
+
+        def upsert(self, trades):
+            self.batches.append(list(trades))
+            return UpsertResult(inserted=len(trades))
+
+    persistence = SimpleNamespace(
+        us_trades=RecordingRepository(),
+        congress_trades=RecordingRepository(),
+        european_trades=RecordingRepository(),
+    )
+    report = import_legacy_path(path, persistence)
+
+    assert report.inserted == 10
+    assert report.errors == 1
+    assert report.files[0].messages == ("record 1: invalid_record",)
+    assert [len(batch) for batch in persistence.us_trades.batches] == [1, 4, 3]
+    assert [len(batch) for batch in persistence.congress_trades.batches] == [1]
+    assert [len(batch) for batch in persistence.european_trades.batches] == [1]
+
+
+def test_import_batch_retains_good_rows_and_original_error_indexes(
+    tmp_path, persistence
+):
+    path = tmp_path / "mixed.json"
+    path.write_text(
+        json.dumps(
+            [
+                _us_record(),
+                "invalid",
+                _congress_record(),
+                {**_us_record(), "insider_name": "Invalid Price", "price": -1},
+                {**_us_record(), "insider_name": "Another Person"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = import_legacy_path(path, persistence)
+
+    assert report.inserted == 3
+    assert report.errors == 2
+    assert report.files[0].messages == (
+        "record 1: invalid_record",
+        "record 3: persistence_error",
+    )
+    assert {trade.insider_name for trade in persistence.us_trades.query("AAPL")} == {
+        "Jane Doe",
+        "Another Person",
+    }
+
+
+def test_import_does_not_retry_failed_transaction_or_lose_later_batches(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(importer, "_IMPORT_BATCH_SIZE", 2)
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps([_us_record()] * 5), encoding="utf-8")
+
+    class FailingOnceRepository:
+        def __init__(self):
+            self.calls = []
+
+        def upsert(self, trades):
+            self.calls.append(len(trades))
+            if len(self.calls) == 1:
+                raise PersistenceError("US trade upsert failed: database is locked")
+            return UpsertResult(inserted=len(trades))
+
+    repository = FailingOnceRepository()
+    persistence = SimpleNamespace(us_trades=repository)
+
+    report = import_legacy_path(path, persistence)
+
+    assert repository.calls == [2, 2, 1]
+    assert report.inserted == 3
+    assert report.errors == 2
+    assert report.files[0].messages == (
+        "record 0: persistence_error",
+        "record 1: persistence_error",
+    )
+    assert "database is locked" in caplog.text

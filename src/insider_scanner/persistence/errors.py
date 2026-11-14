@@ -26,7 +26,11 @@ _MAX_CHAIN_DEPTH = 20
 
 
 class PersistenceError(RuntimeError):
-    """Raised when database initialization or migration fails."""
+    """A persistence failure, with lock contention explicitly retryable."""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _is_access_link(exc: BaseException) -> bool:

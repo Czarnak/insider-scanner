@@ -358,6 +358,25 @@ The SQLite database stores normalized trade records, successful source/date
 coverage, and latest-refresh state. HTTP caches remain transient files under the
 platform cache directory and can be removed without deleting parsed trades.
 
+SQLite uses a bounded pool of four reusable connections and write-ahead logging
+(WAL), so a reader can retain its snapshot while an ingestion batch commits.
+Writes retain `synchronous=FULL` durability and `BEGIN IMMEDIATE` protection for
+read/merge/write operations. Close the persistence context when finished to
+release pooled connections and database files.
+
+Trade upserts prefetch and write chunks of 300 inputs within one transaction.
+`UpsertResult.errors` identifies rejected rows by their zero-based input index,
+with a diagnostic message; valid rows still commit. Database lock, I/O, or other
+operational failures roll back the whole call and raise `PersistenceError`
+with the underlying cause. Lock contention has `retryable=True`.
+SEC daily ingestion and backfill buffer up to 200 filings or 5,000 rows between
+flushes, and flush remaining rows at date boundaries, cancellation, or abort.
+Checkpoints and coverage acknowledge only committed filings; a filing containing
+a rejected row remains retryable even when its other rows were stored.
+
+Migration 8 removes redundant price-history and coverage indexes while retaining
+their UNIQUE constraints and all stored rows.
+
 US and Congress scans retain available trades when a source, filing, or page
 fails, and display an incomplete-result warning in the CLI or GUI. Only complete
 responses, including recognized empty responses, record source/date coverage or
@@ -436,6 +455,10 @@ JSON exports. Imports are validated, idempotent, do not modify source files, and
 do not alter scan coverage or refresh state. Each file is limited to 50 MiB by
 default; use `--max-file-size-mib` to set a different positive limit. Any
 malformed, oversized, or invalid record produces a nonzero exit code.
+Imports process chunks of 1,000 source records, grouping writes by trade domain;
+row errors retain their original JSON record indexes. An operationally failed
+chunk reports its affected rows without replaying the failed transaction, and
+later chunks can still import successfully.
 
 Database initialization and migration failures stop GUI or CLI startup rather
 than continuing with partial state. User-facing errors remain concise; detailed
@@ -452,7 +475,9 @@ reported by `DEFAULT_PATHS.database_file`. Typical locations are
 If startup reports a database or migration failure:
 
 1. Close every Insider Scanner GUI and CLI process.
-2. Back up `insider_scanner.sqlite3` before making any recovery change.
+2. Back up `insider_scanner.sqlite3` before making any recovery change. Preserve
+   any accompanying `insider_scanner.sqlite3-wal` and `insider_scanner.sqlite3-shm`
+   files with it; WAL can contain committed rows absent from the main file.
 3. Do not edit `schema_version`, tables, indexes, or other schema objects manually.
 4. Restore a known-good database backup, or rename the corrupt database and
    restart the application to build a fresh database.

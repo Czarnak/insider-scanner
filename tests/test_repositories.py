@@ -15,7 +15,6 @@ from sqlalchemy import event
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
-from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.repositories import (
     CongressTradeRepository,
     EuropeanTradeRepository,
@@ -28,6 +27,11 @@ from tests.factories import us_trade as _us
 
 
 def _synchronize_table_reads(engine, table_name: str):
+    """A regression trap: IMMEDIATE locks intentionally make this time out.
+
+    Removing the write reservation lets both SELECTs cross the barrier and
+    exposes a lost update. Sequential tests would miss that regression.
+    """
     barrier = threading.Barrier(2)
 
     def synchronize(
@@ -223,14 +227,17 @@ def test_us_upsert_is_order_independent_for_three_enriching_duplicates(tmp_path)
     assert expected.congress_member == "Representative Doe"
 
 
-def test_us_upsert_rolls_back_batch_and_wraps_sqlalchemy_error(engine):
+def test_us_upsert_rejects_bad_rows_without_losing_valid_rows(engine):
     repo = UsTradeRepository(engine)
 
-    with pytest.raises(PersistenceError) as exc_info:
-        repo.upsert([_us(), _us(insider_name="Invalid", shares=-1)])
+    result = repo.upsert([_us(), _us(insider_name="Invalid", shares=-1)])
 
-    assert exc_info.value.__cause__ is not None
-    assert repo.query("AAPL") == []
+    assert result.inserted == 1
+    assert result.failed == 1
+    assert result.errors[0].index == 1
+    assert "shares" in result.errors[0].message
+    assert not result.errors[0].retryable
+    assert repo.query("AAPL") == [_us()]
 
 
 def test_us_concurrent_upserts_preserve_all_source_provenance(engine):
