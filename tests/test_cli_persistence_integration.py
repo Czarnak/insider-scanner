@@ -368,7 +368,7 @@ def _sec_application_services(database):
 def test_sec_daily_persists_into_local_db_and_rerun_is_idempotent(
     tmp_path, monkeypatch, capsys
 ):
-    from tests.test_sec_downloads import INDEX_TWO_ROWS, make_client, make_transport
+    from tests.sec_stubs import INDEX_TWO_ROWS, make_client, make_transport
 
     services = _sec_application_services(tmp_path / "sec.sqlite3")
 

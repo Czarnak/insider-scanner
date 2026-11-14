@@ -8,10 +8,10 @@ import responses
 
 from insider_scanner.core.openinsider import (
     parse_openinsider_html,
-    scrape_ticker,
     scrape_latest,
+    scrape_ticker,
 )
-from tests.fixtures import OPENINSIDER_HTML
+from tests.html_samples import OPENINSIDER_HTML
 
 
 class TestParseOpeninsider:

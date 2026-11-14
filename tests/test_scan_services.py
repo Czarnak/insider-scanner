@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 
 import pytest
 
@@ -20,6 +19,7 @@ from insider_scanner.services import (
 )
 from insider_scanner.services.common import LATEST_OVERLAP_COUNT
 from insider_scanner.services.sec_comparison import SEC_EDGAR_SOURCE
+from tests.factories import congress_trade, eu_trade, us_trade
 
 
 def _us(
@@ -42,10 +42,11 @@ def _us(
         "shares": 10,
         "price": 100,
         "value": 1_000,
+        "shares_owned_after": 0.0,
         "source": source,
     }
     values.update(overrides)
-    return InsiderTrade(**values)  # type: ignore[arg-type]
+    return us_trade(**values)
 
 
 def _congress(
@@ -54,7 +55,11 @@ def _congress(
     source: str = "house",
     filing_date: date = date(2026, 1, 10),
 ) -> CongressTrade:
-    return CongressTrade(
+    return congress_trade(
+        party="",
+        source_url="",
+        owner="",
+        comment="",
         official_name=official,
         chamber="House" if source == "house" else "Senate",
         filing_date=filing_date,
@@ -77,7 +82,7 @@ def _eu(
     country: str = "UK",
     trade_date: date = date(2026, 1, 10),
 ) -> EuropeanInsiderTrade:
-    return EuropeanInsiderTrade(
+    return eu_trade(
         isin=isin,
         issuer_name="Example PLC",
         country=country,  # type: ignore[arg-type]
@@ -100,13 +105,6 @@ def _eu(
         source=source,
         source_url=f"https://example.test/{source}/{trade_date}",
     )
-
-
-@pytest.fixture
-def persistence(tmp_path: Path):
-    context = open_persistence(tmp_path / "services.sqlite3")
-    yield context
-    context.close()
 
 
 class BoundedAdapter:
@@ -430,7 +428,10 @@ def test_us_cancellation_between_sources_returns_stored_results(persistence):
     assert persistence.coverage.get("us", "AAPL", "openinsider") == ()
 
 
-def test_us_restart_reuses_database_and_flags_congress_on_copies(tmp_path):
+def test_us_restart_reuses_database_and_flags_congress_on_copies(tmp_path, monkeypatch):
+    members_file = tmp_path / "members.json"
+    members_file.write_text('[{"name": "Pelosi Nancy"}]', encoding="utf-8")
+    monkeypatch.setattr("insider_scanner.core.senate.CONGRESS_FILE", members_file)
     database = tmp_path / "restart.sqlite3"
     adapter = BoundedAdapter(
         lambda ticker, start, _end: [

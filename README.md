@@ -44,6 +44,27 @@ Python 3.11+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
 `pandas`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and SQLAlchemy.
 The `gui` extra adds `PySide6` and `pyqtgraph`.
 
+### Runtime data and cache directories
+
+The application keeps its existing platform-specific data and cache locations
+by default. To use a separate profile or another drive, set
+`INSIDER_SCANNER_DATA_DIR` and/or `INSIDER_SCANNER_CACHE_DIR` before starting
+the CLI or GUI. The data root contains SQLite, user state, seed files and
+exports; the cache root contains downloaded filings and scraper caches.
+Setting one override leaves the other root at its usual location. Existing
+files are not moved automatically.
+
+For example, in PowerShell:
+
+```powershell
+$env:INSIDER_SCANNER_DATA_DIR = 'D:\InsiderScanner\profile'
+$env:INSIDER_SCANNER_CACHE_DIR = 'D:\InsiderScanner\cache'
+insider-scanner
+```
+
+Tests always replace these overrides with a disposable profile before
+application modules are collected, so they do not use your normal profile.
+
 ---
 
 ## Usage
@@ -404,15 +425,15 @@ All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 r
 
 ## Runtime Files
 
-| Location within runtime paths | Description |
-| ------ | ------------- |
-| `insider_scanner.sqlite3` | Parsed trades, coverage intervals, refresh state, and schema version |
-| `congress_members.json` | Editable Congress member list with committee assignments and sector mappings |
-| `tickers_watchlist.txt` | Editable ticker watchlist |
-| `eu_watchlist.txt` | Editable European ISIN watchlist |
-| `house_disclosures/` | Cached House disclosure indexes and PDFs |
-| `exports/scans/` | Generated CSV/JSON scan exports |
-| platform cache directory | Transient EDGAR and scraper HTTP caches |
+| Location within runtime paths | Description                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| `insider_scanner.sqlite3`     | Parsed trades, coverage intervals, refresh state, and schema version         |
+| `congress_members.json`       | Editable Congress member list with committee assignments and sector mappings |
+| `tickers_watchlist.txt`       | Editable ticker watchlist                                                    |
+| `eu_watchlist.txt`            | Editable European ISIN watchlist                                             |
+| `house_disclosures/`          | Cached House disclosure indexes and PDFs                                     |
+| `exports/scans/`              | Generated CSV/JSON scan exports                                              |
+| platform cache directory      | Transient EDGAR and scraper HTTP caches                                      |
 
 Packaged defaults are copied into the user data directory only when a file is
 missing; existing user edits are never overwritten. `eu_watchlist.txt` stores
@@ -477,4 +498,4 @@ Bundled UI fonts are licensed separately under the SIL Open Font License 1.1:
 
 ---
 
-*Created with Claude AI*
+_Created with Claude AI_

@@ -5,15 +5,16 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import MagicMock, patch
 
+import pytest
 import requests
 import responses
 
 from insider_scanner.core.congress_senate import (
     BASE_URL,
-    EFDSession,
     REPORT_DATA,
     SEARCH_HOME,
     SEARCH_LANDING,
+    EFDSession,
     _extract_ticker,
     _map_senate_columns,
     _normalize_tx_type,
@@ -25,7 +26,6 @@ from insider_scanner.core.congress_senate import (
     search_senate_filings,
 )
 from insider_scanner.core.models import CongressTrade
-
 
 # -----------------------------------------------------------------------
 # Sample HTML fixtures
@@ -393,11 +393,8 @@ class TestEFDSession:
         )
 
         session = EFDSession()
-        try:
+        with pytest.raises(ConnectionError, match="CSRF"):
             session.authenticate()
-            assert False, "Should have raised"
-        except ConnectionError as e:
-            assert "CSRF" in str(e)
 
     @responses.activate
     def test_search(self):
@@ -426,11 +423,8 @@ class TestEFDSession:
 
     def test_search_not_authenticated(self):
         session = EFDSession()
-        try:
+        with pytest.raises(ConnectionError, match="not authenticated"):
             session.search(last_name="test")
-            assert False, "Should have raised"
-        except ConnectionError as e:
-            assert "not authenticated" in str(e)
 
     @responses.activate
     def test_fetch_page(self):

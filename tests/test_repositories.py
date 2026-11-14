@@ -22,82 +22,9 @@ from insider_scanner.persistence.repositories import (
     UpsertResult,
     UsTradeRepository,
 )
-
-
-@pytest.fixture
-def engine(tmp_path):
-    engine = create_sqlite_engine(tmp_path / "repositories.sqlite3")
-    bootstrap_database(engine)
-    yield engine
-    engine.dispose()
-
-
-def _us(**overrides) -> InsiderTrade:
-    values = {
-        "ticker": "AAPL",
-        "company": "Apple Inc.",
-        "insider_name": "Tim Cook",
-        "insider_title": "CEO",
-        "trade_type": "Sell",
-        "trade_date": date(2026, 1, 5),
-        "filing_date": date(2026, 1, 7),
-        "shares": 105.0,
-        "price": 200.0,
-        "value": 21_000.0,
-        "shares_owned_after": 500_000.0,
-        "source": "secform4",
-        "edgar_url": "",
-        "is_congress": False,
-        "congress_member": "",
-    }
-    values.update(overrides)
-    return InsiderTrade(**values)
-
-
-def _congress(**overrides) -> CongressTrade:
-    values = {
-        "official_name": "Jane Doe",
-        "chamber": "House",
-        "party": "I",
-        "filing_date": date(2026, 2, 2),
-        "doc_id": "20012345",
-        "source_url": "https://example.test/ptr",
-        "trade_date": date(2026, 1, 30),
-        "asset_description": "Example Corp",
-        "ticker": "EXM",
-        "trade_type": "Purchase",
-        "owner": "Spouse",
-        "amount_range": "$1,001 - $15,000",
-        "amount_low": 1001.0,
-        "amount_high": 15_000.0,
-        "comment": "Joint account",
-        "source": "house",
-    }
-    values.update(overrides)
-    return CongressTrade(**values)
-
-
-def _eu(**overrides) -> EuropeanInsiderTrade:
-    values = {
-        "isin": "GB0002875804",
-        "issuer_name": "Example PLC",
-        "country": "UK",
-        "regulatory_body": "FCA",
-        "insider_name": "Jane Doe",
-        "position": "Director",
-        "trade_date": date(2026, 3, 4),
-        "filing_date": date(2026, 3, 5),
-        "trade_type": "Buy",
-        "instrument_type": "Share",
-        "volume": 100.0,
-        "price": 2.5,
-        "currency": "GBP",
-        "total_value": 250.0,
-        "source": "rns",
-        "source_url": "https://example.test/rns",
-    }
-    values.update(overrides)
-    return EuropeanInsiderTrade(**values)
+from tests.factories import congress_trade as _congress
+from tests.factories import eu_trade as _eu
+from tests.factories import us_trade as _us
 
 
 def _synchronize_table_reads(engine, table_name: str):

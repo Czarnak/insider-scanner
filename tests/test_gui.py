@@ -173,19 +173,19 @@ class TestScanTab:
 
 
 class TestMainWindow:
-    def test_create(self, qtbot):
+    def test_create(self, qtbot, tmp_path):
         from insider_scanner.gui.main_window import MainWindow
 
-        win = MainWindow()
+        win = MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)
         assert win.page_stack.count() == 9
         assert win.page_stack.currentWidget() is win.feed_page
 
-    def test_navigation_names(self, qtbot):
+    def test_navigation_names(self, qtbot, tmp_path):
         from insider_scanner.gui.main_window import MainWindow
         from insider_scanner.gui.european_tab import EuropeanTab
 
-        win = MainWindow()
+        win = MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)
         assert list(win.navigation_buttons) == [
             "Feed",
@@ -200,18 +200,18 @@ class TestMainWindow:
         ]
         assert isinstance(win.european_tab, EuropeanTab)
 
-    def test_status_bar(self, qtbot):
+    def test_status_bar(self, qtbot, tmp_path):
         from insider_scanner.gui.main_window import MainWindow
 
-        win = MainWindow()
+        win = MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)
         win.log_status("Testing")
         assert win.status_bar.currentMessage() == "Testing"
 
-    def test_main_window_has_analysis_tab(self, qtbot):
+    def test_main_window_has_analysis_tab(self, qtbot, tmp_path):
         from insider_scanner.gui.main_window import MainWindow
 
-        win = MainWindow()
+        win = MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)
         assert "Analysis" in win.navigation_buttons
         assert win.analysis_tab._thread_pool is win._thread_pool

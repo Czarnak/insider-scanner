@@ -74,6 +74,7 @@ EXPECTED_INDEXES = {
 
 @pytest.fixture
 def engine(tmp_path):
+    """Keep migrations uninitialized; unlike the shared repository fixture."""
     database_file = tmp_path / "db" / "insider-scanner.sqlite3"
     engine = create_sqlite_engine(database_file)
     yield engine

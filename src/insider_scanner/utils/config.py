@@ -43,10 +43,22 @@ def resolve_runtime_paths(
     cache_dir: Path | None = None,
     platform_dirs: PlatformDirs | None = None,
 ) -> RuntimePaths:
-    """Resolve writable paths, allowing deterministic root injection in tests."""
+    """Resolve roots from explicit arguments, environment, then platform defaults.
+
+    Set environment overrides before importing the application: DEFAULT_PATHS
+    and the compatibility constants below are resolved once at import time.
+    """
     dirs = platform_dirs or PlatformDirs(APP_NAME, APP_AUTHOR)
-    resolved_data_dir = Path(data_dir or dirs.user_data_path)
-    resolved_cache_dir = Path(cache_dir or dirs.user_cache_path)
+    resolved_data_dir = Path(
+        data_dir
+        if data_dir is not None
+        else os.getenv("INSIDER_SCANNER_DATA_DIR") or dirs.user_data_path
+    ).expanduser()
+    resolved_cache_dir = Path(
+        cache_dir
+        if cache_dir is not None
+        else os.getenv("INSIDER_SCANNER_CACHE_DIR") or dirs.user_cache_path
+    ).expanduser()
     outputs_dir = resolved_data_dir / "exports"
 
     return RuntimePaths(
@@ -96,8 +108,37 @@ SEC_MAX_REQUESTS_PER_SECOND: int = 10
 DEFAULT_CACHE_TTL: int = 3600  # 1 hour
 
 
+def _publish_seed_without_link(staged: Path, target: Path) -> None:
+    """Publish without clobbering a file created by another process."""
+    if os.name == "nt":
+        # Unlike POSIX rename, Windows rename fails if the destination exists.
+        os.rename(staged, target)
+        return
+
+    # debt: On POSIX filesystems without hard links, exclusive creation exposes
+    # the seed during copying. Use a native no-replace rename if concurrent
+    # readers must consume seeds before ensure_dirs() has finished.
+    with target.open("xb") as destination:
+        created_file = os.fstat(destination.fileno())
+        try:
+            with staged.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+        except BaseException:
+            try:
+                destination.close()
+            finally:
+                try:
+                    if os.path.samestat(created_file, target.lstat()):
+                        target.unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+
+
 def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
-    """Atomically publish a seed without replacing an existing user file."""
+    """Publish a packaged seed without replacing an existing user file."""
     if target.exists():
         return
 
@@ -120,6 +161,11 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
             os.link(temp_path, target)
         except FileExistsError:
             pass
+        except OSError:
+            try:
+                _publish_seed_without_link(temp_path, target)
+            except FileExistsError:
+                pass
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)

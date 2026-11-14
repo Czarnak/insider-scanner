@@ -8,7 +8,7 @@ from unittest.mock import patch
 import responses
 
 from insider_scanner.core.secform4 import parse_secform4_html, scrape_ticker
-from tests.fixtures import SECFORM4_HTML
+from tests.html_samples import SECFORM4_HTML
 
 # AAPL CIK (raw, not zero-padded)
 AAPL_CIK = "320193"

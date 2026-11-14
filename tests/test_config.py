@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from importlib.resources import files
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from insider_scanner.utils.config import (
     RuntimePaths,
@@ -20,6 +25,64 @@ from insider_scanner.utils.config import (
 
 
 class TestRuntimePaths:
+    def test_environment_overrides_both_runtime_roots(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
+        monkeypatch.setenv("INSIDER_SCANNER_CACHE_DIR", str(tmp_path / "downloads"))
+
+        paths = resolve_runtime_paths()
+
+        assert paths.data_dir == tmp_path / "profile"
+        assert paths.database_file == tmp_path / "profile/insider_scanner.sqlite3"
+        assert paths.cache_dir == tmp_path / "downloads"
+        assert paths.edgar_cache_dir == tmp_path / "downloads/edgar"
+
+    def test_explicit_roots_take_precedence_over_environment(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "env-data"))
+        monkeypatch.setenv("INSIDER_SCANNER_CACHE_DIR", str(tmp_path / "env-cache"))
+
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "explicit-data", cache_dir=tmp_path / "explicit-cache"
+        )
+
+        assert paths.data_dir == tmp_path / "explicit-data"
+        assert paths.cache_dir == tmp_path / "explicit-cache"
+
+    @pytest.mark.parametrize("override", [None, ""])
+    def test_unset_or_empty_overrides_preserve_platform_paths(
+        self, monkeypatch, tmp_path, override
+    ):
+        for name in ("INSIDER_SCANNER_DATA_DIR", "INSIDER_SCANNER_CACHE_DIR"):
+            if override is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, override)
+        platform_dirs = SimpleNamespace(
+            user_data_path=tmp_path / "existing-data",
+            user_cache_path=tmp_path / "existing-cache",
+        )
+
+        paths = resolve_runtime_paths(platform_dirs=platform_dirs)
+
+        assert paths.data_dir == tmp_path / "existing-data"
+        assert paths.cache_dir == tmp_path / "existing-cache"
+
+    def test_overriding_data_keeps_independent_cache_default(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
+        monkeypatch.delenv("INSIDER_SCANNER_CACHE_DIR", raising=False)
+        platform_dirs = SimpleNamespace(
+            user_data_path=tmp_path / "existing-data",
+            user_cache_path=tmp_path / "existing-cache",
+        )
+
+        paths = resolve_runtime_paths(platform_dirs=platform_dirs)
+
+        assert paths.data_dir == tmp_path / "profile"
+        assert paths.cache_dir == tmp_path / "existing-cache"
+
     def test_resolve_runtime_paths_uses_injected_data_and_cache_roots(self, tmp_path):
         data_dir = tmp_path / "data"
         cache_dir = tmp_path / "cache"
@@ -46,15 +109,141 @@ class TestRuntimePaths:
             cache_dir=tmp_path / "cache",
         )
 
-        try:
+        with pytest.raises(AttributeError):
             paths.data_dir = tmp_path / "other"
-        except AttributeError:
-            pass
-        else:
-            raise AssertionError("RuntimePaths must be immutable")
 
 
 class TestPackagedSeeds:
+    def test_failed_exclusive_copy_cleans_up_even_when_close_raises(
+        self, monkeypatch, tmp_path
+    ):
+        from insider_scanner.utils import config
+
+        staged = tmp_path / "staged"
+        staged.write_bytes(b"packaged seed")
+        target = tmp_path / "seed.txt"
+        real_open = Path.open
+
+        class CloseFails:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def close(self):
+                self.handle.close()
+                raise OSError("close failed")
+
+        def open_with_failing_close(path, mode="r", *args, **kwargs):
+            handle = real_open(path, mode, *args, **kwargs)
+            return CloseFails(handle) if path == target and mode == "xb" else handle
+
+        def interrupted_copy(*args):
+            raise OSError("copy interrupted")
+
+        monkeypatch.setattr(Path, "open", open_with_failing_close)
+        monkeypatch.setattr(
+            config,
+            "os",
+            SimpleNamespace(name="posix", fsync=os.fsync, fstat=os.fstat, path=os.path),
+        )
+        monkeypatch.setattr(config.shutil, "copyfileobj", interrupted_copy)
+
+        with pytest.raises(OSError, match="close failed"):
+            config._publish_seed_without_link(staged, target)
+
+        assert not target.exists()
+
+    @pytest.mark.parametrize("replace_target", [False, True])
+    def test_failed_exclusive_copy_only_removes_its_own_file(
+        self, monkeypatch, tmp_path, replace_target
+    ):
+        from insider_scanner.utils import config
+
+        staged = tmp_path / "staged"
+        staged.write_bytes(b"packaged seed")
+        target = tmp_path / "seed.txt"
+
+        def interrupted_copy(source, destination):
+            # Closing first lets Windows reproduce POSIX pathname replacement
+            # while the writer still retains the identity of its original file.
+            destination.close()
+            if replace_target:
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"new user content")
+                replacement.replace(target)
+            raise OSError("copy interrupted")
+
+        monkeypatch.setattr(
+            config,
+            "os",
+            SimpleNamespace(name="posix", fsync=os.fsync, fstat=os.fstat, path=os.path),
+        )
+        monkeypatch.setattr(config.shutil, "copyfileobj", interrupted_copy)
+
+        with pytest.raises(OSError, match="copy interrupted"):
+            config._publish_seed_without_link(staged, target)
+
+        if replace_target:
+            assert target.read_bytes() == b"new user content"
+        else:
+            assert not target.exists()
+
+    def test_ensure_dirs_supports_filesystems_without_hardlinks(
+        self, monkeypatch, tmp_path
+    ):
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+        )
+
+        def unsupported_link(*args):
+            raise OSError(errno.ENOTSUP, "Hard links unavailable")
+
+        monkeypatch.setattr("insider_scanner.utils.config.os.link", unsupported_link)
+
+        ensure_dirs(paths)
+
+        seed_root = files("insider_scanner.resources.seeds")
+        for target in (
+            paths.congress_file,
+            paths.tickers_file,
+            paths.eu_watchlist_file,
+        ):
+            assert target.read_bytes() == seed_root.joinpath(target.name).read_bytes()
+        assert not list(paths.data_dir.glob(".*.tmp"))
+
+    def test_fallback_never_replaces_a_concurrently_created_user_seed(
+        self, monkeypatch, tmp_path
+    ):
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+        )
+
+        def concurrent_user_write(source, target):
+            target.write_bytes(b"concurrent user content")
+            raise OSError(errno.ENOTSUP, "Hard links unavailable")
+
+        monkeypatch.setattr(
+            "insider_scanner.utils.config.os.link", concurrent_user_write
+        )
+
+        ensure_dirs(paths)
+
+        for target in (
+            paths.congress_file,
+            paths.tickers_file,
+            paths.eu_watchlist_file,
+        ):
+            assert target.read_bytes() == b"concurrent user content"
+        assert not list(paths.data_dir.glob(".*.tmp"))
+
     def test_ensure_dirs_copies_all_missing_seed_files(self, tmp_path):
         paths = resolve_runtime_paths(
             data_dir=tmp_path / "data",
