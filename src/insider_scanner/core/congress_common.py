@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from math import isfinite
 from typing import Literal
 
 CongressTransactionType = Literal["Purchase", "Sale", "Exchange", "Other"]
@@ -23,8 +24,10 @@ _OWNER_MAP = {
     "jt": "Joint",
 }
 _AMOUNT_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
-_OVER_AMOUNT_RE = re.compile(rf"\bover\s+\$({_AMOUNT_NUMBER})\b", re.IGNORECASE)
-_AMOUNT_RANGE_RE = re.compile(rf"\$?({_AMOUNT_NUMBER})\s*[-–—]\s*\$?({_AMOUNT_NUMBER})")
+_OVER_AMOUNT_RE = re.compile(rf"(?:.*\s)?over\s+\$\s*({_AMOUNT_NUMBER})", re.IGNORECASE)
+_AMOUNT_RANGE_RE = re.compile(
+    rf"\$?\s*({_AMOUNT_NUMBER})\s*[-–—]\s*\$?\s*({_AMOUNT_NUMBER})"
+)
 
 
 def extract_ticker(asset_description: str) -> str:
@@ -51,12 +54,15 @@ def parse_amount_range(text: str) -> tuple[float, float]:
     Open-ended categories retain the established finite estimate: both bounds
     equal the reported threshold. The caller keeps the original disclosure text.
     """
-    over_match = _OVER_AMOUNT_RE.search(text)
+    text = text.strip()
+    over_match = _OVER_AMOUNT_RE.fullmatch(text)
     if over_match:
         threshold = float(over_match.group(1).replace(",", ""))
-        return threshold, threshold
-    range_match = _AMOUNT_RANGE_RE.search(text)
+        return (threshold, threshold) if isfinite(threshold) else (0.0, 0.0)
+    range_match = _AMOUNT_RANGE_RE.fullmatch(text)
     if range_match:
         low, high = range_match.groups()
-        return float(low.replace(",", "")), float(high.replace(",", ""))
+        bounds = float(low.replace(",", "")), float(high.replace(",", ""))
+        if all(isfinite(bound) for bound in bounds) and bounds[0] <= bounds[1]:
+            return bounds
     return 0.0, 0.0

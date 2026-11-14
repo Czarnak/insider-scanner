@@ -67,8 +67,11 @@ def test_normalize_owner(raw, expected):
         ("spouse/DC over $1,000,000", (1000000.0, 1000000.0)),
         ("$1,001 - $15,000", (1001.0, 15000.0)),
         ("$1,001 – $15,000", (1001.0, 15000.0)),
+        ("$1,001 — $15,000", (1001.0, 15000.0)),
         ("1001-15000", (1001.0, 15000.0)),
         ("$1,001.50 - $15,000.25", (1001.5, 15000.25)),
+        (" $ 1001 - $ 15000 ", (1001.0, 15000.0)),
+        ("Owner-specific category Over $ 1,000,000", (1000000.0, 1000000.0)),
         ("", (0.0, 0.0)),
         ("--", (0.0, 0.0)),
         ("not disclosed", (0.0, 0.0)),
@@ -76,3 +79,29 @@ def test_normalize_owner(raw, expected):
 )
 def test_parse_amount_range(raw, expected):
     assert parse_amount_range(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Over $1,000,00",
+        "Spouse/DC Over $1,000,00",
+        "$1,00 - $2,000",
+        "$1,000 - $2,00",
+        "$-100 - $200",
+        "-$100 - $200",
+        "-100 - 200",
+        "$100 - -$200",
+        "Over $-100",
+        "Over -$100",
+        "$100.0.0 - $200",
+        "$100 - $200.0.0",
+        "$100 - $200 trailing text",
+        "Over $100 trailing text",
+        "$200 - $100",
+        "Over $" + "9" * 400,
+        "$1 - $" + "9" * 400,
+    ],
+)
+def test_parse_amount_range_rejects_malformed_or_invalid_categories(raw):
+    assert parse_amount_range(raw) == (0.0, 0.0)

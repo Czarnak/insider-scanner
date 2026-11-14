@@ -120,6 +120,9 @@ def test_upgrade_without_missing_openinsider_dates_keeps_coverage(legacy_databas
         ("Spouse/DC Over $1,000,000", (10, 20), (10, 20)),
         ("Unknown", (0, 0), (0, 0)),
         ("$15,000 - $1,001", (0, 0), (0, 0)),
+        ("Over $1,000,00", (0, 0), (0, 0)),
+        ("$1,00 - $2,000", (0, 0), (0, 0)),
+        ("$-100 - $200", (0, 0), (0, 0)),
     ],
 )
 def test_upgrade_repairs_only_missing_amount_bounds_without_changing_identity(
