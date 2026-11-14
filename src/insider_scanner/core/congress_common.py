@@ -1,0 +1,66 @@
+"""Shared normalization for House and Senate transaction disclosures."""
+
+from __future__ import annotations
+
+import re
+from typing import Literal
+
+CongressTransactionType = Literal["Purchase", "Sale", "Exchange", "Other"]
+
+_TICKER_RE = re.compile(r"\(([A-Z]{1,5}(?:[.-][A-Z])?)\)")
+_TX_TYPE_MAP: dict[str, CongressTransactionType] = {
+    "p": "Purchase",
+    "purchase": "Purchase",
+    "s": "Sale",
+    "sale": "Sale",
+    "e": "Exchange",
+    "exchange": "Exchange",
+}
+_OWNER_MAP = {
+    "": "Self",
+    "self": "Self",
+    "sp": "Spouse",
+    "spouse": "Spouse",
+    "dc": "Dependent Child",
+    "dependent child": "Dependent Child",
+    "jt": "Joint",
+    "joint": "Joint",
+}
+_AMOUNT_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_OVER_AMOUNT_RE = re.compile(rf"\bover\s+\$({_AMOUNT_NUMBER})\b", re.IGNORECASE)
+_AMOUNT_RANGE_RE = re.compile(rf"\$?({_AMOUNT_NUMBER})\s*[-–—]\s*\$?({_AMOUNT_NUMBER})")
+
+
+def extract_ticker(asset_description: str) -> str:
+    """Extract a parenthesized ticker, including dotted or hyphenated classes."""
+    match = _TICKER_RE.search(asset_description)
+    return match.group(1) if match else ""
+
+
+def normalize_tx_type(raw: str) -> CongressTransactionType:
+    """Normalize disclosure codes and labels to the Congress vocabulary."""
+    normalized = re.sub(r"\s*\((?:partial|full)\)\s*$", "", raw.strip().casefold())
+    return _TX_TYPE_MAP.get(normalized, "Other")
+
+
+def normalize_owner(raw: str) -> str:
+    """Normalize owner codes and known labels while retaining unknown labels."""
+    normalized = raw.strip()
+    return _OWNER_MAP.get(normalized.casefold(), normalized)
+
+
+def parse_amount_range(text: str) -> tuple[float, float]:
+    """Parse a disclosure range, including owner-qualified ``Over $X`` labels.
+
+    Open-ended categories retain the established finite estimate: both bounds
+    equal the reported threshold. The caller keeps the original disclosure text.
+    """
+    over_match = _OVER_AMOUNT_RE.search(text)
+    if over_match:
+        threshold = float(over_match.group(1).replace(",", ""))
+        return threshold, threshold
+    range_match = _AMOUNT_RANGE_RE.search(text)
+    if range_match:
+        low, high = range_match.groups()
+        return float(low.replace(",", "")), float(high.replace(",", ""))
+    return 0.0, 0.0

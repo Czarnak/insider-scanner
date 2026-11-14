@@ -22,6 +22,8 @@ import requests
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
+from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
+from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import parse_ptr_date as _parse_date
@@ -55,18 +57,6 @@ _last_request_time: float = 0.0
 # Regex for extracting PTR UUID links from search results
 _PTR_LINK_RE = re.compile(r"/search/view/ptr/([a-f0-9-]+)/")
 _PAPER_LINK_RE = re.compile(r"/search/view/paper/")
-
-# Regex to extract ticker from asset descriptions
-_TICKER_RE = re.compile(r"\(([A-Z]{1,5})\)")
-
-# Transaction type normalization
-_TX_TYPE_MAP = {
-    "purchase": "Purchase",
-    "sale": "Sale",
-    "sale (full)": "Sale",
-    "sale (partial)": "Sale",
-    "exchange": "Exchange",
-}
 
 
 def _rate_limit() -> None:
@@ -498,17 +488,6 @@ def _split_name(full_name: str) -> tuple[str, str]:
     # Otherwise assume "First Last" format (more common in our data)
     # Since our congress_members.json uses "Last First", we try both
     return parts[0], " ".join(parts[1:])
-
-
-def _normalize_tx_type(raw: str) -> str:
-    """Normalize transaction type string."""
-    return _TX_TYPE_MAP.get(raw.strip().lower(), "Other")
-
-
-def _extract_ticker(asset_description: str) -> str:
-    """Extract ticker from asset description."""
-    match = _TICKER_RE.search(asset_description)
-    return match.group(1) if match else ""
 
 
 # -----------------------------------------------------------------------

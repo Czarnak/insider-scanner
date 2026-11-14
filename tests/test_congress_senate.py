@@ -191,6 +191,10 @@ class TestNormalizeTxType:
         assert _normalize_tx_type("Sale") == "Sale"
         assert _normalize_tx_type("Sale (Full)") == "Sale"
         assert _normalize_tx_type("Sale (Partial)") == "Sale"
+        assert _normalize_tx_type("S (partial)") == "Sale"
+
+    def test_purchase_code(self):
+        assert _normalize_tx_type("P") == "Purchase"
 
     def test_exchange(self):
         assert _normalize_tx_type("Exchange") == "Exchange"
@@ -516,6 +520,44 @@ class TestSearchSenateFilings:
 
 
 class TestScrapeSentateTrades:
+    def test_normalizes_shared_disclosure_fields(self):
+        session = MagicMock(spec=EFDSession)
+        session.is_authenticated = True
+        filing = {
+            "first_name": "Test",
+            "last_name": "Senator",
+            "report_url": "/search/view/ptr/test/",
+            "report_uuid": "test",
+            "filing_date": date(2026, 1, 20),
+            "is_paper": False,
+        }
+        transaction = {
+            "ticker": "--",
+            "asset_name": "Brown-Forman Class B (BF-B)",
+            "tx_type": "S (partial)",
+            "owner": "Spouse",
+            "amount": "Spouse/DC Over $1,000,000",
+        }
+        with (
+            patch(
+                "insider_scanner.core.congress_senate.search_senate_filings",
+                return_value=[filing],
+            ),
+            patch(
+                "insider_scanner.core.congress_senate.parse_ptr_page",
+                return_value=[transaction],
+            ),
+        ):
+            trades = scrape_senate_trades(official_name="Test Senator", session=session)
+
+        assert len(trades) == 1
+        trade = trades[0]
+        assert trade.ticker == "BF-B"
+        assert trade.trade_type == "Sale"
+        assert trade.owner == "Spouse"
+        assert trade.amount_range == "Spouse/DC Over $1,000,000"
+        assert trade.amount_low == trade.amount_high == 1000000.0
+
     def test_full_pipeline(self):
         """Test scrape_senate_trades with fully mocked session."""
         mock_session = MagicMock(spec=EFDSession)

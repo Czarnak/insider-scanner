@@ -16,7 +16,6 @@ Pipeline:
 from __future__ import annotations
 
 import io
-import re
 import zipfile
 from datetime import date, datetime
 from pathlib import Path
@@ -24,6 +23,9 @@ from xml.etree import ElementTree as ET
 
 import requests
 
+from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
+from insider_scanner.core.congress_common import normalize_owner as _normalize_owner
+from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.config import HOUSE_DISCLOSURES_DIR
 from insider_scanner.utils.logging import get_logger
@@ -37,32 +39,6 @@ PTR_PDF_URL = BASE_URL + "/public_disc/ptr-pdfs/{year}/{doc_id}.pdf"
 
 # Filing types in the House index
 FILING_TYPE_PTR = "P"  # Periodic Transaction Report (actual trades)
-
-# Transaction type mapping from PTR PDFs
-_TX_TYPE_MAP = {
-    "P": "Purchase",
-    "p": "Purchase",
-    "purchase": "Purchase",
-    "S": "Sale",
-    "s": "Sale",
-    "sale": "Sale",
-    "sale (full)": "Sale",
-    "sale (partial)": "Sale",
-    "E": "Exchange",
-    "e": "Exchange",
-    "exchange": "Exchange",
-}
-
-# Owner code mapping from PTR PDFs
-_OWNER_MAP = {
-    "SP": "Spouse",
-    "DC": "Dependent Child",
-    "JT": "Joint",
-    "": "Self",
-}
-
-# Regex to extract ticker from asset descriptions like "Apple Inc (AAPL) [ST]"
-_TICKER_RE = re.compile(r"\(([A-Z]{1,5})\)")
 
 # Amount range patterns used in House disclosures
 _AMOUNT_RANGES = [
@@ -350,29 +326,6 @@ def fetch_ptr_pdf(doc_id: str, year: int, *, force: bool = False) -> bytes:
 # -----------------------------------------------------------------------
 # PDF parsing (pdfplumber — electronic filings only)
 # -----------------------------------------------------------------------
-
-
-def _extract_ticker(asset_description: str) -> str:
-    """Try to extract a ticker symbol from an asset description.
-
-    Looks for patterns like "(AAPL)", "(MSFT)", etc.
-    """
-    match = _TICKER_RE.search(asset_description)
-    return match.group(1) if match else ""
-
-
-def _normalize_tx_type(raw: str) -> str:
-    """Normalize transaction type string to Purchase/Sale/Exchange/Other."""
-    raw_stripped = raw.strip()
-    return _TX_TYPE_MAP.get(
-        raw_stripped, _TX_TYPE_MAP.get(raw_stripped.lower(), "Other")
-    )
-
-
-def _normalize_owner(raw: str) -> str:
-    """Normalize owner code to Self/Spouse/Dependent Child/Joint."""
-    raw_stripped = raw.strip().upper()
-    return _OWNER_MAP.get(raw_stripped, raw_stripped or "Self")
 
 
 def _is_scanned_pdf(pdf) -> bool:
