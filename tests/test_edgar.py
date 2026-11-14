@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import responses
 
+from insider_scanner.core import edgar
 from insider_scanner.core.edgar import (
     COMPANY_TICKERS_URL,
     build_daily_master_index_url,
@@ -32,6 +33,12 @@ COMPANY_TICKERS_JSON = json.dumps(
         "2": {"cik_str": 1318605, "ticker": "TSLA", "title": "Tesla, Inc."},
     }
 )
+
+
+@pytest.fixture(autouse=True)
+def _configured_sec_contact(monkeypatch):
+    """Mocked SEC calls still pass through the real contact validation."""
+    monkeypatch.setenv("SEC_USER_AGENT", "InsiderScanner tests tests@insider.test")
 
 
 class TestNormalizeCik:
@@ -149,6 +156,110 @@ class TestParseCik:
 
 
 class TestResolveCikFromJson:
+    def test_reuses_parsed_directory_for_multiple_tickers(self, monkeypatch):
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append((url, kwargs))
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert resolve_cik_from_json("msft") == "789019"
+        assert resolve_cik_from_json("MISSING") is None
+        assert len(calls) == 1
+        assert calls[0][1]["cache_dir"] == edgar.EDGAR_CACHE_DIR
+
+    def test_directory_expires_and_tracks_cache_location(self, monkeypatch, tmp_path):
+        now = [0.0]
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append(kwargs["cache_dir"])
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        now[0] = 86399
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert len(calls) == 1
+        now[0] = 86400
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert len(calls) == 2
+        monkeypatch.setattr(edgar, "EDGAR_CACHE_DIR", tmp_path)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert calls[-1] == tmp_path
+        assert len(calls) == 3
+
+    def test_cache_bypass_reads_fresh_directory_each_time(self, monkeypatch):
+        calls = []
+
+        def fetch(url, **kwargs):
+            calls.append(kwargs["cache_dir"])
+            return COMPANY_TICKERS_JSON
+
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", fetch)
+        assert resolve_cik_from_json("AAPL") == "320193"
+        assert resolve_cik_from_json("AAPL", use_cache=False) == "320193"
+        assert resolve_cik_from_json("MSFT", use_cache=False) == "789019"
+        assert calls == [edgar.EDGAR_CACHE_DIR, None, None]
+
+    @pytest.mark.parametrize("payload", ["[]", "null", "not JSON"])
+    def test_invalid_directory_is_a_miss_and_not_memoized(self, monkeypatch, payload):
+        payloads = iter([payload, COMPANY_TICKERS_JSON])
+        monkeypatch.setattr(edgar, "_ticker_map_cache", None)
+        monkeypatch.setattr(edgar, "fetch_url", lambda *a, **k: next(payloads))
+        assert resolve_cik_from_json("AAPL") is None
+        assert resolve_cik_from_json("AAPL") == "320193"
+
+    def test_bad_optional_entries_do_not_hide_valid_tickers(self, monkeypatch):
+        payload = json.dumps(
+            {
+                "0": {"ticker": "BAD", "cik_str": True},
+                "1": None,
+                "2": {"ticker": 123, "cik_str": 456},
+                "3": {"ticker": "AAPL", "cik_str": 320193},
+            }
+        )
+        monkeypatch.setattr(edgar, "fetch_url", lambda *a, **k: payload)
+        assert resolve_cik_from_json("AAPL", use_cache=False) == "320193"
+        assert resolve_cik_from_json("BAD", use_cache=False) is None
+
+    def test_programming_errors_propagate(self, monkeypatch):
+        def broken_fetch(*args, **kwargs):
+            raise RuntimeError("programming error")
+
+        monkeypatch.setattr(edgar, "fetch_url", broken_fetch)
+        with pytest.raises(RuntimeError, match="programming error"):
+            resolve_cik_from_json("AAPL", use_cache=False)
+
+    def test_sustained_block_stops_without_html_fallback(self, monkeypatch):
+        calls = []
+
+        def blocked_fetch(url, **kwargs):
+            calls.append(url)
+            raise edgar.SecBlockedError(600)
+
+        monkeypatch.setattr(edgar, "fetch_url", blocked_fetch)
+        with pytest.raises(edgar.SecBlockedError):
+            resolve_cik("AAPL", use_cache=False)
+        assert calls == [COMPANY_TICKERS_URL]
+
+    def test_html_fallback_propagates_sustained_block(self, monkeypatch):
+        def blocked_fetch(url, **kwargs):
+            if url == COMPANY_TICKERS_URL:
+                return COMPANY_TICKERS_JSON
+            raise edgar.SecBlockedError(600)
+
+        monkeypatch.setattr(edgar, "fetch_url", blocked_fetch)
+        with pytest.raises(edgar.SecBlockedError):
+            resolve_cik("UNKNOWN", use_cache=False)
+
     @responses.activate
     def test_resolve_aapl(self):
         responses.add(
