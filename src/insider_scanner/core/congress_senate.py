@@ -672,7 +672,12 @@ def scrape_senate_trades(
 
         if not filings:
             log.info("No Senate PTR filings found")
-            return FetchResult(status=filings.status, issues=issues)
+            status = (
+                FetchStatus.UNSUPPORTED
+                if issues and all(not issue.retryable for issue in issues)
+                else filings.status
+            )
+            return FetchResult(status=status, issues=issues)
 
         total = len(filings)
         log.info("Processing %d Senate PTR filings...", total)
@@ -757,7 +762,14 @@ def scrape_senate_trades(
             len(all_trades),
             total,
         )
-        return FetchResult(all_trades, issues=issues)
+        status = (
+            FetchStatus.UNSUPPORTED
+            if issues
+            and not all_trades
+            and all(not issue.retryable for issue in issues)
+            else None
+        )
+        return FetchResult(all_trades, issues=issues, status=status)
     finally:
         if owns_session:
             session.close()

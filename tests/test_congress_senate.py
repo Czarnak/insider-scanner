@@ -932,6 +932,49 @@ def test_scrape_retains_failed_ptr_identifier_for_unrecognized_page():
     assert result.issues[0].identifier == filing["report_uuid"]
 
 
+@pytest.mark.parametrize("has_electronic_filing", [False, True])
+@pytest.mark.parametrize("has_retryable_issue", [False, True])
+def test_scrape_classifies_unsupported_search_issues(
+    has_electronic_filing, has_retryable_issue
+):
+    session = MagicMock(spec=EFDSession)
+    session.fetch_page.return_value = PTR_PAGE_NO_TABLE_HTML
+    filings = (
+        [parse_search_results(SEARCH_RESPONSE_JSON)[0]] if has_electronic_filing else []
+    )
+    issues = [FetchIssue("paper_filing", source="senate", retryable=False)]
+    if has_retryable_issue:
+        issues.append(FetchIssue("search_failed", source="senate"))
+    with patch(
+        "insider_scanner.core.congress_senate.search_senate_filings",
+        return_value=FetchResult(filings, issues=issues),
+    ):
+        result = scrape_senate_trades(session=session)
+    assert result == []
+    assert result.issues == tuple(issues)
+    expected = (
+        FetchStatus.TRANSIENT_FAILURE
+        if has_retryable_issue
+        else FetchStatus.UNSUPPORTED
+    )
+    assert result.status is expected
+
+
+def test_scrape_preserves_trades_with_unsupported_search_issues():
+    session = MagicMock(spec=EFDSession)
+    session.fetch_page.return_value = PTR_PAGE_HTML
+    filing = parse_search_results(SEARCH_RESPONSE_JSON)[0]
+    issue = FetchIssue("paper_filing", source="senate", retryable=False)
+    with patch(
+        "insider_scanner.core.congress_senate.search_senate_filings",
+        return_value=FetchResult([filing], issues=[issue]),
+    ):
+        result = scrape_senate_trades(session=session)
+    assert len(result) == 3
+    assert result.status is FetchStatus.PARTIAL
+    assert result.issues == (issue,)
+
+
 @responses.activate
 def test_default_sessions_share_the_senate_request_budget(
     register_efd_auth, senate_clock
