@@ -6,10 +6,9 @@ from sqlalchemy import MetaData, Table, insert, select
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.coverage import CoverageRepository, DateInterval
-from insider_scanner.persistence.mappings import us_to_values
+from insider_scanner.persistence.mappings import congress_to_values, us_to_values
 from insider_scanner.persistence.migrations import MIGRATIONS
-from insider_scanner.persistence.repositories import CongressTradeRepository
-from insider_scanner.persistence.schema import congress_trades, scan_coverage
+from insider_scanner.persistence.schema import scan_coverage
 from tests.factories import congress_trade, us_trade
 
 
@@ -18,6 +17,7 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
     bootstrap_database(engine, migrations=MIGRATIONS[:4])
     # Seed and compare the historical columns, independently of current models.
     legacy_us_trades = Table("us_trades", MetaData(), autoload_with=engine)
+    legacy_congress_trades = Table("congress_trades", MetaData(), autoload_with=engine)
     values = us_to_values(us_trade())
     with engine.begin() as connection:
         connection.execute(
@@ -29,7 +29,15 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
                 }
             )
         )
-    CongressTradeRepository(engine).upsert([congress_trade()])
+        connection.execute(
+            insert(legacy_congress_trades).values(
+                {
+                    field: value
+                    for field, value in congress_to_values(congress_trade()).items()
+                    if field in legacy_congress_trades.c
+                }
+            )
+        )
     observed = datetime(2026, 2, 5, 9, tzinfo=UTC)
     with engine.begin() as connection:
         connection.execute(
@@ -70,16 +78,19 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
             ],
         )
         before_us = connection.execute(select(legacy_us_trades)).all()
-        before_congress = connection.execute(select(congress_trades)).all()
+        before_congress = connection.execute(select(legacy_congress_trades)).all()
     try:
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:5])
         repo = CoverageRepository(engine)
         assert repo.get("us", "AAPL", "secform4") == ()
         assert repo.get("congress", "*", "house") == ()
         assert repo.get("congress", "*", "senate") == ()
         with engine.connect() as connection:
             assert connection.execute(select(legacy_us_trades)).all() == before_us
-            assert connection.execute(select(congress_trades)).all() == before_congress
+            assert (
+                connection.execute(select(legacy_congress_trades)).all()
+                == before_congress
+            )
             rows = connection.execute(select(scan_coverage)).all()
             assert len(rows) == 1
             assert rows[0].domain == "eu"
@@ -90,7 +101,7 @@ def test_upgrade_reopens_unfinished_coverage_and_preserves_trades(tmp_path):
         repo.add(
             "us", "AAPL", "secform4", completed, now=datetime(2026, 2, 11, tzinfo=UTC)
         )
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:5])
         assert repo.get("us", "AAPL", "secform4") == (completed,)
     finally:
         engine.dispose()
@@ -114,7 +125,7 @@ def test_legacy_compaction_cannot_hide_an_unfinished_day(tmp_path):
                     covered_at=datetime(2026, 1, 2, 9, tzinfo=UTC),
                 )
             )
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:5])
         assert CoverageRepository(engine).gaps(
             "us", "AAPL", "openinsider", interval
         ) == (interval,)

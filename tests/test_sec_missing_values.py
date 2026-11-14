@@ -71,8 +71,8 @@ def test_version_five_upgrade_preserves_numbers_keys_and_unknown_legacy_zeros(tm
                 ],
             )
 
-        bootstrap_database(engine)
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:6])
+        bootstrap_database(engine, migrations=MIGRATIONS[:6])
         with engine.connect() as connection:
             rows = (
                 connection.execute(select(us_trades).order_by(us_trades.c.id))
@@ -112,7 +112,7 @@ def test_version_five_upgrade_repairs_sec_semantics_without_changing_identity(tm
                 [(*record, f"row:{index}") for index, record in enumerate(records)],
             )
 
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:6])
         with engine.connect() as connection:
             rows = (
                 connection.execute(select(us_trades).order_by(us_trades.c.id))

@@ -522,10 +522,17 @@ scripts/
 2. **Scrape**: `secform4.py` fetches CIK-based pages with compound-column parsing (date+type, name+title split by `<br>`); `openinsider.py` fetches ticker-based pages; both produce `InsiderTrade` records
 3. **Persist**: parsed records are upserted into SQLite; successful source/date intervals are recorded separately
 4. **Cache**: raw HTTP responses are cached independently with configurable TTL (default 1h)
-5. **Merge**: `merger.py` deduplicates trades across sources (matching by ticker + name + date + share count)
+5. **Merge**: `merger.py` uses the same raw transaction identity as SQLite. Scraper observations match by ticker, normalized insider name, transaction date, trade type, exact share-count magnitude and price. Different prices, quantities or trade types remain separate.
 6. **Flag**: `senate.py` checks insider names against the Congress member list (fuzzy matching)
 7. **Verify**: secform4 trades include direct SEC filing links; others get generated EDGAR search URLs
 8. **Export**: results are saved as CSV + JSON under the platform user data directory
+
+Scraper duplicates fill complementary fields using deterministic per-field rules.
+SEC transactions retain their accession/row identity and coexist with scraper
+observations for source comparison. A new parse of the same SEC row replaces its
+stored financial and parser fields, including corrected zeros, missing values
+and cleared fields; source provenance and available filing links are retained.
+Undated scraper observations also retain filing/source evidence in their keys.
 
 ### Data Flow — Congress (House)
 
@@ -541,6 +548,19 @@ scripts/
 2. **Search**: POST to the EFD JSON API with senator name, report type (PTR), and date range. Results include links to individual PTR pages. Paper filings (scanned PDFs) are automatically filtered out.
 3. **Parse**: Each electronic PTR page contains an HTML table with columns for transaction date, owner, ticker, asset name, type, amount range, and comment. These are parsed via BeautifulSoup.
 4. **Convert**: Transactions are converted to `CongressTrade` records. Tickers are read directly from the "Ticker" column when available; when the ticker is "--", it's extracted from the asset description (e.g. "Vanguard ETF (BND)" → BND).
+
+Congress transactions retain `source_row_id` from the filing's ID/# column, with
+a physical page/table/row position as a fallback. Identical lots in separate
+rows remain separate. Populated incoming corrections replace stored Congress
+fields; empty values retain stored information. Amount bounds are kept together.
+
+The transaction-identity database upgrade rekeys existing US observations and
+retains row IDs, timestamps and source provenance when duplicates coalesce.
+It clears scraper and Congress scan-completion markers once so later scans can
+recover transactions collapsed by older keys. SEC ingestion progress is retained.
+Legacy Congress rows without an ordinal are promoted when a matching filing row
+is parsed; reimporting the matching old export cannot add an extra lot. Missing
+historical lots require a source reparse because their row IDs were not stored.
 
 ### Data Flow — European Insider Trades (UK / DE / FR / NL)
 

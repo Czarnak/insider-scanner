@@ -11,12 +11,14 @@ from insider_scanner.core.models import InsiderTrade
 
 
 def sec_identity(trade: InsiderTrade) -> tuple[str, str] | None:
+    """Return complete filing/row evidence, or None for partial evidence."""
     accession = (trade.accession_number or "").strip()
     row = (trade.sec_row_id or "").strip()
     return (accession, row) if accession and row else None
 
 
 def us_trade_identity(trade: InsiderTrade) -> tuple:
+    """Identify a raw filing row or an exact scraper observation."""
     native = sec_identity(trade)
     if native:
         # Keep the established SEC digest unchanged.
