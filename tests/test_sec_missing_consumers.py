@@ -1,10 +1,11 @@
 """Missing SEC numbers remain unknown in filters, feed detail and alerts."""
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
 
-from insider_scanner.core.merger import filter_trades
+from insider_scanner.core.merger import filter_trades, merge_trade_pair
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.persistence.alerts import AlertRule, AlertStore
 from insider_scanner.persistence.feed import (
@@ -108,3 +109,46 @@ def test_value_alert_criteria_do_not_treat_unknown_as_zero(engine):
     hits = evaluate_alerts(FeedRepository(engine), store, WatchlistStore())
     assert len(hits) == 1
     assert [record.identifier for record in hits[0].records] == ["ZERO"]
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["shares_missing", "price_missing", "value_missing", "shares_owned_after_missing"],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_merge_prefers_known_zero_to_missing_zero(missing_field, reverse):
+    known_zero = _trades()[1]
+    unknown_zero = replace(known_zero, **{missing_field: True})
+    pair = (unknown_zero, known_zero) if reverse else (known_zero, unknown_zero)
+
+    merged = merge_trade_pair(*pair)
+
+    assert merged == known_zero
+    assert getattr(unknown_zero, missing_field) is True
+
+
+def test_merge_availability_tie_break_keeps_primary_numbers_and_flags_together():
+    first = replace(
+        _trades()[1],
+        shares=10,
+        price_missing=True,
+        value_missing=True,
+        shares_owned_after_missing=True,
+    )
+    more_reported = replace(
+        first,
+        shares=0,
+        shares_missing=True,
+        price=20,
+        price_missing=False,
+        value_missing=False,
+        shares_owned_after_missing=False,
+    )
+
+    for pair in ((first, more_reported), (more_reported, first)):
+        merged = merge_trade_pair(*pair)
+        assert merged == more_reported
+        assert merged.shares == 0
+        assert merged.shares_missing is True
+        assert merged.price == 20
+        assert merged.price_missing is False
