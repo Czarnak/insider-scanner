@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import responses
@@ -354,20 +355,61 @@ class TestFilingUrl:
 
 class TestBuildEdgarUrl:
     def test_build_url(self):
-        from datetime import date
-
         trade = InsiderTrade(
             ticker="AAPL",
             insider_name="Cook Timothy",
             filing_date=date(2025, 11, 15),
         )
         url = build_edgar_url_for_trade(trade)
-        assert "Cook+Timothy" in url
-        assert "AAPL" in url
-        assert "forms=4" in url
+        parts = urlsplit(url)
+        assert parts.netloc == "www.sec.gov"
+        assert parts.path == "/edgar/search/"
+        assert parts.query == ""
+        assert parse_qs(parts.fragment.removeprefix("/")) == {
+            "q": ['"Cook Timothy" "AAPL"'],
+            "forms": ["4"],
+            "dateRange": ["custom"],
+            "startdt": ["2025-11-01"],
+            "enddt": ["2025-11-15"],
+        }
 
-    def test_build_url_no_date(self):
+    def test_build_url_no_date(self, monkeypatch):
+        class FutureDate(date):
+            @classmethod
+            def today(cls):
+                return cls(2035, 7, 9)
+
+        monkeypatch.setattr(edgar, "date", FutureDate)
         trade = InsiderTrade(ticker="AAPL", insider_name="Test Person")
-        url = build_edgar_url_for_trade(trade)
-        assert "Test+Person" in url
-        assert "AAPL" in url
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["q"] == ['"Test Person" "AAPL"']
+        assert query["startdt"] == ["2030-01-01"]
+        assert query["enddt"] == ["2035-07-09"]
+
+    @pytest.mark.parametrize(
+        "name", ["SMITH & CO LLC", "O'NEIL #2", "José / Müller + Partners"]
+    )
+    def test_encodes_search_terms_without_injecting_parameters(self, name):
+        trade = InsiderTrade(ticker="A&B", insider_name=name)
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["q"] == [f'"{name}" "A&B"']
+        assert set(query) == {"q", "forms", "dateRange", "startdt", "enddt"}
+
+    def test_trade_date_window_includes_later_filings(self):
+        trade = InsiderTrade(
+            ticker="AAPL", insider_name="Person", trade_date=date(2025, 12, 30)
+        )
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["startdt"] == ["2025-12-01"]
+        assert query["enddt"] == ["2026-01-29"]
+
+    def test_filing_date_takes_precedence_over_trade_date(self):
+        trade = InsiderTrade(
+            ticker="AAPL",
+            insider_name="Person",
+            trade_date=date(2025, 12, 30),
+            filing_date=date(2026, 1, 5),
+        )
+        query = parse_qs(urlsplit(build_edgar_url_for_trade(trade)).fragment[1:])
+        assert query["startdt"] == ["2026-01-01"]
+        assert query["enddt"] == ["2026-01-05"]

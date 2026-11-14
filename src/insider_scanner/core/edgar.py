@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlencode
 
 import requests
 
@@ -161,8 +162,11 @@ def _fetch_company_ticker_map(*, use_cache: bool) -> dict[str, str]:
     for entry in data.values():
         if not isinstance(entry, dict) or not isinstance(entry.get("ticker"), str):
             continue
+        raw_cik = entry.get("cik_str")
+        if not isinstance(raw_cik, (str, int)):
+            continue
         try:
-            cik = str(int(normalize_cik(entry.get("cik_str"))))
+            cik = str(int(normalize_cik(raw_cik)))
         except (TypeError, ValueError):
             continue
         tickers[entry["ticker"].upper()] = cik
@@ -250,19 +254,23 @@ def get_filing_url(cik: str, count: int = 40) -> str:
 
 
 def build_edgar_url_for_trade(trade: InsiderTrade) -> str:
-    """Generate an EDGAR search URL for a given trade (for verification)."""
-    name = trade.insider_name.replace(" ", "+")
-    ticker = trade.ticker
-    d = trade.filing_date or trade.trade_date
-    if d:
-        start = d.replace(day=1).isoformat()
-        end = d.isoformat()
+    """Open human-readable EDGAR results, allowing time for a trade's filing."""
+    if trade.filing_date:
+        start = trade.filing_date.replace(day=1)
+        end = trade.filing_date
+    elif trade.trade_date:
+        start = trade.trade_date.replace(day=1)
+        end = trade.trade_date + timedelta(days=30)
     else:
-        start = "2020-01-01"
-        end = "2030-12-31"
-
-    return (
-        f"https://efts.sec.gov/LATEST/search-index?"
-        f"q=%22{name}%22+%22{ticker}%22&forms=4"
-        f"&dateRange=custom&startdt={start}&enddt={end}"
+        end = date.today()
+        start = date(end.year - 5, 1, 1)
+    query = urlencode(
+        {
+            "q": f'"{trade.insider_name}" "{trade.ticker}"',
+            "forms": "4",
+            "dateRange": "custom",
+            "startdt": start.isoformat(),
+            "enddt": end.isoformat(),
+        }
     )
+    return f"https://www.sec.gov/edgar/search/#/{query}"
