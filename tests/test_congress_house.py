@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from datetime import date
 from unittest.mock import MagicMock, patch
@@ -23,8 +24,6 @@ from insider_scanner.core.congress_house import (
     _parse_table_row,
     ensure_house_index,
     parse_house_index,
-    refresh_all_indexes,
-    refresh_current_year,
     scrape_house_trades,
     search_filings,
 )
@@ -439,67 +438,67 @@ class TestEnsureHouseIndex:
             ensure_house_index(2099)
 
 
-class TestRefreshFunctions:
-    @responses.activate
-    def test_refresh_current_year(self, tmp_path, fixed_today):
-        year = 2027
-        zip_bytes = _make_sample_zip(year=year)
-        responses.add(
-            responses.GET,
-            INDEX_ZIP_URL.format(year=year),
-            body=zip_bytes,
-            status=200,
-        )
+@pytest.mark.parametrize("year", [2026, 2027])
+@responses.activate
+def test_recent_house_index_expires_after_ttl(tmp_path, monkeypatch, fixed_today, year):
+    from insider_scanner.core import congress_house as house
 
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            result = refresh_current_year()
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    monkeypatch.setattr(house, "time", lambda: 1_000_000)
+    cached = tmp_path / f"{year}FD.xml"
+    cached.write_text("<FinancialDisclosure />")
+    expired = 1_000_000 - house.DEFAULT_CACHE_TTL
+    os.utime(cached, (expired, expired))
+    responses.add(
+        responses.GET,
+        INDEX_ZIP_URL.format(year=year),
+        body=_make_sample_zip(year=year),
+    )
 
-        assert result is not None
-        assert result.exists()
+    assert ensure_house_index(year) == cached
+    assert "Allen" in cached.read_text()
+    assert len(responses.calls) == 1
 
-    @responses.activate
-    def test_refresh_all_indexes_subset(self, tmp_path):
-        for year in [2025, 2026]:
-            zip_bytes = _make_sample_zip(year=year)
-            responses.add(
-                responses.GET,
-                INDEX_ZIP_URL.format(year=year),
-                body=zip_bytes,
-                status=200,
-            )
 
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            results = refresh_all_indexes(years=[2025, 2026])
+@pytest.mark.parametrize(
+    ("year", "age"), [(2025, 86400 * 365), (2026, 3599), (2027, 3599)]
+)
+def test_house_index_reuses_archived_or_fresh_cache(
+    tmp_path, monkeypatch, fixed_today, year, age
+):
+    from insider_scanner.core import congress_house as house
 
-        assert 2025 in results
-        assert 2026 in results
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    monkeypatch.setattr(house, "time", lambda: 40_000_000)
+    cached = tmp_path / f"{year}FD.xml"
+    cached.write_text("<FinancialDisclosure />")
+    os.utime(cached, (40_000_000 - age, 40_000_000 - age))
+    download = MagicMock(side_effect=AssertionError("cache should be reused"))
+    monkeypatch.setattr(house, "_download_bytes", download)
 
-    @responses.activate
-    def test_refresh_partial_failure(self, tmp_path):
-        zip_bytes = _make_sample_zip(year=2025)
-        responses.add(
-            responses.GET,
-            INDEX_ZIP_URL.format(year=2025),
-            body=zip_bytes,
-            status=200,
-        )
-        responses.add(
-            responses.GET,
-            INDEX_ZIP_URL.format(year=2026),
-            status=500,
-        )
+    assert ensure_house_index(year) == cached
+    download.assert_not_called()
 
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            results = refresh_all_indexes(years=[2025, 2026])
 
-        assert 2025 in results
-        assert 2026 not in results
+@responses.activate
+def test_recent_house_index_with_future_mtime_is_refetched(
+    tmp_path, monkeypatch, fixed_today
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    monkeypatch.setattr(house, "time", lambda: 1_000_000)
+    cached = tmp_path / "2027FD.xml"
+    cached.write_text("<FinancialDisclosure />")
+    os.utime(cached, (1_000_001, 1_000_001))
+    responses.add(
+        responses.GET,
+        INDEX_ZIP_URL.format(year=2027),
+        body=_make_sample_zip(year=2027),
+    )
+
+    ensure_house_index(2027)
+    assert "Allen" in cached.read_text()
 
 
 # -----------------------------------------------------------------------
@@ -1304,3 +1303,63 @@ def test_house_does_not_repair_deterministically_unsupported_cached_pdf(
     assert result.status == FetchStatus.UNSUPPORTED
     assert result.issues[0].reason == "scanned_pdf"
     fetch.assert_not_called()
+
+
+def test_house_no_cache_refreshes_indexes_and_pdfs(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    cached_pdf = tmp_path / "2026" / "pdfs" / "20034001.pdf"
+    cached_pdf.parent.mkdir(parents=True)
+    cached_pdf.write_bytes(SAMPLE_PDF)
+    cached_reader = MagicMock(side_effect=AssertionError("cache read during refresh"))
+    monkeypatch.setattr(house, "_read_cached_pdf", cached_reader)
+    parser = MagicMock(return_value=FetchResult())
+    monkeypatch.setattr(house, "parse_ptr_pdf", parser)
+    http = MagicMock()
+    http.get.side_effect = [
+        MagicMock(content=_make_sample_zip()),
+        MagicMock(content=SAMPLE_PDF),
+    ]
+
+    result = house.scrape_house_trades(
+        official_name="Nancy Pelosi",
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 12, 31),
+        use_cache=False,
+        session=http,
+    )
+
+    assert result.complete
+    assert [call.args[0] for call in http.get.call_args_list] == [
+        INDEX_ZIP_URL.format(year=2026),
+        PTR_PDF_URL.format(year=2026, doc_id="20034001"),
+    ]
+    cached_reader.assert_not_called()
+    parser.assert_called_once_with(SAMPLE_PDF, strict=True, doc_id="20034001")
+
+
+def test_house_expired_index_refresh_failure_is_incomplete(
+    tmp_path, monkeypatch, fixed_today
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    monkeypatch.setattr(house, "time", lambda: 1_000_000)
+    cached = tmp_path / "2026FD.xml"
+    cached.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    expired = 1_000_000 - house.DEFAULT_CACHE_TTL
+    os.utime(cached, (expired, expired))
+    http = MagicMock()
+    http.get.side_effect = OSError("offline")
+
+    result = house.scrape_house_trades(
+        date_from=date(2026, 1, 1), date_to=date(2026, 12, 31), session=http
+    )
+
+    assert not result.complete
+    assert result.issues == (
+        FetchIssue("index_failed", source="house", identifier="2026"),
+    )
+    assert cached.read_text(encoding="utf-8") == SAMPLE_INDEX_XML

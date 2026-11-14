@@ -21,6 +21,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
+from time import time
 from xml.etree import ElementTree as ET
 
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
@@ -34,7 +35,7 @@ from insider_scanner.core.fetch_outcome import (
 )
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.atomic_file import atomic_write_bytes
-from insider_scanner.utils.config import HOUSE_DISCLOSURES_DIR
+from insider_scanner.utils.config import DEFAULT_CACHE_TTL, HOUSE_DISCLOSURES_DIR
 from insider_scanner.utils.http import HttpSession
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import parse_ptr_date as _parse_date_flexible
@@ -47,21 +48,6 @@ PTR_PDF_URL = BASE_URL + "/public_disc/ptr-pdfs/{year}/{doc_id}.pdf"
 
 # Filing types in the House index
 FILING_TYPE_PTR = "P"  # Periodic Transaction Report (actual trades)
-
-# Amount range patterns used in House disclosures
-_AMOUNT_RANGES = [
-    "$1,001 - $15,000",
-    "$15,001 - $50,000",
-    "$50,001 - $100,000",
-    "$100,001 - $250,000",
-    "$250,001 - $500,000",
-    "$500,001 - $1,000,000",
-    "$1,000,001 - $5,000,000",
-    "$5,000,001 - $25,000,000",
-    "$25,000,001 - $50,000,000",
-    "Over $50,000,000",
-]
-
 
 # -----------------------------------------------------------------------
 # Index management — ZIP download + extraction
@@ -125,7 +111,9 @@ def ensure_house_index(
     """Ensure the House financial disclosure index for *year* is available.
 
     Downloads the ZIP from disclosures-clerk.house.gov and extracts the
-    XML + TXT index files into ``data/house_disclosures/``.
+    XML + TXT index files into ``data/house_disclosures/``. Current and previous
+    year indexes expire after the shared cache TTL to include newly published
+    filings, including additions around the year boundary.
 
     Parameters
     ----------
@@ -149,13 +137,15 @@ def ensure_house_index(
     if xml_path.exists() and not force:
         try:
             _validate_index(xml_path.read_bytes())
+            age = time() - xml_path.stat().st_mtime
         except (OSError, ValueError, ET.ParseError) as exc:
             log.warning(
                 "Invalid cached House index %s: %s; downloading again", xml_path, exc
             )
         else:
-            log.debug("Index already exists: %s", xml_path)
-            return xml_path
+            if year < date.today().year - 1 or 0 <= age < DEFAULT_CACHE_TTL:
+                log.debug("Index already exists and is current: %s", xml_path)
+                return xml_path
 
     url = INDEX_ZIP_URL.format(year=year)
     log.info("Downloading House index for %d from %s", year, url)
@@ -177,43 +167,6 @@ def ensure_house_index(
             atomic_write_bytes(_index_txt_path(year), zf.read(txt_name))
 
     return xml_path
-
-
-def refresh_all_indexes(*, years: list[int] | None = None) -> dict[int, Path]:
-    """Re-download indexes for all specified years (force=True).
-
-    Parameters
-    ----------
-    years : list of int or None
-        Years to refresh. If None, refreshes 2008 through current year.
-
-    Returns
-    -------
-    dict mapping year → XML path for successfully downloaded indexes.
-    """
-    if years is None:
-        current_year = date.today().year
-        years = list(range(2008, current_year + 1))
-
-    results = {}
-    for year in years:
-        try:
-            path = ensure_house_index(year, force=True)
-            results[year] = path
-        except Exception as exc:  # noqa: BLE001 - isolate a failed year from the refresh batch
-            log.warning("Failed to refresh index for %d: %s", year, exc)
-
-    return results
-
-
-def refresh_current_year() -> Path | None:
-    """Re-download only the current year's index."""
-    year = date.today().year
-    try:
-        return ensure_house_index(year, force=True)
-    except Exception as exc:  # noqa: BLE001 - an optional refresh must retain the existing index
-        log.warning("Failed to refresh current year index: %s", exc)
-        return None
 
 
 # -----------------------------------------------------------------------
@@ -608,6 +561,7 @@ def scrape_house_trades(
     official_name: str | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    use_cache: bool = True,
     progress_callback: Callable[[int, int, str], None] | None = None,
     session: HttpSession | None = None,
 ) -> FetchResult[CongressTrade]:
@@ -619,6 +573,8 @@ def scrape_house_trades(
         Name to filter by. If None, scans all PTR filings.
     date_from, date_to : date or None
         Filing date range. Determines which year indexes to download.
+    use_cache : bool
+        If False, re-download the indexes and PDFs for this request.
     progress_callback : callable or None
         Called with (current, total, message) for progress reporting.
 
@@ -631,6 +587,7 @@ def scrape_house_trades(
             official_name=official_name,
             date_from=date_from,
             date_to=date_to,
+            use_cache=use_cache,
             progress_callback=progress_callback,
             session=http,
         )
@@ -641,6 +598,7 @@ def _scrape_house_trades(
     official_name: str | None,
     date_from: date | None,
     date_to: date | None,
+    use_cache: bool,
     progress_callback: Callable[[int, int, str], None] | None,
     session: HttpSession,
 ) -> FetchResult[CongressTrade]:
@@ -653,7 +611,7 @@ def _scrape_house_trades(
     # Step 1: Ensure indexes and collect matching filings
     for year in years:
         try:
-            ensure_house_index(year, session=session)
+            ensure_house_index(year, force=not use_cache, session=session)
             filings = search_filings(
                 year,
                 name=official_name,
@@ -693,7 +651,9 @@ def _scrape_house_trades(
             progress_callback(i, total, f"Processing {official} ({doc_id})")
 
         try:
-            cached_pdf = _read_cached_pdf(_pdf_cache_path(doc_id, year))
+            cached_pdf = (
+                _read_cached_pdf(_pdf_cache_path(doc_id, year)) if use_cache else None
+            )
             pdf_bytes = (
                 cached_pdf
                 if cached_pdf is not None

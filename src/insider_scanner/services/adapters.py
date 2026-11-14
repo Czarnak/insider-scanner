@@ -51,11 +51,13 @@ def default_congress_adapters() -> dict[str, BoundedSourceAdapter[CongressTrade]
     from insider_scanner.core.congress_senate import scrape_senate_trades
 
     return {
-        "house": lambda official, start, end, _use_cache: scrape_house_trades(
+        "house": lambda official, start, end, use_cache: scrape_house_trades(
             official_name=official,
             date_from=start,
             date_to=end,
+            use_cache=use_cache,
         ),
+        # Senate requests always go to eFD; it has no persisted response cache.
         "senate": lambda official, start, end, _use_cache: scrape_senate_trades(
             official_name=official,
             date_from=start,
