@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult
 from insider_scanner.persistence.mappings import european_canonical_key
 from insider_scanner.persistence.refresh import is_fresh
 from insider_scanner.services.adapters import (
@@ -24,6 +25,8 @@ from insider_scanner.services.common import (
     latest_refresh_mode,
     normalize_identifier,
     not_cancelled,
+    persistence_issues,
+    scan_result,
     validate_range,
     validate_sources,
 )
@@ -90,7 +93,7 @@ class EuropeanScanService:
         end_date: date | None,
         use_cache: bool = True,
         cancelled: Callable[[], bool] = not_cancelled,
-    ) -> list[EuropeanInsiderTrade]:
+    ) -> FetchResult[EuropeanInsiderTrade]:
         identifier = normalize_identifier(isin, "ISIN").upper()
         if len(identifier) != 12:
             raise ValueError("ISIN must be exactly 12 characters")
@@ -107,22 +110,25 @@ class EuropeanScanService:
             )
             if not selected:
                 raise ValueError("selected sources do not support unbounded scans")
-            self._refresh_latest(
+            issues = self._refresh_latest(
                 selected,
                 count=self._latest_overlap_count,
                 use_cache=use_cache,
                 cancelled=cancelled,
             )
-            return self._query_identifier(identifier, selected)
+            return scan_result(self._query_identifier(identifier, selected), issues)
         requested = validate_range(start_date, end_date)
         selected = self._select_sources(country, sources, self._adapters)
+        issues: list[FetchIssue] = []
 
         for source in selected:
             for gap in self._persistence.coverage.gaps(
                 "eu", identifier, source, requested
             ):
                 if cancelled():
-                    return self._query(identifier, selected, requested)
+                    return scan_result(
+                        self._query(identifier, selected, requested), issues
+                    )
                 try:
                     fetched = self._adapters[source](
                         identifier,
@@ -135,16 +141,25 @@ class EuropeanScanService:
                         f"EU source {source} failed for {gap.start}..{gap.end}"
                     ) from error
                 if cancelled():
-                    return self._query(identifier, selected, requested)
+                    return scan_result(
+                        self._query(identifier, selected, requested), issues
+                    )
                 trades = [
                     replace(trade, isin=identifier, source=source)
                     for trade in fetched
                     if trade.isin and trade.isin.upper() == identifier
                 ]
-                self._persistence.european_trades.upsert(trades)
-                if source in self._bounded_coverage_sources:
+                persisted = self._persistence.european_trades.upsert(trades)
+                issues.extend(
+                    persistence_issues(
+                        persisted,
+                        source=source,
+                        identifier=f"{identifier} {gap.start}..{gap.end}",
+                    )
+                )
+                if source in self._bounded_coverage_sources and not persisted.errors:
                     self._persistence.coverage.add("eu", identifier, source, gap)
-        return self._query(identifier, selected, requested)
+        return scan_result(self._query(identifier, selected, requested), issues)
 
     def latest(
         self,
@@ -157,7 +172,7 @@ class EuropeanScanService:
         end_date: date | None = None,
         use_cache: bool = True,
         cancelled: Callable[[], bool] = not_cancelled,
-    ) -> list[EuropeanInsiderTrade]:
+    ) -> FetchResult[EuropeanInsiderTrade]:
         if count < 1:
             raise ValueError("count must be positive")
         if start_date is not None or end_date is not None:
@@ -167,7 +182,7 @@ class EuropeanScanService:
                 if len(identifier) != 12:
                     raise ValueError("ISIN must be exactly 12 characters")
                 selected = self._select_sources(country, sources, self._adapters)
-                return self.scan(
+                result = self.scan(
                     identifier,
                     country=country,
                     sources=selected,
@@ -175,7 +190,8 @@ class EuropeanScanService:
                     end_date=end_date,
                     use_cache=use_cache,
                     cancelled=cancelled,
-                )[:count]
+                )
+                return scan_result(result[:count], list(result.issues))
             return self._latest_in_range(
                 count=count,
                 country=country,
@@ -187,13 +203,16 @@ class EuropeanScanService:
             )
 
         selected = self._select_latest_sources(country, sources)
-        self._refresh_latest(
+        issues = self._refresh_latest(
             selected,
             count=count,
             use_cache=use_cache,
             cancelled=cancelled,
         )
-        return self._persistence.european_trades.query_latest(count, sources=selected)
+        return scan_result(
+            self._persistence.european_trades.query_latest(count, sources=selected),
+            issues,
+        )
 
     def _refresh_latest(
         self,
@@ -202,10 +221,11 @@ class EuropeanScanService:
         count: int,
         use_cache: bool,
         cancelled: Callable[[], bool],
-    ) -> None:
+    ) -> list[FetchIssue]:
         fetch_count = max(count, self._latest_overlap_count)
         mode = latest_refresh_mode(fetch_count)
         now = self._clock()
+        issues: list[FetchIssue] = []
         for source in sources:
             if cancelled():
                 break
@@ -223,10 +243,15 @@ class EuropeanScanService:
                 raise ScanError(f"EU source {source} latest failed") from error
             if cancelled():
                 break
-            self._persistence.european_trades.upsert(
+            persisted = self._persistence.european_trades.upsert(
                 [replace(trade, source=source) for trade in trades]
             )
-            self._persistence.refresh.set("eu", "*", source, mode, now)
+            issues.extend(
+                persistence_issues(persisted, source=source, identifier="latest")
+            )
+            if not persisted.errors:
+                self._persistence.refresh.set("eu", "*", source, mode, now)
+        return issues
 
     def _latest_in_range(
         self,
@@ -238,9 +263,10 @@ class EuropeanScanService:
         end_date: date,
         use_cache: bool,
         cancelled: Callable[[], bool],
-    ) -> list[EuropeanInsiderTrade]:
+    ) -> FetchResult[EuropeanInsiderTrade]:
         selected = self._select_latest_sources(country, sources)
         fetch_count = max(count, self._latest_overlap_count)
+        issues: list[FetchIssue] = []
         for source in selected:
             if cancelled():
                 break
@@ -263,14 +289,24 @@ class EuropeanScanService:
                 raise ScanError(f"EU source {source} latest failed") from error
             if cancelled():
                 break
-            self._persistence.european_trades.upsert(
+            persisted = self._persistence.european_trades.upsert(
                 [replace(trade, source=source) for trade in trades]
             )
-        return self._persistence.european_trades.query_latest(
-            count,
-            sources=selected,
-            start_date=start_date,
-            end_date=end_date,
+            issues.extend(
+                persistence_issues(
+                    persisted,
+                    source=source,
+                    identifier=f"latest {start_date}..{end_date}",
+                )
+            )
+        return scan_result(
+            self._persistence.european_trades.query_latest(
+                count,
+                sources=selected,
+                start_date=start_date,
+                end_date=end_date,
+            ),
+            issues,
         )
 
     def _select_sources(self, country, sources, adapters):

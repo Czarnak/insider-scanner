@@ -16,6 +16,7 @@ from insider_scanner.services.common import (
     bounded_scan_gaps,
     normalize_identifier,
     not_cancelled,
+    persistence_issues,
     record_completed_scan,
     scan_result,
     source_issues,
@@ -117,10 +118,13 @@ class CongressScanService:
                     issues.append(FetchIssue("cancelled", source, context))
                     return scan_result(self._query(member, selected, requested), issues)
                 issues.extend(source_issues(fetched, source=source, identifier=context))
-                self._persistence.congress_trades.upsert(
+                persisted = self._persistence.congress_trades.upsert(
                     [replace(trade, source=source) for trade in fetched]
                 )
-                if fetched.complete:
+                issues.extend(
+                    persistence_issues(persisted, source=source, identifier=context)
+                )
+                if fetched.complete and not persisted.errors:
                     record_completed_scan(
                         self._persistence,
                         "congress",
