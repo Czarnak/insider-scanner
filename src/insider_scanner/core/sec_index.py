@@ -7,7 +7,6 @@ from datetime import date
 
 from insider_scanner.core import edgar
 
-
 OWNERSHIP_FORMS = frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
 
 

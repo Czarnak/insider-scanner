@@ -13,6 +13,7 @@ GUI_INSTALL_COMMAND = 'pip install "insider-scanner[gui]"'
 
 def _load_gui_components():
     from PySide6.QtWidgets import QApplication, QMessageBox
+
     from insider_scanner.gui.main_window import MainWindow
 
     return QApplication, QMessageBox, MainWindow
@@ -61,9 +62,9 @@ def _close_services(services) -> None:
 
 def run() -> int:
     """Launch the Insider Scanner desktop application."""
+    from insider_scanner.core.senate import init_default_congress_file
     from insider_scanner.utils.config import ensure_dirs
     from insider_scanner.utils.logging import setup_logging
-    from insider_scanner.core.senate import init_default_congress_file
 
     try:
         QApplication, QMessageBox, MainWindow = _load_gui_components()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pytest
@@ -281,7 +281,7 @@ class FakeSession:
 
 
 def utc_epoch(value: date) -> int:
-    return int(datetime.combine(value, time.min, tzinfo=timezone.utc).timestamp())
+    return int(datetime.combine(value, time.min, tzinfo=UTC).timestamp())
 
 
 def test_yahoo_source_sends_exact_chart_request_and_parses_response() -> None:

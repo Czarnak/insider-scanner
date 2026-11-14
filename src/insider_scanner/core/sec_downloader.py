@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path
 import stat
 import tempfile
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from insider_scanner.core import edgar
 from insider_scanner.core._sec_paths import resolves_within
@@ -20,7 +20,6 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
-
 
 _CACHE_NAMESPACE = "validated-v1"
 _CACHE_SUFFIX = ".filing"

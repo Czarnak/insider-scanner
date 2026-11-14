@@ -5,13 +5,13 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import date
 
-from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.merger import (
-    merge_trades,
     filter_trades,
-    trades_to_dataframe,
+    merge_trades,
     save_scan_results,
+    trades_to_dataframe,
 )
+from insider_scanner.core.models import InsiderTrade
 
 
 def _trade(

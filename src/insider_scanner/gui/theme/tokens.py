@@ -74,13 +74,13 @@ class ThemePalette:
     selection_fg: str
     row_alt: str
 
-    def color(self, token: str) -> "QColor":
+    def color(self, token: str) -> QColor:
         """Return a ``QColor`` for the named palette token.
 
         Raises ``AttributeError`` if *token* is not a valid field name.
         The Qt import is deferred so this module stays import-light.
         """
-        from PySide6.QtGui import QColor  # noqa: PLC0415 — lazy import
+        from PySide6.QtGui import QColor
 
         hex_value: str = getattr(self, token)  # raises AttributeError on unknown
         return QColor(hex_value)

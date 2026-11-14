@@ -18,9 +18,9 @@ from insider_scanner.core.sec_ownership_parser import (
     ReportingOwner,
 )
 from insider_scanner.core.sec_trade_mapping import (
-    SecTradeMappingError,
     _MAX_EMBEDDED_FOOTNOTES,
     _MAX_FOOTNOTE_CHARS,
+    SecTradeMappingError,
     ownership_filing_to_trades,
 )
 
@@ -78,9 +78,9 @@ def _non_deriv(
     transaction_code: str | None = "P",
     category: str = "purchase",
     acquired_disposed: str | None = "A",
-    shares: Decimal | None = Decimal("1000"),
+    shares: Decimal | None = Decimal(1000),
     price_per_share: Decimal | None = Decimal("25.50"),
-    shares_owned_following: Decimal | None = Decimal("5000"),
+    shares_owned_following: Decimal | None = Decimal(5000),
     direct_or_indirect: str | None = "D",
     footnote_ids: tuple[str, ...] = (),
 ) -> NonDerivativeTransaction:
@@ -107,14 +107,14 @@ def _deriv(
     transaction_code: str | None = "M",
     category: str = "exercise",
     acquired_disposed: str | None = "A",
-    shares: Decimal | None = Decimal("500"),
+    shares: Decimal | None = Decimal(500),
     price_per_share: Decimal | None = Decimal("10.00"),
     conversion_or_exercise_price: Decimal | None = Decimal("5.00"),
     exercise_date: date | None = date(2024, 3, 10),
     expiration_date: date | None = date(2030, 3, 10),
     underlying_security_title: str | None = "Common Stock",
-    underlying_security_shares: Decimal | None = Decimal("500"),
-    shares_owned_following: Decimal | None = Decimal("2000"),
+    underlying_security_shares: Decimal | None = Decimal(500),
+    shares_owned_following: Decimal | None = Decimal(2000),
     direct_or_indirect: str | None = "D",
     footnote_ids: tuple[str, ...] = (),
 ) -> DerivativeTransaction:
@@ -254,7 +254,7 @@ class TestCategoryToTradeType:
 
 class TestNumericFields:
     def test_value_equals_shares_times_price(self) -> None:
-        nd = _non_deriv(shares=Decimal("100"), price_per_share=Decimal("50"))
+        nd = _non_deriv(shares=Decimal(100), price_per_share=Decimal(50))
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
         t = trades[0]
         assert t.shares == pytest.approx(100.0)
@@ -262,7 +262,7 @@ class TestNumericFields:
         assert t.value == pytest.approx(5000.0)
 
     def test_missing_price_gives_zero_value_and_price(self) -> None:
-        nd = _non_deriv(shares=Decimal("100"), price_per_share=None)
+        nd = _non_deriv(shares=Decimal(100), price_per_share=None)
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
         t = trades[0]
         assert t.price == 0.0
@@ -270,14 +270,14 @@ class TestNumericFields:
         assert t.shares == pytest.approx(100.0)
 
     def test_missing_shares_gives_zero_value(self) -> None:
-        nd = _non_deriv(shares=None, price_per_share=Decimal("50"))
+        nd = _non_deriv(shares=None, price_per_share=Decimal(50))
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
         t = trades[0]
         assert t.shares == 0.0
         assert t.value == 0.0
 
     def test_shares_owned_after(self) -> None:
-        nd = _non_deriv(shares_owned_following=Decimal("9999"))
+        nd = _non_deriv(shares_owned_following=Decimal(9999))
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
         assert trades[0].shares_owned_after == pytest.approx(9999.0)
 
@@ -543,7 +543,7 @@ class TestSecDetailJsonDerivative:
             exercise_date=date(2024, 3, 10),
             expiration_date=date(2030, 3, 10),
             underlying_security_title="Common Stock",
-            underlying_security_shares=Decimal("500"),
+            underlying_security_shares=Decimal(500),
         )
         trades = ownership_filing_to_trades(_filing(derivs=(d,)), _INDEX_ROW)
         detail = json.loads(trades[0].sec_detail_json)

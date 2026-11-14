@@ -4,31 +4,38 @@ from __future__ import annotations
 
 from datetime import date
 
-from insider_scanner.core.afm import _parse_nl_date, _parse_record as parse_afm_record
+from insider_scanner.core.afm import _parse_nl_date
+from insider_scanner.core.afm import _parse_record as parse_afm_record
 from insider_scanner.core.amf import (
     _map_trade_type as amf_map_trade_type,
+)
+from insider_scanner.core.amf import (
     _parse_french_date,
     _parse_pdf_text,
     _parse_price,
 )
 from insider_scanner.core.bafin import (
     _map_instrument,
-    _map_trade_type as bafin_map_trade_type,
     _parse_filing_date,
     _parse_result_table,
     _parse_trade_date,
     _row_to_trade,
 )
+from insider_scanner.core.bafin import (
+    _map_trade_type as bafin_map_trade_type,
+)
+from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin
 from insider_scanner.core.rns_investegate import (
     _determine_trade_type,
     _parse_announcement,
     _parse_price_volume,
-    _parse_trade_date as rns_parse_trade_date,
-    _to_eu_trade,
     _RawRns,
+    _to_eu_trade,
 )
-from insider_scanner.core.eu_models import EuropeanInsiderTrade
-from insider_scanner.core.eu_scan import scrape_eu_trades_for_isin
+from insider_scanner.core.rns_investegate import (
+    _parse_trade_date as rns_parse_trade_date,
+)
 
 
 def _sample_trade(**overrides) -> EuropeanInsiderTrade:

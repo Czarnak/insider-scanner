@@ -315,16 +315,15 @@ class TestPackagedSeeds:
         with patch(
             "insider_scanner.utils.config.shutil.copyfileobj",
             side_effect=slow_copy,
-        ):
-            with ThreadPoolExecutor(max_workers=9) as executor:
-                writers = [executor.submit(ensure_dirs, paths) for _ in range(8)]
-                assert copy_started.wait(timeout=5)
-                observer = executor.submit(observe_published_files)
-                time.sleep(0.05)
-                release_copy.set()
-                for future in writers:
-                    future.result(timeout=10)
-                observer.result(timeout=5)
+        ), ThreadPoolExecutor(max_workers=9) as executor:
+            writers = [executor.submit(ensure_dirs, paths) for _ in range(8)]
+            assert copy_started.wait(timeout=5)
+            observer = executor.submit(observe_published_files)
+            time.sleep(0.05)
+            release_copy.set()
+            for future in writers:
+                future.result(timeout=10)
+            observer.result(timeout=5)
 
         assert observed_partial_files == []
         for target in (

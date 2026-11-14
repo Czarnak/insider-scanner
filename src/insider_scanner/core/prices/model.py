@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date as Date
 from math import isfinite
-import re
 
 _SYMBOL_PATTERN = re.compile(r"[A-Z0-9^][A-Z0-9._^-]{0,31}", re.ASCII)
 

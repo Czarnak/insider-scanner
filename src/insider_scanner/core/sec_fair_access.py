@@ -12,10 +12,10 @@ and never wall-clock sleep.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Lock
-import time
 
 # SEC fair-access guidance caps automated traffic at 10 requests/second. We
 # default below that ceiling to absorb jitter and stay comfortably compliant.

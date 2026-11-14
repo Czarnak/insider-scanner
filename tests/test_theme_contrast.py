@@ -14,7 +14,6 @@ from insider_scanner.gui.theme.contrast import (
 )
 from insider_scanner.gui.theme.tokens import DARK, LIGHT
 
-
 # ---------------------------------------------------------------------------
 # Unit: relative_luminance
 # ---------------------------------------------------------------------------

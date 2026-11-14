@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import date
 from pathlib import Path
-import shutil
-
 
 from insider_scanner.core.eu_merger import (
     DISPLAY_COLUMNS,

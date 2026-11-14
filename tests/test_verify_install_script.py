@@ -7,7 +7,6 @@ from types import ModuleType
 
 import pytest
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_install.py"
 
 

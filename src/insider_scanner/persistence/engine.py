@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event, NullPool
-from sqlalchemy.engine import Connection, Engine, URL
+from sqlalchemy import NullPool, create_engine, event
+from sqlalchemy.engine import URL, Connection, Engine
 
 from insider_scanner.persistence.errors import PersistenceError
 
@@ -21,9 +21,8 @@ def immediate_transaction(engine: Engine) -> Iterator[Connection]:
     """Serialize a SQLite read-modify-write transaction before its first read."""
     with engine.connect().execution_options(
         **{SQLITE_IMMEDIATE_OPTION: True}
-    ) as connection:
-        with connection.begin():
-            yield connection
+    ) as connection, connection.begin():
+        yield connection
 
 
 def create_sqlite_engine(

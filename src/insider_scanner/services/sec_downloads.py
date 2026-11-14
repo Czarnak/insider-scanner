@@ -43,13 +43,13 @@ from insider_scanner.core.sec_ownership_parser import (
     SecOwnershipParseError,
     parse_ownership_document,
 )
-from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
     SecSecurityPolicy,
 )
 from insider_scanner.persistence.coverage import DateInterval
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
 from insider_scanner.services.common import not_cancelled, validate_range
 from insider_scanner.utils.logging import get_logger

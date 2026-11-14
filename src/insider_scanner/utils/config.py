@@ -12,7 +12,6 @@ from pathlib import Path
 
 from platformdirs import PlatformDirs
 
-
 APP_NAME = "Insider Scanner"
 APP_AUTHOR = "Insider Scanner"
 DATABASE_FILENAME = "insider_scanner.sqlite3"
@@ -144,18 +143,17 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
 
     temp_path: Path | None = None
     try:
-        with source.open("rb") as source_file:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=target.parent,
-                prefix=f".{target.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temp_file:
-                temp_path = Path(temp_file.name)
-                shutil.copyfileobj(source_file, temp_file)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
+        with source.open("rb") as source_file, tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            shutil.copyfileobj(source_file, temp_file)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
 
         try:
             os.link(temp_path, target)

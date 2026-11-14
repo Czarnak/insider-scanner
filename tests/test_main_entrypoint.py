@@ -99,10 +99,9 @@ def test_main_initialises_app():
         patch(
             "insider_scanner.gui.main_window.MainWindow",
             side_effect=lambda value: dummy_window,
-        ),
+        ),pytest.raises(SystemExit) as exc
     ):
-        with pytest.raises(SystemExit) as exc:
-            app_main.main()
+        app_main.main()
 
     assert exc.value.code == 7
     setup_logging.assert_called_once()

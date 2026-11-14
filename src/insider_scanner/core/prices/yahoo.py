@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime, time, timedelta
 from datetime import date as Date
-from datetime import datetime, time, timedelta, timezone
-from typing import Mapping
 from urllib.parse import quote
 
 import requests
@@ -34,7 +34,7 @@ def _array(value: object) -> list[object]:
 def _utc_date(timestamp: object) -> Date:
     if type(timestamp) is not int:
         raise TypeError
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).date()
+    return datetime.fromtimestamp(timestamp, tz=UTC).date()
 
 
 def parse_yahoo_chart(payload: object, symbol: str) -> list[PriceBar]:
@@ -90,7 +90,7 @@ def parse_yahoo_chart(payload: object, symbol: str) -> list[PriceBar]:
 
 
 def _epoch(value: Date) -> int:
-    return int(datetime.combine(value, time.min, tzinfo=timezone.utc).timestamp())
+    return int(datetime.combine(value, time.min, tzinfo=UTC).timestamp())
 
 
 class YahooSource:

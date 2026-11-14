@@ -29,7 +29,7 @@ from insider_scanner.core.sec_security import (
 )
 
 if TYPE_CHECKING:
-    from lxml.etree import _Element  # noqa: PLC2701
+    from lxml.etree import _Element
 
 
 # ---------------------------------------------------------------------------

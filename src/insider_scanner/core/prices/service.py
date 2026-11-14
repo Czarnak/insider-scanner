@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from insider_scanner.core.prices.model import PriceBar
-from insider_scanner.core.prices.source import PriceSource, PriceSourceError
-from insider_scanner.core.prices.registry import get_price_source
-from insider_scanner.core.prices import repository as repo
-from insider_scanner.utils.logging import get_logger
-
 from sqlalchemy.engine import Engine
+
+from insider_scanner.core.prices import repository as repo
+from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.core.prices.registry import get_price_source
+from insider_scanner.core.prices.source import PriceSource, PriceSourceError
+from insider_scanner.utils.logging import get_logger
 
 log = get_logger("prices.service")
 

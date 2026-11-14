@@ -100,7 +100,9 @@ class TestScanTab:
 
     def test_get_dates_enabled(self, qtbot):
         from datetime import date
+
         from PySide6.QtCore import QDate
+
         from insider_scanner.gui.scan_tab import ScanTab
 
         tab = ScanTab()
@@ -182,8 +184,8 @@ class TestMainWindow:
         assert win.page_stack.currentWidget() is win.feed_page
 
     def test_navigation_names(self, qtbot, tmp_path):
-        from insider_scanner.gui.main_window import MainWindow
         from insider_scanner.gui.european_tab import EuropeanTab
+        from insider_scanner.gui.main_window import MainWindow
 
         win = MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)
@@ -220,6 +222,7 @@ class TestMainWindow:
 class TestEuropeanTab:
     def _sample_trade(self, **overrides):
         from datetime import date
+
         from insider_scanner.core.eu_models import EuropeanInsiderTrade
 
         base = EuropeanInsiderTrade(

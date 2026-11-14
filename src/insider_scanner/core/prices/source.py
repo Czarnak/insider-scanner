@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date as Date
 import re
-from typing import Mapping, Protocol, runtime_checkable
+from collections.abc import Mapping
+from datetime import date as Date
+from typing import Protocol, runtime_checkable
 
 from .model import PriceBar, normalize_symbol
 

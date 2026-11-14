@@ -7,12 +7,12 @@ from datetime import date
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.senate import (
-    load_congress_members,
-    save_congress_members,
-    flag_congress_trades,
-    init_default_congress_file,
     DEFAULT_CONGRESS_MEMBERS,
     _normalize_name,
+    flag_congress_trades,
+    init_default_congress_file,
+    load_congress_members,
+    save_congress_members,
 )
 
 

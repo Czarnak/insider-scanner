@@ -7,9 +7,9 @@ import time
 
 from insider_scanner.utils.caching import (
     cache_key,
+    clear_cache,
     get_cached,
     set_cached,
-    clear_cache,
 )
 
 

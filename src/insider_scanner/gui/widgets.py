@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import pandas as pd
 from PySide6 import QtWidgets
 from PySide6.QtCore import (
-    Qt,
     QAbstractTableModel,
     QModelIndex,
     QSortFilterProxyModel,
+    Qt,
 )
 from PySide6.QtGui import QColor, QFont
 
@@ -236,9 +234,9 @@ class PriceChangeCard(QtWidgets.QFrame):
 
     def set_value(
         self,
-        price_usd: Optional[float],
-        pct_change: Optional[float],
-        bg_rgba: Tuple[int, int, int, int] | None = None,  # noqa: ARG002 — legacy arg, ignored
+        price_usd: float | None,
+        pct_change: float | None,
+        bg_rgba: tuple[int, int, int, int] | None = None,
     ):
         if price_usd is None:
             self.price_lbl.setText("n/a")
@@ -315,7 +313,7 @@ class ValueCard(QtWidgets.QFrame):
         self,
         value_text: str,
         meta_text: str = "",
-        bg_rgba: Tuple[int, int, int, int] | None = None,  # noqa: ARG002 — legacy arg, ignored
+        bg_rgba: tuple[int, int, int, int] | None = None,
     ):
         self.value_lbl.setText(value_text)
         self.meta_lbl.setText(meta_text)
@@ -341,7 +339,7 @@ def fg_color(value: int, palette: ThemePalette | None = None) -> str:
 
 def indicator_color(
     value: float,
-    bands: Tuple[Tuple[float, float, str], ...],
+    bands: tuple[tuple[float, float, str], ...],
     palette: ThemePalette | None = None,
 ) -> str:
     """Map a numeric value to a semantic palette color (hex str) via bands."""

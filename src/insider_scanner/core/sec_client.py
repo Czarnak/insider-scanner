@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, field
 import logging
 import re
 import time
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -27,7 +27,6 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
-
 
 _EMAIL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9.!#$%&'*+/=?^_`{|}~-])"

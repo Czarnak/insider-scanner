@@ -12,7 +12,11 @@ from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import (
     classify_trade as _classify_trade,
+)
+from insider_scanner.utils.parsing import (
     parse_date as _parse_date,
+)
+from insider_scanner.utils.parsing import (
     parse_number as _parse_number,
 )
 

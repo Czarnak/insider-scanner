@@ -7,7 +7,7 @@ from datetime import date
 from threading import Event
 
 import pandas as pd
-from PySide6.QtCore import Qt, QDate, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -457,8 +457,8 @@ class ScanTab(QWidget):
     # ------------------------------------------------------------------
 
     def _display_trades(self, trades):
-        from insider_scanner.core.merger import trades_to_dataframe
         from insider_scanner.core.edgar import build_edgar_url_for_trade
+        from insider_scanner.core.merger import trades_to_dataframe
 
         # Auto-generate edgar_url for trades that don't have one
         for trade in trades:
@@ -562,7 +562,7 @@ class ScanTab(QWidget):
         if not ticker:
             return
 
-        from insider_scanner.core.edgar import resolve_cik, get_filing_url
+        from insider_scanner.core.edgar import get_filing_url, resolve_cik
 
         cik = resolve_cik(ticker)
         if cik:

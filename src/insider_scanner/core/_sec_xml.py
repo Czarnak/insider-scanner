@@ -23,7 +23,7 @@ from lxml import etree
 from insider_scanner.core.sec_security import SecSecurityPolicy, SecSecurityReason
 
 if TYPE_CHECKING:
-    from lxml.etree import _Element  # noqa: PLC2701
+    from lxml.etree import _Element
 
 
 # A DTD or entity declaration in untrusted SEC XML is always rejected, in

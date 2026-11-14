@@ -422,9 +422,8 @@ class TestEnsureHouseIndex:
 
         with patch(
             "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            with pytest.raises(req.HTTPError):
-                ensure_house_index(2099)
+        ), pytest.raises(req.HTTPError):
+            ensure_house_index(2099)
 
 
 class TestRefreshFunctions:

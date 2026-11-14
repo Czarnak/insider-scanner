@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pyqtgraph as pg
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from insider_scanner.core.models import InsiderTrade, CongressTrade
+from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
@@ -56,7 +56,7 @@ _GRID_ALPHA: float = 0.3
 
 def _to_timestamp(d: date) -> float:
     """Convert a date to a UTC POSIX timestamp for pyqtgraph's DateAxisItem."""
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp()
+    return datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()
 
 
 def bars_to_xy(bars: list[PriceBar]) -> tuple[list[float], list[float]]:

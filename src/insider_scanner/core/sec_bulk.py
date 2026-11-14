@@ -176,7 +176,7 @@ def iter_ownership_filings(
     _validate_zip_location(zip_path, cache_root)
 
     try:
-        zf = zipfile.ZipFile(zip_path)  # noqa: SIM115 — we close it below
+        zf = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile as exc:
         raise SecBulkError(f"Not a valid ZIP archive: {zip_path.name}") from exc
 

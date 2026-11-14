@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-from PySide6.QtCore import Qt, QDate, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,

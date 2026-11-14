@@ -1,15 +1,19 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
+
 import pytest
 
-from insider_scanner.core.prices.model import PriceBar
-from insider_scanner.gui.price_chart import bars_to_xy
 from insider_scanner.core.models import InsiderTrade
-from insider_scanner.gui.price_chart import build_marker_tooltip, marker_y_for_trade
-from insider_scanner.gui.price_chart import PriceChartWidget
+from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.gui.price_chart import (
+    PriceChartWidget,
+    bars_to_xy,
+    build_marker_tooltip,
+    marker_y_for_trade,
+)
 
 
 def _ts(d: date) -> float:
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc).timestamp()
+    return datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()
 
 
 def test_bars_to_xy_uses_posix_timestamps_and_plot_close():

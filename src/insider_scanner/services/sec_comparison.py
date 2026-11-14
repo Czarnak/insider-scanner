@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date
-from typing import Iterable, Literal, cast
+from typing import Literal, cast
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.services.context import PersistenceContext
@@ -50,7 +51,7 @@ class ComparisonRow:
     edgar_url: str
 
     @classmethod
-    def from_trade(cls, trade: InsiderTrade) -> "ComparisonRow":
+    def from_trade(cls, trade: InsiderTrade) -> ComparisonRow:
         return cls(
             source=trade.source,
             ticker=trade.ticker,

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, dataclass, field, replace
 from datetime import date
-import hashlib
-import os
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock, patch
@@ -21,7 +21,6 @@ from insider_scanner.core.sec_security import (
     SecResourceProfile,
     SecSecurityReason,
 )
-
 
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 

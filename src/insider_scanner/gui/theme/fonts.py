@@ -22,7 +22,7 @@ def load_application_fonts() -> list[str]:
     Never raises: per-file errors are logged as warnings and skipped.
     Returns an empty list when the fonts package or directory does not exist.
     """
-    from PySide6.QtGui import QFontDatabase  # noqa: PLC0415 — lazy Qt import
+    from PySide6.QtGui import QFontDatabase
 
     families: list[str] = []
 

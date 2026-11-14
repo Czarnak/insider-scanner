@@ -6,8 +6,8 @@ as required by https://www.sec.gov/os/accessing-edgar-data.
 
 from __future__ import annotations
 
-from datetime import date
 import json
+from datetime import date
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.utils.config import EDGAR_CACHE_DIR

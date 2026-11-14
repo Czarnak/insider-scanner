@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, UTC
+from datetime import UTC, date, datetime
 
 from sqlalchemy import and_, select
 from sqlalchemy.dialects.sqlite import insert
@@ -14,13 +14,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.merger import merge_trade_pair
 from insider_scanner.core.models import CongressTrade, InsiderTrade
-from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.engine import immediate_transaction
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.mappings import (
     coalesce_congress_trades,
     coalesce_european_trades,
-    congress_from_row,
     congress_canonical_key,
+    congress_from_row,
     congress_to_values,
     european_canonical_key,
     european_from_row,

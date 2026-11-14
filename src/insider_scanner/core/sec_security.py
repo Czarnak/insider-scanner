@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import math
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-import math
-import re
 from types import MappingProxyType
-
 
 _MIB = 1024 * 1024
 _HOST_PATTERN = re.compile(

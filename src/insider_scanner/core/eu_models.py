@@ -162,7 +162,7 @@ class EuropeanInsiderTrade:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "EuropeanInsiderTrade":
+    def from_dict(cls, d: dict) -> EuropeanInsiderTrade:
         td = d.get("trade_date", "")
         fd = d.get("filing_date", "")
         return cls(

@@ -8,10 +8,10 @@ import logging
 import stat
 import types
 import zipfile
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -698,9 +698,8 @@ def test_malformed_metadata_error_does_not_leak_payload_or_logs(
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(_VALID_MEMBER_NAME, malformed_bytes)
 
-    with caplog.at_level(logging.DEBUG):
-        with pytest.raises(SecBulkError) as exc_info:
-            list(iter_ownership_filings(zip_path, cache_root=tmp_path))
+    with caplog.at_level(logging.DEBUG), pytest.raises(SecBulkError) as exc_info:
+        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
 
     assert TASK6_METADATA_SENTINEL not in str(exc_info.value), (
         "Sentinel found in exception message — raw payload leaked"

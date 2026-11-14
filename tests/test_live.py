@@ -57,9 +57,9 @@ class TestEdgarLive:
 
 class TestFullPipelineLive:
     def test_scan_merge_flag(self):
-        from insider_scanner.core.secform4 import scrape_ticker as sf4
-        from insider_scanner.core.openinsider import scrape_ticker as oi
         from insider_scanner.core.merger import merge_trades
+        from insider_scanner.core.openinsider import scrape_ticker as oi
+        from insider_scanner.core.secform4 import scrape_ticker as sf4
         from insider_scanner.core.senate import flag_congress_trades
 
         sf4_trades = sf4("AAPL", use_cache=False)

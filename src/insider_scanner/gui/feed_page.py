@@ -80,13 +80,13 @@ class FeedTableModel(QAbstractTableModel):
         self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
         get_theme_manager().paletteChanged.connect(self._on_palette_changed)
 
-    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+    def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._records)
 
-    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+    def columnCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(_COLUMNS)
 
-    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if role != Qt.ItemDataRole.DisplayRole:
             return None
         if orientation == Qt.Orientation.Horizontal and 0 <= section < len(_COLUMNS):
@@ -406,9 +406,9 @@ class FeedPageWidget(QWidget):
         if not text:
             return
         try:
-            from insider_scanner.persistence.feed_state import decode_column_layout
-
             from PySide6.QtCore import QByteArray
+
+            from insider_scanner.persistence.feed_state import decode_column_layout
 
             self.table.horizontalHeader().restoreState(
                 QByteArray(decode_column_layout(text))

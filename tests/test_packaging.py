@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from zipfile import ZipFile
 
-
 EXPECTED_SEEDS = {
     "insider_scanner/resources/seeds/congress_members.json",
     "insider_scanner/resources/seeds/tickers_watchlist.txt",

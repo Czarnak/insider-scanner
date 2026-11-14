@@ -21,7 +21,6 @@ from sqlalchemy import (
 
 from insider_scanner.persistence.types import UTCDateTime
 
-
 v1_metadata = MetaData()
 metadata = v1_metadata
 

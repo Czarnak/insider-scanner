@@ -7,10 +7,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import Column, Integer, Table, func, inspect, insert, select, text
+from sqlalchemy import Column, Integer, Table, func, insert, inspect, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 
 from insider_scanner.persistence.bootstrap import (
@@ -19,8 +19,7 @@ from insider_scanner.persistence.bootstrap import (
 )
 from insider_scanner.persistence.engine import create_sqlite_engine
 from insider_scanner.persistence.errors import PersistenceError
-from insider_scanner.persistence.migrations import Migration
-from insider_scanner.persistence.migrations import MIGRATIONS
+from insider_scanner.persistence.migrations import MIGRATIONS, Migration
 from insider_scanner.persistence.schema import (
     congress_trades,
     european_trades,
@@ -31,7 +30,6 @@ from insider_scanner.persistence.schema import (
     us_trades,
 )
 from insider_scanner.persistence.types import UTCDateTime
-
 
 EXPECTED_TABLES = {
     "schema_version",
@@ -226,14 +224,13 @@ def test_missing_trade_date_uniqueness_uses_non_null_canonical_key(engine):
             ],
         )
 
-    with pytest.raises(IntegrityError):
-        with engine.begin() as connection:
-            connection.execute(
-                insert(european_trades).values(
-                    canonical_key="missing-date-1",
-                    **shared_values,
-                )
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            insert(european_trades).values(
+                canonical_key="missing-date-1",
+                **shared_values,
             )
+        )
 
     with engine.connect() as connection:
         row_count = connection.execute(
@@ -292,13 +289,12 @@ def test_bootstrap_rejects_invalid_stored_schema_history(
     migrations,
 ):
     database_file = tmp_path / "invalid-history.sqlite3"
-    with closing(sqlite3.connect(database_file)) as connection:
-        with connection:
-            connection.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
-            connection.executemany(
-                "INSERT INTO schema_version (version) VALUES (?)",
-                [(version,) for version in history],
-            )
+    with closing(sqlite3.connect(database_file)) as connection, connection:
+        connection.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+        connection.executemany(
+            "INSERT INTO schema_version (version) VALUES (?)",
+            [(version,) for version in history],
+        )
 
     engine = create_sqlite_engine(database_file)
     try:
@@ -377,24 +373,23 @@ def test_utc_datetime_round_trip_normalizes_offset_to_aware_utc(engine):
             )
         ).scalar_one()
 
-    assert stored == supplied.astimezone(timezone.utc)
-    assert stored.tzinfo is timezone.utc
+    assert stored == supplied.astimezone(UTC)
+    assert stored.tzinfo is UTC
 
 
 def test_utc_datetime_rejects_naive_values(engine):
     bootstrap_database(engine)
 
-    with pytest.raises(StatementError) as exc_info:
-        with engine.begin() as connection:
-            connection.execute(
-                insert(refresh_state).values(
-                    domain="test",
-                    source="test",
-                    identifier="naive",
-                    mode="latest",
-                    refreshed_at=datetime(2026, 6, 7, 12, 0),
-                )
+    with pytest.raises(StatementError) as exc_info, engine.begin() as connection:
+        connection.execute(
+            insert(refresh_state).values(
+                domain="test",
+                source="test",
+                identifier="naive",
+                mode="latest",
+                refreshed_at=datetime(2026, 6, 7, 12, 0),
             )
+        )
 
     assert isinstance(exc_info.value.orig, TypeError)
     assert "timezone-aware" in str(exc_info.value.orig)

@@ -5,8 +5,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QLabel
-from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
+
 from insider_scanner.cli import SEC_BULK_SUBMISSIONS_URL
+from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
 
 
 def test_info_group_shows_link_and_command(qapp):  # qapp: pytest-qt shared fixture

@@ -30,7 +30,6 @@ from insider_scanner.core.sec_security import (
     SecSecurityReason,
 )
 
-
 VALID_USER_AGENT = "Insider Scanner ops@insider-scanner.example"
 VALID_URL = "https://www.sec.gov/files/company_tickers.json"
 TEXT_PROFILE = SecResourceProfile.DAILY_INDEX

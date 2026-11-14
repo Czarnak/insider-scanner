@@ -242,7 +242,7 @@ class TestFullChainFromExplicitRow:
         filing = _run_full_chain(row, client, tmp_path)
         txn = filing.non_derivative_transactions[0]
 
-        assert txn.shares == Decimal("100000")
+        assert txn.shares == Decimal(100000)
         assert txn.price_per_share == Decimal("195.50")
         assert txn.acquired_disposed == "D"
 
@@ -334,7 +334,7 @@ class TestIndexParserFeedsChain:
         assert len(filing.non_derivative_transactions) == 1
         txn = filing.non_derivative_transactions[0]
         assert txn.category == "sale"
-        assert txn.shares == Decimal("100000")
+        assert txn.shares == Decimal(100000)
 
 
 # ---------------------------------------------------------------------------
@@ -489,14 +489,13 @@ class TestParserStageSecurityRejection:
         row = _make_apple_row()
         client, _ = _make_stub_client(content)
 
-        with caplog.at_level("DEBUG"):
-            with pytest.raises(SecXmlSecurityError):
-                _fetch_parse_promote(
-                    row,
-                    client=client,
-                    cache_root=tmp_path,
-                    policy=_TIGHT_LONG_TEXT_POLICY,
-                )
+        with caplog.at_level("DEBUG"), pytest.raises(SecXmlSecurityError):
+            _fetch_parse_promote(
+                row,
+                client=client,
+                cache_root=tmp_path,
+                policy=_TIGHT_LONG_TEXT_POLICY,
+            )
 
         # Promotion never ran.
         assert _validated_cache_files(tmp_path) == []

@@ -9,21 +9,21 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from insider_scanner.core import edgar
+from insider_scanner.core.prices import get_price_history
 from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
 )
-from insider_scanner.core import edgar
-from insider_scanner.core.prices import get_price_history
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
 
 if TYPE_CHECKING:
     from insider_scanner.core.sec_client import SecClient
     from insider_scanner.services.sec_backfill import SecBackfillSummary
+    from insider_scanner.services.sec_comparison import SecComparisonTarget
     from insider_scanner.services.sec_daily import SecDailyIngestionSummary
     from insider_scanner.services.sec_downloads import SecDownloadProgress
-    from insider_scanner.services.sec_comparison import SecComparisonTarget
 
 log = get_logger("cli")
 
@@ -145,7 +145,7 @@ def cmd_resolve_cik(
     _services: ApplicationServices,
 ) -> None:
     """Resolve a ticker to SEC CIK."""
-    from insider_scanner.core.edgar import resolve_cik, get_filing_url
+    from insider_scanner.core.edgar import get_filing_url, resolve_cik
 
     ticker = args.ticker.upper()
     cik = resolve_cik(ticker, use_cache=not args.no_cache)

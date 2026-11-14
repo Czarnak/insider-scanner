@@ -1,11 +1,11 @@
-import pytest
-
-from insider_scanner.gui import analysis_tab as mod
-from insider_scanner.gui.analysis_tab import AnalysisTab, load_trades_for_ticker
 from datetime import date
+
+import pytest
 
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.gui import analysis_tab as mod
+from insider_scanner.gui.analysis_tab import AnalysisTab, load_trades_for_ticker
 
 
 class CapturingPool:

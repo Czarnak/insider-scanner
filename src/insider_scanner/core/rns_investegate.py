@@ -27,7 +27,6 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -99,7 +98,7 @@ _LABEL_MAP: dict[str, str] = {
 }
 
 
-def _parse_announcement(html: str, url: str) -> Optional[_RawRns]:
+def _parse_announcement(html: str, url: str) -> _RawRns | None:
     """
     Parse a single MAR Article 19 announcement page into a _RawRns object.
 
@@ -189,15 +188,15 @@ def _parse_announcement(html: str, url: str) -> Optional[_RawRns]:
     return raw if raw.insider_name or raw.issuer_name else None
 
 
-def _parse_price_volume(price_raw: str) -> tuple[Optional[float], Optional[float], str]:
+def _parse_price_volume(price_raw: str) -> tuple[float | None, float | None, str]:
     """
     Parse BaFin-style price/volume cell.
     Example: "Price(s)  Volume(s) €0.065  12 345"
     Returns: (price, volume, currency)
     """
     currency = ""
-    price: Optional[float] = None
-    volume: Optional[float] = None
+    price: float | None = None
+    volume: float | None = None
 
     # Currency symbol
     currency_match = re.search(r"[€£$¥]", price_raw)
@@ -223,7 +222,7 @@ def _parse_price_volume(price_raw: str) -> tuple[Optional[float], Optional[float
     return price, volume, currency
 
 
-def _parse_trade_date(date_raw: str) -> Optional[date]:
+def _parse_trade_date(date_raw: str) -> date | None:
     """Parse '6 March 2026' or '2026-03-06' into a date object."""
     for fmt in ("%d %B %Y", "%B %d, %Y", "%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y"):
         try:
@@ -246,14 +245,14 @@ def _determine_trade_type(nature_raw: str) -> str:
     return "Other"
 
 
-def _to_eu_trade(raw: _RawRns, original_isin: str) -> Optional[EuropeanInsiderTrade]:
+def _to_eu_trade(raw: _RawRns, original_isin: str) -> EuropeanInsiderTrade | None:
     """Convert _RawRns to EuropeanInsiderTrade dataclass."""
     if not raw.insider_name:
         return None
 
     price, volume, currency = _parse_price_volume(raw.price_raw)
     trade_date = _parse_trade_date(raw.trade_date_raw)
-    filing_date: Optional[date] = None
+    filing_date: date | None = None
     if raw.filing_date_raw:
         try:
             filing_date = datetime.strptime(raw.filing_date_raw, "%Y-%m-%d").date()
@@ -272,12 +271,12 @@ def _to_eu_trade(raw: _RawRns, original_isin: str) -> Optional[EuropeanInsiderTr
         instr_type = instr_type.split(raw.instrument_isin)[0].strip().rstrip(",;:")
     # Also strip any trailing filler words left by the split
     instr_type = re.sub(
-        r"\s+(attached|isin|code)\s*$", "", instr_type, flags=re.I
+        r"\s+(attached|isin|code)\s*$", "", instr_type, flags=re.IGNORECASE
     ).strip()
     if not instr_type:
         instr_type = "Equity"
 
-    total_value: Optional[float] = None
+    total_value: float | None = None
     if price is not None and volume is not None:
         total_value = round(price * volume, 2)
 
@@ -306,10 +305,10 @@ def _to_eu_trade(raw: _RawRns, original_isin: str) -> Optional[EuropeanInsiderTr
 
 def fetch_uk_trades(
     isin: str,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
+    since: date | None = None,
+    until: date | None = None,
     max_announcements: int = 50,
-    session: Optional[requests.Session] = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """
     Fetch MAR Article 19 insider trade notifications for a given ISIN from Investegate.
@@ -402,9 +401,9 @@ _LATEST_URL = (
 
 def fetch_uk_latest(
     n: int = 50,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    session: Optional[requests.Session] = None,
+    since: date | None = None,
+    until: date | None = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """Fetch the N most recent UK Director/PDMR Shareholding announcements
     from Investegate without filtering by ISIN.

@@ -105,7 +105,7 @@ def _match_stem(col_name: str, stems: frozenset[str]) -> bool:
     return False
 
 
-def column_alignment(col_name: str, dtype: Any) -> "Qt.AlignmentFlag":
+def column_alignment(col_name: str, dtype: Any) -> Qt.AlignmentFlag:
     """Return the Qt alignment flag for *col_name* with *dtype*.
 
     Rules:
@@ -117,7 +117,7 @@ def column_alignment(col_name: str, dtype: Any) -> "Qt.AlignmentFlag":
     ``Qt`` is imported lazily so callers in non-Qt environments still work
     for the non-alignment-returning path.
     """
-    from PySide6.QtCore import Qt  # noqa: PLC0415 — lazy import
+    from PySide6.QtCore import Qt
 
     col = col_name.lower()
 
@@ -128,7 +128,7 @@ def column_alignment(col_name: str, dtype: Any) -> "Qt.AlignmentFlag":
         return Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
 
     # Fall back to dtype inspection
-    import pandas as pd  # noqa: PLC0415
+    import pandas as pd
 
     try:
         is_numeric = pd.api.types.is_numeric_dtype(dtype)
@@ -154,10 +154,10 @@ _SELL_TYPES: frozenset[str] = frozenset({"Sell", "Sale"})
 
 
 def cell_foreground(
-    col_name: str,  # noqa: ARG001 — reserved for future column-specific logic
+    col_name: str,
     value: Any,
     row: Any,
-    palette: "ThemePalette",
+    palette: ThemePalette,
 ) -> str | None:
     """Return a hex foreground color for a table cell, or ``None`` for default.
 

@@ -2,9 +2,10 @@
 
 import os
 from datetime import date, timedelta
+
 import pytest
 
-from insider_scanner.core.prices import YahooSource, TiingoSource, PriceBar
+from insider_scanner.core.prices import PriceBar, TiingoSource, YahooSource
 
 pytestmark = pytest.mark.live
 
