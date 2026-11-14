@@ -204,9 +204,11 @@ def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
             trade_type=_classify_trade(cell_text("type")),
             trade_date=_parse_date(cell_text("trade_date")),
             filing_date=_parse_date(cell_text("filing_date")),
-            shares=_parse_number(cell_text("shares")),
+            # OpenInsider signs sales negative; the model stores magnitudes,
+            # while trade_type carries the transaction's direction.
+            shares=abs(_parse_number(cell_text("shares"))),
             price=_parse_number(cell_text("price")),
-            value=_parse_number(cell_text("value")),
+            value=abs(_parse_number(cell_text("value"))),
             shares_owned_after=_parse_number(cell_text("owned_after")),
             source="openinsider",
         )
