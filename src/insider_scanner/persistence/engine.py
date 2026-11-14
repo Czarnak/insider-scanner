@@ -61,7 +61,9 @@ def create_sqlite_engine(
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
+            # This is a local integer connection option, not SQL supplied by a
+            # user. SQLite PRAGMA does not accept a bind placeholder here.
+            cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
         finally:
             cursor.close()
 

@@ -33,7 +33,8 @@ def _report_missing_gui_dependency(exc: ModuleNotFoundError) -> bool:
 def verify_gui_install() -> int:
     """Verify GUI dependencies without opening an application window."""
     try:
-        from importlib.resources import files
+        # The project requires Python >=3.11.5, which includes this stdlib API.
+        from importlib.resources import files  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 
         _load_gui_components()
 

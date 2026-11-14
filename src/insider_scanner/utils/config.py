@@ -6,8 +6,9 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from importlib.resources import files
-from importlib.resources.abc import Traversable
+# These stdlib APIs are available at the supported Python floor (>=3.11.5).
+from importlib.resources import files  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+from importlib.resources.abc import Traversable  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 from pathlib import Path
 
 from platformdirs import PlatformDirs
