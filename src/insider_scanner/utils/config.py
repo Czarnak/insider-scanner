@@ -173,7 +173,10 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
 
 
 def ensure_dirs(paths: RuntimePaths | None = None) -> None:
-    """Create runtime directories and copy packaged seeds when absent."""
+    """Create runtime directories, prune HTTP caches, and copy absent seeds."""
+    # caching imports DEFAULT_CACHE_TTL from this module.
+    from insider_scanner.utils.caching import prune_expired_cache
+
     resolved = paths or DEFAULT_PATHS
     for directory in (
         resolved.data_dir,
@@ -186,6 +189,13 @@ def ensure_dirs(paths: RuntimePaths | None = None) -> None:
         resolved.house_disclosures_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+
+    for cache_directory in (
+        resolved.edgar_cache_dir,
+        resolved.scraper_cache_dir,
+        resolved.eu_cache_dir,
+    ):
+        prune_expired_cache(cache_directory)
 
     seed_root = files(SEED_PACKAGE)
     for target in (

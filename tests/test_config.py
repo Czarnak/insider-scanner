@@ -24,6 +24,35 @@ from insider_scanner.utils.config import (
 )
 
 
+def test_startup_prunes_unrequested_http_cache_entries(tmp_path):
+    from insider_scanner.utils.caching import get_cached, set_cached
+
+    paths = resolve_runtime_paths(
+        data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+    )
+    for cache_dir in (
+        paths.edgar_cache_dir,
+        paths.scraper_cache_dir,
+        paths.eu_cache_dir,
+    ):
+        with patch("insider_scanner.utils.caching.time.time", return_value=1):
+            set_cached(cache_dir, "expired", "old")
+        set_cached(cache_dir, "fresh", "keep")
+        (cache_dir / "legacy.txt").write_text("old format", encoding="utf-8")
+        (cache_dir / "legacy.meta").write_text("{}", encoding="utf-8")
+
+    ensure_dirs(paths)
+
+    for cache_dir in (
+        paths.edgar_cache_dir,
+        paths.scraper_cache_dir,
+        paths.eu_cache_dir,
+    ):
+        assert get_cached(cache_dir, "expired") is None
+        assert get_cached(cache_dir, "fresh") == "keep"
+        assert [p.name for p in cache_dir.iterdir()] == ["fresh.response-cache"]
+
+
 class TestRuntimePaths:
     def test_environment_overrides_both_runtime_roots(self, monkeypatch, tmp_path):
         monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
