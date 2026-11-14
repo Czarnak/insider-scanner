@@ -20,12 +20,50 @@ from insider_scanner.core.congress_senate import (
     _normalize_tx_type,
     _parse_date,
     _split_name,
+    create_efd_session,
     parse_ptr_page,
     parse_search_results,
     scrape_senate_trades,
     search_senate_filings,
 )
 from insider_scanner.core.models import CongressTrade
+from insider_scanner.core.sec_fair_access import RateLimiter
+
+
+@pytest.fixture(autouse=True)
+def senate_clock(monkeypatch):
+    """Exercise the limiter with virtual time rather than sleeping offline."""
+    clock = MagicMock()
+    clock.now = 0.0
+    clock.monotonic.side_effect = lambda: clock.now
+
+    def advance(seconds):
+        clock.now += seconds
+
+    clock.sleep.side_effect = advance
+    limiter = RateLimiter(1.0, monotonic=clock.monotonic, sleep=clock.sleep)
+    monkeypatch.setattr(
+        "insider_scanner.core.congress_senate._SENATE_RATE_LIMITER", limiter
+    )
+    return clock
+
+
+@pytest.fixture
+def register_efd_auth():
+    """Register the shared landing, CSRF and agreement exchange."""
+
+    def register():
+        responses.add(responses.GET, SEARCH_LANDING, body=LANDING_HTML, status=200)
+        responses.add(
+            responses.POST,
+            SEARCH_HOME,
+            body=SEARCH_FORM_HTML,
+            status=200,
+            headers={"Set-Cookie": "csrftoken=tok; Path=/"},
+        )
+
+    return register
+
 
 # -----------------------------------------------------------------------
 # Sample HTML fixtures
@@ -361,7 +399,7 @@ class TestEFDSession:
     @responses.activate
     @patch("insider_scanner.core.congress_senate._create_browser_session")
     def test_authenticate_retries_403_with_browser_session(
-        self, create_browser_session
+        self, create_browser_session, senate_clock
     ):
         responses.add(
             responses.GET,
@@ -386,6 +424,7 @@ class TestEFDSession:
         create_browser_session.assert_called_once()
         browser_session.get.assert_called_once_with(SEARCH_LANDING, timeout=15)
         assert session.is_authenticated
+        assert senate_clock.sleep.call_count == 2
 
     @responses.activate
     def test_authenticate_no_csrf(self):
@@ -401,16 +440,9 @@ class TestEFDSession:
             session.authenticate()
 
     @responses.activate
-    def test_search(self):
+    def test_search(self, register_efd_auth):
         # Pre-authenticate
-        responses.add(responses.GET, SEARCH_LANDING, body=LANDING_HTML, status=200)
-        responses.add(
-            responses.POST,
-            SEARCH_HOME,
-            body=SEARCH_FORM_HTML,
-            status=200,
-            headers={"Set-Cookie": "csrftoken=tok; Path=/"},
-        )
+        register_efd_auth()
         responses.add(
             responses.POST,
             REPORT_DATA,
@@ -431,15 +463,8 @@ class TestEFDSession:
             session.search(last_name="test")
 
     @responses.activate
-    def test_fetch_page(self):
-        responses.add(responses.GET, SEARCH_LANDING, body=LANDING_HTML, status=200)
-        responses.add(
-            responses.POST,
-            SEARCH_HOME,
-            body=SEARCH_FORM_HTML,
-            status=200,
-            headers={"Set-Cookie": "csrftoken=tok; Path=/"},
-        )
+    def test_fetch_page(self, register_efd_auth):
+        register_efd_auth()
         responses.add(
             responses.GET,
             BASE_URL + "/search/view/ptr/abc123/",
@@ -461,16 +486,9 @@ class TestEFDSession:
 
 class TestSearchSenateFilings:
     @responses.activate
-    def test_filters_paper_filings(self):
+    def test_filters_paper_filings(self, register_efd_auth):
         # Authenticate
-        responses.add(responses.GET, SEARCH_LANDING, body=LANDING_HTML, status=200)
-        responses.add(
-            responses.POST,
-            SEARCH_HOME,
-            body=SEARCH_FORM_HTML,
-            status=200,
-            headers={"Set-Cookie": "csrftoken=tok; Path=/"},
-        )
+        register_efd_auth()
         responses.add(
             responses.POST,
             REPORT_DATA,
@@ -491,15 +509,8 @@ class TestSearchSenateFilings:
         assert all(not r["is_paper"] for r in results)
 
     @responses.activate
-    def test_empty_results(self):
-        responses.add(responses.GET, SEARCH_LANDING, body=LANDING_HTML, status=200)
-        responses.add(
-            responses.POST,
-            SEARCH_HOME,
-            body=SEARCH_FORM_HTML,
-            status=200,
-            headers={"Set-Cookie": "csrftoken=tok; Path=/"},
-        )
+    def test_empty_results(self, register_efd_auth):
+        register_efd_auth()
         responses.add(
             responses.POST,
             REPORT_DATA,
@@ -713,3 +724,96 @@ class TestScrapeSentateTrades:
 
         # Should have no trades (error was skipped)
         assert trades == []
+
+
+@responses.activate
+def test_injected_limiter_controls_all_requests(register_efd_auth):
+    register_efd_auth()
+    responses.add(responses.GET, BASE_URL + "/search/view/ptr/test/", body="page")
+    limiter = MagicMock(spec=RateLimiter)
+    with EFDSession(rate_limiter=limiter) as session:
+        session.authenticate()
+        assert session.fetch_page("/search/view/ptr/test/") == "page"
+    assert limiter.acquire.call_count == 3
+    assert not session.is_authenticated
+
+
+def test_efd_context_closes_transport_on_error():
+    session = EFDSession()
+    with (
+        patch.object(session.session, "close") as close,
+        pytest.raises(RuntimeError),
+        session,
+    ):
+        raise RuntimeError("stop")
+    close.assert_called_once()
+
+
+def test_create_session_closes_failed_authentication():
+    transport = MagicMock()
+    with (
+        patch(
+            "insider_scanner.core.congress_senate.EFDSession", return_value=transport
+        ),
+        pytest.raises(ConnectionError),
+    ):
+        transport.authenticate.side_effect = ConnectionError("no CSRF")
+        create_efd_session()
+    transport.close.assert_called_once()
+
+
+@pytest.mark.parametrize("has_filings", [False, True])
+def test_scrape_closes_owned_session(has_filings):
+    session = MagicMock(spec=EFDSession)
+    session.fetch_page.return_value = PTR_PAGE_HTML
+    filings = parse_search_results(SEARCH_RESPONSE_JSON)[:1] if has_filings else []
+    with (
+        patch(
+            "insider_scanner.core.congress_senate.create_efd_session",
+            return_value=session,
+        ),
+        patch(
+            "insider_scanner.core.congress_senate.search_senate_filings",
+            return_value=filings,
+        ),
+    ):
+        scrape_senate_trades()
+    session.close.assert_called_once()
+
+
+def test_scrape_closes_owned_session_on_search_error():
+    session = MagicMock(spec=EFDSession)
+    with (
+        patch(
+            "insider_scanner.core.congress_senate.create_efd_session",
+            return_value=session,
+        ),
+        patch(
+            "insider_scanner.core.congress_senate.search_senate_filings",
+            side_effect=RuntimeError("failed"),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        scrape_senate_trades()
+    session.close.assert_called_once()
+
+
+def test_scrape_keeps_injected_session_open():
+    session = MagicMock(spec=EFDSession)
+    with patch(
+        "insider_scanner.core.congress_senate.search_senate_filings", return_value=[]
+    ):
+        assert scrape_senate_trades(session=session) == []
+    session.close.assert_not_called()
+
+
+@responses.activate
+def test_default_sessions_share_the_senate_request_budget(
+    register_efd_auth, senate_clock
+):
+    register_efd_auth()
+    with EFDSession() as first, EFDSession() as second:
+        first.authenticate()
+        second.authenticate()
+    assert senate_clock.now == pytest.approx(3.0)
+    assert senate_clock.sleep.call_count == 3
