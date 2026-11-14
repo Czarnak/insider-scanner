@@ -381,3 +381,14 @@ us_trades.append_column(
 )
 Index("ix_us_trades_accession", us_trades.c.accession_number)
 Index("ix_us_trades_cik_issuer", us_trades.c.cik_issuer)
+
+# Added by migration six; keep the version-one metadata snapshot immutable.
+for _missing_field in (
+    "shares_missing",
+    "price_missing",
+    "value_missing",
+    "shares_owned_after_missing",
+):
+    us_trades.append_column(
+        Column(_missing_field, Boolean, nullable=False, server_default=text("0"))
+    )

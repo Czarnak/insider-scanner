@@ -149,6 +149,26 @@ def _repair_unfinished_scan_coverage(connection: Connection) -> None:
     )
 
 
+def _add_sec_numeric_availability(connection: Connection) -> None:
+    """Preserve numbers while allowing new parses to distinguish missing values.
+
+    Old rows did not retain the raw numeric XML. Their zero values cannot be
+    classified safely; retain the legacy meaning until the filing is reparsed.
+    """
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN shares_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN price_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN value_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN shares_owned_after_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -174,5 +194,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=5,
         name="repair_unfinished_scan_coverage",
         upgrade=_repair_unfinished_scan_coverage,
+    ),
+    Migration(
+        version=6,
+        name="add_sec_numeric_availability",
+        upgrade=_add_sec_numeric_availability,
     ),
 )

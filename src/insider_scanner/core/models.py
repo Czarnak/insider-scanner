@@ -93,6 +93,13 @@ class InsiderTrade:
     direct_or_indirect: str = ""
     sec_detail_json: str = ""
 
+    # Numeric storage stays compatible with legacy exports and SQLite rows.
+    # A missing flag distinguishes an unreported SEC value from a reported zero.
+    shares_missing: bool = False
+    price_missing: bool = False
+    value_missing: bool = False
+    shares_owned_after_missing: bool = False
+
     @property
     def direction(self) -> TransactionDirection:
         """Shared acquisition, disposal or neutral display direction."""
