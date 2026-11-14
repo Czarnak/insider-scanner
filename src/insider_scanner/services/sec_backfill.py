@@ -189,9 +189,7 @@ class SecBackfillService:
             skipped_resume=skipped_resume,
             skipped_metadata=skipped_metadata,
             failures=counters["failed"],
-            unsupported=sum(
-                item.status is SecFilingStatus.UNSUPPORTED for item in outcomes
-            ),
+            unsupported=counters["unsupported"],
             outcomes=tuple(outcomes),
             cancelled=interrupted,
         )

@@ -243,6 +243,42 @@ def test_resume_skips_completed_dates_and_restores_counters(tmp_path: Path) -> N
     assert not checkpoint.exists()  # deleted on clean completion
 
 
+def test_resume_restores_unsupported_count_in_report_and_progress(tmp_path):
+    checkpoint = tmp_path / "checkpoint.json"
+    cancel = _CancelAfterDates(1)
+    legacy = (
+        b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
+    )
+    snapshots = []
+
+    def progress(snapshot):
+        snapshots.append(snapshot)
+        cancel.completed = snapshot.dates_completed
+
+    first = download_filings_in_range(
+        start_date=date(2026, 6, 15),
+        end_date=date(2026, 6, 16),
+        client=make_client(make_transport(filing_bytes=legacy)),
+        cache_root=tmp_path,
+        checkpoint_path=checkpoint,
+        cancelled=cancel,
+        on_progress=progress,
+    )
+    assert first.cancelled
+    assert first.unsupported == snapshots[0].unsupported == 2
+    resumed = download_filings_in_range(
+        start_date=date(2026, 6, 15),
+        end_date=date(2026, 6, 16),
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        checkpoint_path=checkpoint,
+        on_progress=snapshots.append,
+    )
+    assert resumed.dates_completed == 2
+    assert resumed.unsupported == snapshots[-1].unsupported == 2
+    assert resumed.parsed == 2
+
+
 def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint.json"
     # A stale checkpoint for a *different* range that marks its day complete.

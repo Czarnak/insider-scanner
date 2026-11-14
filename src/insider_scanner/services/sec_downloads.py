@@ -63,7 +63,14 @@ from insider_scanner.utils.logging import get_logger
 _log = get_logger("sec_downloads")
 
 _CHECKPOINT_VERSION = 1
-_COUNTER_KEYS = ("discovered", "downloaded", "parsed", "skipped", "failed")
+_COUNTER_KEYS = (
+    "discovered",
+    "downloaded",
+    "parsed",
+    "skipped",
+    "failed",
+    "unsupported",
+)
 
 # Errors that are recoverable per-filing: log, count as failed, keep going.
 _RECOVERABLE = (
@@ -108,13 +115,14 @@ class SecDownloadProgress:
     parsed: int
     skipped: int
     failed: int
+    unsupported: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class SecDownloadReport:
     """Final aggregate result of a download run.
 
-    The five counters are independent tallies, not a partition: ``downloaded``
+    The counters are independent tallies, not a partition: ``downloaded``
     and ``skipped`` record how bytes were obtained (network vs. fresh cache),
     while ``parsed`` and ``failed`` record the parse outcome. A filing that is
     fetched (or cache-served) and then fails to parse is therefore counted in
@@ -207,9 +215,6 @@ def download_filings_in_range(
         interval=interval,
         dates_total=len(all_dates),
         dates_completed=len(completed),
-        unsupported=sum(
-            item.status is SecFilingStatus.UNSUPPORTED for item in outcomes
-        ),
         outcomes=tuple(outcomes),
         cancelled=interrupted,
         stopped_on_error=stopped_on_error,
@@ -324,6 +329,7 @@ def process_filing_row(
     except SecBlockedError:
         raise
     except UnsupportedOwnershipDocumentError as exc:
+        counters["unsupported"] += 1
         _log.info(
             "SEC filing unsupported accession=%s reason=%s",
             accession,
