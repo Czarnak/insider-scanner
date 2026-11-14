@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import errno
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -116,6 +117,54 @@ class TestRuntimePaths:
 
 
 class TestPackagedSeeds:
+    def test_ensure_dirs_supports_filesystems_without_hardlinks(
+        self, monkeypatch, tmp_path
+    ):
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+        )
+
+        def unsupported_link(*args):
+            raise OSError(errno.ENOTSUP, "Hard links unavailable")
+
+        monkeypatch.setattr("insider_scanner.utils.config.os.link", unsupported_link)
+
+        ensure_dirs(paths)
+
+        seed_root = files("insider_scanner.resources.seeds")
+        for target in (
+            paths.congress_file,
+            paths.tickers_file,
+            paths.eu_watchlist_file,
+        ):
+            assert target.read_bytes() == seed_root.joinpath(target.name).read_bytes()
+        assert not list(paths.data_dir.glob(".*.tmp"))
+
+    def test_fallback_never_replaces_a_concurrently_created_user_seed(
+        self, monkeypatch, tmp_path
+    ):
+        paths = resolve_runtime_paths(
+            data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+        )
+
+        def concurrent_user_write(source, target):
+            target.write_bytes(b"concurrent user content")
+            raise OSError(errno.ENOTSUP, "Hard links unavailable")
+
+        monkeypatch.setattr(
+            "insider_scanner.utils.config.os.link", concurrent_user_write
+        )
+
+        ensure_dirs(paths)
+
+        for target in (
+            paths.congress_file,
+            paths.tickers_file,
+            paths.eu_watchlist_file,
+        ):
+            assert target.read_bytes() == b"concurrent user content"
+        assert not list(paths.data_dir.glob(".*.tmp"))
+
     def test_ensure_dirs_copies_all_missing_seed_files(self, tmp_path):
         paths = resolve_runtime_paths(
             data_dir=tmp_path / "data",
