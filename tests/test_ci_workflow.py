@@ -96,7 +96,7 @@ def test_ci_audits_the_exported_lock_without_resolving_again() -> None:
         export[export.index("--output-file") + 1]
         == audit[audit.index("--requirement") + 1]
     )
-    assert {"--no-deps", "--disable-pip", "--strict"}.issubset(audit)
+    assert {"--require-hashes", "--disable-pip", "--strict"}.issubset(audit)
     assert "--ignore-vuln" not in audit
 
 

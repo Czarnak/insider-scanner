@@ -93,4 +93,4 @@ jobs:
       - name: Export locked dependencies
         run: uv export --locked --extra dev --extra gui --no-emit-project --format requirements.txt --output-file audit-requirements.txt
       - name: Audit locked dependencies
-        run: uv run --locked --extra dev --extra gui pip-audit --requirement audit-requirements.txt --require-hashes --no-deps --disable-pip --strict
+        run: uv run --locked --extra dev --extra gui pip-audit --requirement audit-requirements.txt --require-hashes --disable-pip --strict

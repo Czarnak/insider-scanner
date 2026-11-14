@@ -4,6 +4,9 @@ First off, thank you for considering contributing to Insider Scanner! It's peopl
 
 ## Setup for Development
 
+Use Python 3.11.5 or newer. This patch floor lets the lockfile use the patched
+Soup Sieve dependency on every supported interpreter.
+
 ```bash
 git clone <repo-url>
 cd insider-scanner
@@ -44,7 +47,7 @@ uv lock --check
 
 # Audit the locked base, GUI and development dependencies (requires internet)
 uv export --locked --extra dev --extra gui --no-emit-project --format requirements.txt --output-file .venv/audit-requirements.txt
-uv run --locked --extra dev --extra gui pip-audit --requirement .venv/audit-requirements.txt --require-hashes --no-deps --disable-pip --strict
+uv run --locked --extra dev --extra gui pip-audit --requirement .venv/audit-requirements.txt --require-hashes --disable-pip --strict
 ```
 
 Tests are split into two categories:

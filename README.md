@@ -40,7 +40,7 @@ pip install -e ".[gui,dev]"
 
 ### Requirements
 
-Python 3.11+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
+Python 3.11.5+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
 `pandas`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and SQLAlchemy.
 The `gui` extra adds `PySide6` and `pyqtgraph`.
 
