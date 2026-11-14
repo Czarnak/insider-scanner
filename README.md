@@ -425,15 +425,15 @@ All EDGAR requests use a proper `User-Agent` header and are rate-limited to 10 r
 
 ## Runtime Files
 
-| Location within runtime paths | Description |
-| ------ | ------------- |
-| `insider_scanner.sqlite3` | Parsed trades, coverage intervals, refresh state, and schema version |
-| `congress_members.json` | Editable Congress member list with committee assignments and sector mappings |
-| `tickers_watchlist.txt` | Editable ticker watchlist |
-| `eu_watchlist.txt` | Editable European ISIN watchlist |
-| `house_disclosures/` | Cached House disclosure indexes and PDFs |
-| `exports/scans/` | Generated CSV/JSON scan exports |
-| platform cache directory | Transient EDGAR and scraper HTTP caches |
+| Location within runtime paths | Description                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| `insider_scanner.sqlite3`     | Parsed trades, coverage intervals, refresh state, and schema version         |
+| `congress_members.json`       | Editable Congress member list with committee assignments and sector mappings |
+| `tickers_watchlist.txt`       | Editable ticker watchlist                                                    |
+| `eu_watchlist.txt`            | Editable European ISIN watchlist                                             |
+| `house_disclosures/`          | Cached House disclosure indexes and PDFs                                     |
+| `exports/scans/`              | Generated CSV/JSON scan exports                                              |
+| platform cache directory      | Transient EDGAR and scraper HTTP caches                                      |
 
 Packaged defaults are copied into the user data directory only when a file is
 missing; existing user edits are never overwritten. `eu_watchlist.txt` stores
@@ -498,4 +498,4 @@ Bundled UI fonts are licensed separately under the SIL Open Font License 1.1:
 
 ---
 
-*Created with Claude AI*
+_Created with Claude AI_
