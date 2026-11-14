@@ -97,6 +97,7 @@ class EuropeanScanService:
         identifier = normalize_identifier(isin, "ISIN").upper()
         if len(identifier) != 12:
             raise ValueError("ISIN must be exactly 12 characters")
+        issues: list[FetchIssue] = []
         if start_date is None and end_date is None:
             requested_sources = self._select_sources(country, sources, self._adapters)
             selected = tuple(
@@ -119,7 +120,6 @@ class EuropeanScanService:
             return scan_result(self._query_identifier(identifier, selected), issues)
         requested = validate_range(start_date, end_date)
         selected = self._select_sources(country, sources, self._adapters)
-        issues: list[FetchIssue] = []
 
         for source in selected:
             for gap in self._persistence.coverage.gaps(

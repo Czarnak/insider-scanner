@@ -24,6 +24,7 @@ from insider_scanner.utils.logging import get_logger, setup_logging
 from insider_scanner.utils.trade_display import format_reported_number
 
 if TYPE_CHECKING:
+    from insider_scanner.core.eu_models import EuropeanInsiderTrade
     from insider_scanner.core.sec_client import SecClient
     from insider_scanner.services.sec_backfill import SecBackfillSummary
     from insider_scanner.services.sec_comparison import SecComparisonTarget
@@ -216,7 +217,7 @@ def cmd_eu_scan(
     if services is None:
         raise RuntimeError("European scan service is required")
 
-    all_trades = []
+    all_trades: list[EuropeanInsiderTrade] = []
     for isin in isins:
         print(f"Scanning {isin}…")
         all_trades.extend(
