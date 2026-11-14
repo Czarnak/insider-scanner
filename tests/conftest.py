@@ -71,10 +71,11 @@ def persistence(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _gui_isolation():
+def _gui_isolation(request):
     qt_widgets = sys.modules.get("PySide6.QtWidgets")
     app = qt_widgets.QApplication.instance() if qt_widgets is not None else None
-    restore_gc = app is not None and gc.isenabled()
+    manage_gc = app is not None and (request is None or "qapp" in request.fixturenames)
+    restore_gc = manage_gc and gc.isenabled()
     if restore_gc:
         # Automatic cyclic GC can run on a worker, destroying Qt wrappers while
         # the GUI thread holds the GIL and waits for a Qt mutex. Collect on the
@@ -98,7 +99,8 @@ def _gui_isolation():
                 app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
                 app.processEvents()
                 reset_theme_manager()
-                gc.collect()
+                if manage_gc:
+                    gc.collect()
         finally:
             if restore_gc:
                 gc.enable()

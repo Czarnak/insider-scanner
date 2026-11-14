@@ -78,7 +78,7 @@ import sys
 namespace = runpy.run_path(sys.argv[1])
 try:
     assert 'PySide6.QtWidgets' not in sys.modules
-    fixture = namespace['_gui_isolation'].__wrapped__()
+    fixture = namespace['_gui_isolation'].__wrapped__(None)
     next(fixture)
     assert next(fixture, 'finished') == 'finished'
     assert 'PySide6.QtWidgets' not in sys.modules
@@ -108,6 +108,7 @@ import runpy
 import sys
 import threading
 import weakref
+from types import SimpleNamespace
 
 namespace = runpy.run_path(sys.argv[1])
 try:
@@ -116,7 +117,24 @@ try:
 
     app = QApplication([])
     gc.enable()
-    fixture = namespace['_gui_isolation'].__wrapped__()
+    # A session-wide QApplication must not change GC for pure Python tests.
+    fixture = namespace['_gui_isolation'].__wrapped__(
+        SimpleNamespace(fixturenames=[])
+    )
+    collect = gc.collect
+    def unexpected_collection():
+        raise AssertionError('pure tests must not force a full collection')
+    gc.collect = unexpected_collection
+    try:
+        next(fixture)
+        assert gc.isenabled()
+        assert next(fixture, 'finished') == 'finished'
+        assert gc.isenabled()
+    finally:
+        gc.collect = collect
+
+    request = SimpleNamespace(fixturenames=['qapp'])
+    fixture = namespace['_gui_isolation'].__wrapped__(request)
     next(fixture)
     assert not gc.isenabled(), 'Qt cycles must not be collected by workers'
 
@@ -145,7 +163,7 @@ try:
     assert gc.isenabled(), 'the original GC state must be restored'
 
     gc.disable()
-    fixture = namespace['_gui_isolation'].__wrapped__()
+    fixture = namespace['_gui_isolation'].__wrapped__(request)
     next(fixture)
     assert next(fixture, 'finished') == 'finished'
     assert not gc.isenabled(), 'an already disabled GC must stay disabled'
