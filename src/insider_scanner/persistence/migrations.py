@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sqlalchemy import delete, select
 from sqlalchemy.engine import Connection
 
-from insider_scanner.persistence.schema import v1_metadata
+from insider_scanner.core.congress_common import parse_amount_range
+from insider_scanner.persistence.schema import (
+    congress_trades,
+    refresh_state,
+    scan_coverage,
+    us_trades,
+    v1_metadata,
+)
 
 
 @dataclass(frozen=True)
@@ -75,6 +85,58 @@ def _add_sec_native_fields(connection: Connection) -> None:
     )
 
 
+def _repair_normalized_inputs(connection: Connection) -> None:
+    """Repair retained amount labels and allow missing filing dates to refetch.
+
+    The original OpenInsider timestamp was discarded, so a filing date cannot
+    be invented here. Preserve its rows and invalidate only affected source
+    coverage; a subsequent source reparse can fill the date under the same key.
+    """
+    affected_tickers: set[str] = set()
+    rows = connection.execute(
+        select(
+            us_trades.c.ticker,
+            us_trades.c.source,
+            us_trades.c.source_provenance_json,
+        ).where(us_trades.c.filing_date.is_(None))
+    )
+    for row in rows:
+        try:
+            provenance = json.loads(row.source_provenance_json)
+        except (TypeError, ValueError):
+            provenance = []
+        if row.source == "openinsider" or (
+            isinstance(provenance, list) and "openinsider" in provenance
+        ):
+            affected_tickers.add(row.ticker)
+
+    if affected_tickers:
+        identifiers = sorted(affected_tickers | {"*"})
+        for table in (scan_coverage, refresh_state):
+            connection.execute(
+                delete(table).where(
+                    table.c.domain == "us",
+                    table.c.source == "openinsider",
+                    table.c.identifier.in_(identifiers),
+                )
+            )
+
+    amount_rows = connection.execute(
+        select(congress_trades.c.id, congress_trades.c.amount_range).where(
+            congress_trades.c.amount_low == 0,
+            congress_trades.c.amount_high == 0,
+        )
+    )
+    for amount_row in amount_rows:
+        low, high = parse_amount_range(amount_row.amount_range)
+        if math.isfinite(low) and math.isfinite(high) and 0 < low <= high:
+            connection.execute(
+                congress_trades.update()
+                .where(congress_trades.c.id == amount_row.id)
+                .values(amount_low=low, amount_high=high)
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -90,5 +152,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=3,
         name="add_sec_native_fields",
         upgrade=_add_sec_native_fields,
+    ),
+    Migration(
+        version=4,
+        name="repair_normalized_inputs",
+        upgrade=_repair_normalized_inputs,
     ),
 )
