@@ -41,6 +41,10 @@ uv run --locked --extra dev --extra gui mypy src/insider_scanner
 
 # Verify the lock file
 uv lock --check
+
+# Audit the locked base, GUI and development dependencies (requires internet)
+uv export --locked --extra dev --extra gui --no-emit-project --format requirements.txt --output-file .venv/audit-requirements.txt
+uv run --locked --extra dev --extra gui pip-audit --requirement .venv/audit-requirements.txt --require-hashes --no-deps --disable-pip --strict
 ```
 
 Tests are split into two categories:
@@ -92,10 +96,15 @@ PR fixes that module. New modules receive the normal checks.
 GitHub Actions runs on push/PR:
 
 - **Test matrix**: Python 3.11 + 3.12 + 3.13 + 3.14 on Ubuntu + Windows
+- **Dependencies and tools**: Installed from `uv.lock` with `uv sync --locked --extra dev --extra gui`; CI pins uv itself too
 - **Offline tests only**: Live tests excluded via `-m "not live"`
-- **GUI tests**: Run under `xvfb-run` on Linux for headless display; skipped on Windows
+- **GUI tests**: The complete suite runs on both platforms with `QT_QPA_PLATFORM=offscreen`
+- **Bounds**: 60 seconds per test, 20 minutes per test job, 10 minutes per quality/audit job; superseded CI runs are canceled
 - **Lint**: `ruff check .`
 - **Format**: `ruff format --check .`
+- **Types**: `mypy src/insider_scanner` using the scoped baseline above
+- **Dependency audit**: `pip-audit` checks a hashed lockfile export, including GUI/dev dependencies applicable to Python 3.12 on Linux, without resolving new versions; vulnerabilities and lookup failures fail the job
+- **Updates**: Dependabot maintains both uv dependencies and pinned GitHub Actions weekly
 - **Coverage**: Uploaded as artifact for Python 3.12 Ubuntu
 
 ## Pull Request Process
