@@ -69,6 +69,7 @@ class CongressScanService:
             else identity_for(normalized)
         )
         identifier = "*" if member is None else member.key
+        display_name = "*" if member is None else member.official_name
         adapters = (
             default_congress_adapters(member=member)
             if self._uses_default_adapters
@@ -97,9 +98,9 @@ class CongressScanService:
             )
             for gap in gaps:
                 if cancelled():
-                    issues.append(FetchIssue("cancelled", source, identifier))
+                    issues.append(FetchIssue("cancelled", source, display_name))
                     return scan_result(self._query(member, selected, requested), issues)
-                context = f"{identifier} {gap.start}..{gap.end}"
+                context = f"{display_name} {gap.start}..{gap.end}"
                 try:
                     fetched = as_fetch_result(
                         adapters[source](

@@ -216,7 +216,7 @@ class TestSplitName:
         assert last == "Booker"
 
     def test_single_name(self):
-        assert _split_name("Pelosi") == ("", "Pelosi")
+        assert _split_name("Unknownsurname") == ("", "Unknownsurname")
 
     def test_whitespace(self):
         assert _split_name("  Nancy   Pelosi  ") == ("Nancy", "Pelosi")
