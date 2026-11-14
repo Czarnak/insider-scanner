@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from typing import cast
 from unittest.mock import Mock, call, patch
 
 import pytest
+import requests
 
 from insider_scanner.core.sec_client import (
     RequestsSecTransport,
+    SecBlockedError,
     SecClient,
     SecClientError,
     SecClientSecurityError,
@@ -21,7 +25,11 @@ from insider_scanner.core.sec_client import (
     SecTransport,
     SecTransportError,
 )
-from insider_scanner.core.sec_fair_access import RateLimiter, SecRetryPolicy
+from insider_scanner.core.sec_fair_access import (
+    RateLimiter,
+    SecCircuitBreaker,
+    SecRetryPolicy,
+)
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceLimits,
@@ -56,7 +64,7 @@ class StubResponse:
 class RaisingBodyResponse(StubResponse):
     def iter_content(self, chunk_size: int) -> Iterator[bytes]:
         del chunk_size
-        raise RuntimeError("private streamed body details")
+        raise requests.exceptions.ChunkedEncodingError("private streamed body details")
         yield b""  # pragma: no cover
 
 
@@ -78,6 +86,8 @@ def make_client(transport: Mock, *, policy=DEFAULT_SEC_SECURITY_POLICY) -> SecCl
         transport=cast(SecTransport, transport),
         policy=policy,
         rate_limiter=RateLimiter(min_interval_seconds=0.0),
+        circuit_breaker=SecCircuitBreaker(),
+        retry_policy=SecRetryPolicy(max_attempts=1),
     )
 
 
@@ -358,7 +368,9 @@ def test_streaming_exception_is_safely_wrapped_and_response_is_closed() -> None:
     with pytest.raises(SecTransportError) as exc_info:
         fetch_bytes(make_client(configured_transport(response)))
 
-    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert isinstance(
+        exc_info.value.__cause__, requests.exceptions.ChunkedEncodingError
+    )
     assert "private streamed body details" not in str(exc_info.value)
     assert response.close_calls == 1
 
@@ -401,7 +413,7 @@ def test_non_success_status_is_typed_and_payload_free(status_code: int) -> None:
 
 def test_transport_exception_is_safely_wrapped_and_chained() -> None:
     transport = configured_transport()
-    cause = RuntimeError("private transport details")
+    cause = requests.ConnectionError("private transport details")
     transport.get.side_effect = cause
 
     with pytest.raises(SecTransportError) as exc_info:
@@ -462,6 +474,7 @@ def recording_client(
         transport=cast(SecTransport, transport),
         rate_limiter=cast(RateLimiter, Mock(spec=RateLimiter)),
         retry_policy=retry_policy or SecRetryPolicy(),
+        circuit_breaker=SecCircuitBreaker(),
         sleep=sleeps.append,
     )
     return client, sleeps
@@ -484,7 +497,7 @@ def test_rate_limiter_is_acquired_once_per_network_hop() -> None:
     assert limiter.acquire.call_count == 2  # one per hop (redirect + final)
 
 
-@pytest.mark.parametrize("status_code", [429, 503])
+@pytest.mark.parametrize("status_code", [403, 429, 500, 502, 503, 504])
 def test_transient_status_is_retried_with_bounded_backoff(status_code: int) -> None:
     throttled = StubResponse(status_code=status_code, chunks=())
     ok = StubResponse(chunks=(b"recovered",))
@@ -555,7 +568,7 @@ def test_404_raises_recoverable_not_found_and_is_not_retried() -> None:
     assert sleeps == []
 
 
-@pytest.mark.parametrize("status_code", [400, 403, 500])
+@pytest.mark.parametrize("status_code", [400, 401, 501])
 def test_non_retryable_status_fails_on_first_attempt(status_code: int) -> None:
     response = StubResponse(status_code=status_code, chunks=())
     transport = configured_transport(response)
@@ -569,12 +582,12 @@ def test_non_retryable_status_fails_on_first_attempt(status_code: int) -> None:
     assert sleeps == []
 
 
-def test_transport_errors_are_not_retried() -> None:
+def test_programming_errors_are_not_wrapped_or_retried() -> None:
     transport = configured_transport()
     transport.get.side_effect = RuntimeError("boom")
     client, sleeps = recording_client(transport)
 
-    with pytest.raises(SecTransportError):
+    with pytest.raises(RuntimeError, match="boom"):
         fetch_bytes(client)
 
     assert transport.get.call_count == 1
@@ -584,3 +597,105 @@ def test_transport_errors_are_not_retried() -> None:
 def test_filing_not_found_shares_client_error_base() -> None:
     assert issubclass(SecFilingNotFoundError, SecHttpError)
     assert issubclass(SecFilingNotFoundError, SecClientError)
+
+
+@pytest.mark.parametrize(
+    "cause", [requests.ConnectionError("reset"), requests.ReadTimeout("timeout")]
+)
+def test_transient_transport_errors_retry_with_the_same_attempt_budget(cause) -> None:
+    transport = configured_transport()
+    transport.get.side_effect = [cause, StubResponse(chunks=(b"recovered",))]
+    client, sleeps = recording_client(transport)
+
+    assert fetch_bytes(client) == b"recovered"
+    assert sleeps == [1.0]
+    assert transport.get.call_count == 2
+    assert client.rate_limiter.acquire.call_count == 2
+
+
+def test_partial_body_is_discarded_and_closed_before_retry() -> None:
+    class PartialResponse(StubResponse):
+        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+            yield b"partial data to discard"
+            raise requests.exceptions.ChunkedEncodingError("read interrupted")
+
+    partial = PartialResponse()
+    complete = StubResponse(chunks=(b"complete response",))
+    transport = configured_transport(partial, complete)
+    client, sleeps = recording_client(transport)
+
+    assert fetch_bytes(client) == b"complete response"
+    assert partial.close_calls == complete.close_calls == 1
+    assert sleeps == [1.0]
+
+
+def test_transport_retry_exhaustion_is_bounded() -> None:
+    transport = configured_transport()
+    transport.get.side_effect = requests.ReadTimeout("private timeout details")
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecTransportError):
+        fetch_bytes(client)
+
+    assert transport.get.call_count == 4
+    assert sleeps == [1.0, 2.0, 4.0]
+
+
+def test_security_failure_never_consumes_a_retry() -> None:
+    response = StubResponse(headers={"Content-Type": "application/evil"})
+    transport = configured_transport(response, StubResponse())
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecClientSecurityError):
+        fetch_bytes(client)
+
+    assert transport.get.call_count == response.close_calls == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_sustained_blocking_stops_other_clients_until_one_cooldown_probe(
+    status,
+) -> None:
+    now = [0.0]
+    circuit = SecCircuitBreaker(monotonic=lambda: now[0])
+    responses = [StubResponse(status_code=status) for _ in range(2)]
+    first_transport = configured_transport(*responses)
+    first, sleeps = recording_client(first_transport)
+    first = replace(first, circuit_breaker=circuit)
+
+    with pytest.raises(SecBlockedError) as blocked:
+        fetch_bytes(first)
+
+    assert blocked.value.retry_after_seconds == 600.0
+    assert sleeps == [1.0]
+    assert all(response.close_calls == 1 for response in responses)
+    second_transport = configured_transport(StubResponse(chunks=(b"recovered",)))
+    second, _ = recording_client(second_transport)
+    second = replace(second, circuit_breaker=circuit)
+    with pytest.raises(SecBlockedError):
+        fetch_bytes(second)
+    second_transport.get.assert_not_called()
+
+    now[0] = 600.0
+    assert fetch_bytes(second) == b"recovered"
+    assert second_transport.get.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    ["1200", format_datetime(datetime.now(UTC) + timedelta(seconds=1200))],
+)
+def test_sec_block_retry_after_is_honored_without_short_backoff_cap(
+    retry_after,
+) -> None:
+    response = StubResponse(status_code=429, headers={"Retry-After": retry_after})
+    transport = configured_transport(response)
+    client, sleeps = recording_client(transport)
+
+    with pytest.raises(SecBlockedError) as blocked:
+        fetch_bytes(client)
+
+    assert 1100.0 < blocked.value.retry_after_seconds <= 1200.0
+    assert transport.get.call_count == response.close_calls == 1
+    assert sleeps == []

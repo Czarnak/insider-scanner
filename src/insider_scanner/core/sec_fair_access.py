@@ -5,13 +5,13 @@ These are deliberately separate from :mod:`insider_scanner.core.sec_security`
 keeping request rate under SEC's published ceiling and retrying transient
 server-side throttling responses with bounded backoff.
 
-The rate limiter holds the only mutable state in the SEC client chain; both the
-monotonic clock and the sleep function are injectable so tests are deterministic
-and never wall-clock sleep.
+The shared limiter and circuit breaker coordinate SEC access across clients.
+Clocks and sleep functions are injectable so tests never wall-clock sleep.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -77,7 +77,7 @@ class SecRetryPolicy:
     base_delay_seconds: float = 1.0
     max_delay_seconds: float = 30.0
     backoff_multiplier: float = 2.0
-    retry_statuses: frozenset[int] = frozenset({429, 503})
+    retry_statuses: frozenset[int] = frozenset({403, 429, 500, 502, 503, 504})
     respect_retry_after: bool = True
 
     def __post_init__(self) -> None:
@@ -92,6 +92,92 @@ class SecRetryPolicy:
 
 
 DEFAULT_SEC_RETRY_POLICY = SecRetryPolicy()
+
+
+class SecCircuitOpenError(Exception):
+    """Internal gate signal converted to a public SEC client error."""
+
+    def __init__(self, retry_after_seconds: float) -> None:
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__("SEC fair-access circuit is open")
+
+
+@dataclass(slots=True)
+class SecCircuitBreaker:
+    """Stop sustained SEC blocking without sleeping through a long cooldown.
+
+    A generation ticket prevents older in-flight successes from closing a newly
+    opened circuit. After cooldown only one request may probe SEC access.
+    """
+
+    failure_threshold: int = 2
+    cooldown_seconds: float = 600.0
+    monotonic: Callable[[], float] = time.monotonic
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
+    _failures: int = field(default=0, init=False, repr=False)
+    _blocked_until: float | None = field(default=None, init=False, repr=False)
+    _probe_in_flight: bool = field(default=False, init=False, repr=False)
+    _generation: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.failure_threshold < 1:
+            raise ValueError("failure_threshold must be at least 1")
+        if not math.isfinite(self.cooldown_seconds) or self.cooldown_seconds <= 0:
+            raise ValueError("cooldown_seconds must be finite and positive")
+
+    def acquire(self) -> int:
+        """Return an attempt ticket or reject traffic during cooldown/probe."""
+        with self._lock:
+            if self._blocked_until is not None:
+                remaining = self._blocked_until - self.monotonic()
+                if remaining > 0 or self._probe_in_flight:
+                    raise SecCircuitOpenError(max(remaining, 1.0))
+                self._probe_in_flight = True
+            return self._generation
+
+    def record_response(
+        self, ticket: int, status: int, retry_after: float | None = None
+    ) -> float | None:
+        """Record an HTTP response, returning cooldown when it opens the gate."""
+        with self._lock:
+            if ticket != self._generation:
+                return None
+            if status in {403, 429}:
+                self._failures += 1
+                if (
+                    self._probe_in_flight
+                    or self._failures >= self.failure_threshold
+                    or (retry_after is not None and retry_after > 30.0)
+                ):
+                    return self._open(retry_after)
+            elif self._probe_in_flight and status in {500, 502, 503, 504}:
+                return self._open(retry_after)
+            else:
+                self._failures = 0
+                self._blocked_until = None
+            self._probe_in_flight = False
+            return None
+
+    def record_transport_failure(self, ticket: int) -> None:
+        """A failed half-open probe reopens the circuit instead of wedging it."""
+        with self._lock:
+            if ticket == self._generation and self._probe_in_flight:
+                self._open(None)
+
+    def _open(self, retry_after: float | None) -> float:
+        delay = max(self.cooldown_seconds, retry_after or 0.0)
+        self._blocked_until = self.monotonic() + delay
+        self._probe_in_flight = False
+        self._generation += 1
+        return delay
+
+
+_SHARED_CIRCUIT_BREAKER = SecCircuitBreaker()
+
+
+def default_circuit_breaker() -> SecCircuitBreaker:
+    """Return the SEC block state shared by default clients in this process."""
+    return _SHARED_CIRCUIT_BREAKER
 
 
 def backoff_delay(

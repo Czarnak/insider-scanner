@@ -11,8 +11,11 @@ from insider_scanner.core.sec_fair_access import (
     DEFAULT_REQUESTS_PER_SECOND,
     DEFAULT_SEC_RETRY_POLICY,
     RateLimiter,
+    SecCircuitBreaker,
+    SecCircuitOpenError,
     SecRetryPolicy,
     backoff_delay,
+    default_circuit_breaker,
     default_rate_limiter,
 )
 
@@ -94,8 +97,10 @@ def test_retry_policy_is_frozen() -> None:
         policy.max_attempts = 9  # type: ignore[misc]
 
 
-def test_default_retry_policy_targets_429_and_503() -> None:
-    assert DEFAULT_SEC_RETRY_POLICY.retry_statuses == frozenset({429, 503})
+def test_default_retry_policy_targets_transient_sec_failures() -> None:
+    assert DEFAULT_SEC_RETRY_POLICY.retry_statuses == frozenset(
+        {403, 429, 500, 502, 503, 504}
+    )
 
 
 @pytest.mark.parametrize(
@@ -142,3 +147,51 @@ def test_injected_jitter_is_applied_within_cap() -> None:
     policy = SecRetryPolicy(base_delay_seconds=2.0, max_delay_seconds=10.0)
 
     assert backoff_delay(policy, 1, jitter=lambda d: d + 0.5) == 2.5
+
+
+def test_default_circuit_is_shared_process_wide() -> None:
+    assert default_circuit_breaker() is default_circuit_breaker()
+
+
+def test_open_circuit_allows_one_probe_and_ignores_stale_successes() -> None:
+    clock = FakeClock()
+    circuit = SecCircuitBreaker(failure_threshold=1, monotonic=clock.monotonic)
+    older_ticket = circuit.acquire()
+    ticket = circuit.acquire()
+    assert circuit.record_response(ticket, 403) == 600.0
+    circuit.record_response(older_ticket, 200)
+    with pytest.raises(SecCircuitOpenError) as blocked:
+        circuit.acquire()
+    assert blocked.value.retry_after_seconds == 600.0
+
+    clock.now = 600.0
+    probe = circuit.acquire()
+    with pytest.raises(SecCircuitOpenError):
+        circuit.acquire()
+    circuit.record_response(probe, 200)
+    circuit.acquire()
+
+
+def test_failed_cooldown_probe_reopens_circuit() -> None:
+    clock = FakeClock()
+    circuit = SecCircuitBreaker(failure_threshold=1, monotonic=clock.monotonic)
+    circuit.record_response(circuit.acquire(), 429)
+    clock.now = 600.0
+    probe = circuit.acquire()
+    circuit.record_transport_failure(probe)
+    with pytest.raises(SecCircuitOpenError) as blocked:
+        circuit.acquire()
+    assert blocked.value.retry_after_seconds == 600.0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"failure_threshold": 0},
+        {"cooldown_seconds": 0},
+        {"cooldown_seconds": float("nan")},
+    ],
+)
+def test_invalid_circuit_configuration_is_rejected(kwargs) -> None:
+    with pytest.raises(ValueError):
+        SecCircuitBreaker(**kwargs)
