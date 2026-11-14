@@ -1,6 +1,7 @@
 """Member identities remain stable across seed, display and disclosure names."""
 
 import json
+from importlib.resources import files
 
 import pytest
 
@@ -126,3 +127,24 @@ def test_legacy_seed_order_is_explicit():
     member = MemberIndex([{"name": "Pelosi Nancy"}]).resolve("Nancy Pelosi")
     assert member is not None
     assert (member.first_name, member.last_name) == ("Nancy", "Pelosi")
+
+
+def test_every_packaged_member_resolves_its_official_and_legacy_aliases():
+    members = json.loads(
+        files("insider_scanner.resources.seeds")
+        .joinpath("congress_members.json")
+        .read_text(encoding="utf-8")
+    )
+    index = MemberIndex(members)
+    for member in members:
+        for alias in (member["name"], member["official_name"]):
+            resolved = index.resolve(alias, allow_surname=False)
+            assert resolved is not None, alias
+            assert resolved.key == f"bioguide:{member['bioguide_id']}", alias
+            assert name_matches(resolved, alias, allow_surname=False)
+
+
+def test_reversed_initial_does_not_match_an_unrelated_full_name():
+    members = [{"first_name": "Angie", "last_name": "Craig"}]
+    assert resolve_member("Craig A. Goldman", members, allow_surname=False) is None
+    assert resolve_member("Craig A.", members, allow_surname=False) is not None

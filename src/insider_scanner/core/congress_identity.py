@@ -53,6 +53,7 @@ class MemberIdentity:
     name: str
     chamber: str = ""
     first_aliases: tuple[str, ...] = ()
+    name_aliases: tuple[tuple[str, ...], ...] = ()
 
 
 def _parse_name(name: str) -> tuple[str, str]:
@@ -112,6 +113,11 @@ def _from_mapping(value: Mapping) -> MemberIdentity:
         display,
         str(value.get("chamber") or ""),
         tuple(sorted(aliases)),
+        tuple(
+            sorted(
+                {name_tokens(alias) for alias in (official, display, f"{first} {last}")}
+            )
+        ),
     )
 
 
@@ -123,6 +129,8 @@ def _matches_identity(
     first = name_tokens(identity.first_name)
     if not tokens or not surname:
         return False
+    if tokens in identity.name_aliases and first:
+        return True
     if tokens == surname:
         return allow_surname
     if not first or len(tokens) <= len(surname):
@@ -135,6 +143,9 @@ def _matches_identity(
         return False
     # Additional middle names and initials need not match the disclosure spelling.
     aliases = identity.first_aliases or (first[0],)
+    if len(given[0]) == 1 and any(len(token) > 1 for token in given[1:]):
+        # "Craig A. Goldman" must not become reversed "A. ... Craig".
+        return False
     return any(
         given[0] == alias or (len(given[0]) == 1 and given[0] == alias[0])
         for alias in aliases
@@ -150,12 +161,15 @@ class MemberIndex:
         )
         self.by_key: dict[str, MemberIdentity] = {}
         self.by_token: dict[str, list[MemberIdentity]] = defaultdict(list)
+        self.by_alias: dict[tuple[str, ...], set[MemberIdentity]] = defaultdict(set)
         for member in self.members:
             identity = _from_mapping(member)
             if not identity.first_name or not identity.last_name:
                 continue
             self.by_key[identity.key] = identity
         for identity in self.by_key.values():
+            for alias in identity.name_aliases:
+                self.by_alias[alias].add(identity)
             for token in set(name_tokens(identity.last_name)):
                 self.by_token[token].append(identity)
 
@@ -164,6 +178,9 @@ class MemberIndex:
     ) -> MemberIdentity | None:
         if name in self.by_key:
             return self.by_key[name]
+        exact = self.by_alias.get(name_tokens(name), set())
+        if exact:
+            return next(iter(exact)) if len(exact) == 1 else None
         candidates = {
             identity
             for token in name_tokens(name)
