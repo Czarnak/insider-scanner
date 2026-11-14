@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     String,
     and_,
+    case,
     cast,
     func,
     literal,
@@ -298,10 +299,14 @@ def _projection():
         us_trades.c.insider_title.label("role"),
         us_trades.c.trade_date.label("transaction_date"),
         us_trades.c.filing_date.label("filing_date"),
-        us_trades.c.shares.label("quantity"),
-        us_trades.c.price.label("price"),
+        case((us_trades.c.shares_missing, None), else_=us_trades.c.shares).label(
+            "quantity"
+        ),
+        case((us_trades.c.price_missing, None), else_=us_trades.c.price).label("price"),
         literal("").label("value_display"),
-        us_trades.c.value.label("value_sort"),
+        case((us_trades.c.value_missing, None), else_=us_trades.c.value).label(
+            "value_sort"
+        ),
         literal("USD").label("currency"),
         us_trades.c.source.label("source"),
         us_trades.c.edgar_url.label("source_url"),
@@ -569,7 +574,9 @@ class FeedRepository:
                         return None
                     return FeedDetail(
                         record=record,
-                        shares_owned_after=extra["shares_owned_after"],
+                        shares_owned_after=None
+                        if extra["shares_owned_after_missing"]
+                        else extra["shares_owned_after"],
                         footnotes="",
                         reference=extra["edgar_url"] or "",
                         metadata=(),

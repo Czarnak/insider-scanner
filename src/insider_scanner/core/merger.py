@@ -182,7 +182,9 @@ def filter_trades(
     if trade_type:
         result = [t for t in result if t.trade_type == trade_type]
     if min_value is not None:
-        result = [t for t in result if abs(t.value) >= min_value]
+        result = [
+            t for t in result if not t.value_missing and abs(t.value) >= min_value
+        ]
     if congress_only:
         result = [t for t in result if t.is_congress]
     if since:
