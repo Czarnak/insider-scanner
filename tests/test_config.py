@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import shutil
 import threading
 import time
@@ -113,6 +114,41 @@ class TestRuntimePaths:
 
 
 class TestPackagedSeeds:
+    @pytest.mark.parametrize("replace_target", [False, True])
+    def test_failed_exclusive_copy_only_removes_its_own_file(
+        self, monkeypatch, tmp_path, replace_target
+    ):
+        from insider_scanner.utils import config
+
+        staged = tmp_path / "staged"
+        staged.write_bytes(b"packaged seed")
+        target = tmp_path / "seed.txt"
+
+        def interrupted_copy(source, destination):
+            # Closing first lets Windows reproduce POSIX pathname replacement
+            # while the writer still retains the identity of its original file.
+            destination.close()
+            if replace_target:
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(b"new user content")
+                replacement.replace(target)
+            raise OSError("copy interrupted")
+
+        monkeypatch.setattr(
+            config,
+            "os",
+            SimpleNamespace(name="posix", fsync=os.fsync, fstat=os.fstat, path=os.path),
+        )
+        monkeypatch.setattr(config.shutil, "copyfileobj", interrupted_copy)
+
+        with pytest.raises(OSError, match="copy interrupted"):
+            config._publish_seed_without_link(staged, target)
+
+        if replace_target:
+            assert target.read_bytes() == b"new user content"
+        else:
+            assert not target.exists()
+
     def test_ensure_dirs_supports_filesystems_without_hardlinks(
         self, monkeypatch, tmp_path
     ):

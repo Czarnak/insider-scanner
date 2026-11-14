@@ -119,13 +119,19 @@ def _publish_seed_without_link(staged: Path, target: Path) -> None:
     # the seed during copying. Use a native no-replace rename if concurrent
     # readers must consume seeds before ensure_dirs() has finished.
     with target.open("xb") as destination:
+        created_file = os.fstat(destination.fileno())
         try:
             with staged.open("rb") as source:
                 shutil.copyfileobj(source, destination)
             destination.flush()
             os.fsync(destination.fileno())
         except BaseException:
-            target.unlink(missing_ok=True)
+            destination.close()
+            try:
+                if os.path.samestat(created_file, target.lstat()):
+                    target.unlink()
+            except FileNotFoundError:
+                pass
             raise
 
 
