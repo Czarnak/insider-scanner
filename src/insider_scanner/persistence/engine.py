@@ -7,12 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import NullPool, create_engine, event
+from sqlalchemy import QueuePool, create_engine, event
 from sqlalchemy.engine import URL, Connection, Engine
 
 from insider_scanner.persistence.errors import PersistenceError
 
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+SQLITE_POOL_SIZE = 4
 SQLITE_IMMEDIATE_OPTION = "sqlite_begin_immediate"
 
 
@@ -34,7 +35,13 @@ def create_sqlite_engine(
     echo: bool = False,
     busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
 ) -> Engine:
-    """Create a SQLite engine with foreign keys and transactional DDL enabled."""
+    """Create a bounded, reusable file-database pool with transactional DDL.
+
+    WAL lets GUI readers retain a snapshot while ingestion commits. FULL
+    synchronization keeps a committed batch durable before a file checkpoint
+    can acknowledge it, including after power loss. Every connection belongs
+    to its acquiring caller until the with-block returns it to the pool.
+    """
     resolved_file = Path(database_file)
     if busy_timeout_ms < 0:
         raise ValueError("busy_timeout_ms must be non-negative")
@@ -44,13 +51,35 @@ def create_sqlite_engine(
         engine = create_engine(
             URL.create("sqlite", database=str(resolved_file)),
             echo=echo,
-            connect_args={"timeout": busy_timeout_ms / 1_000},
-            poolclass=NullPool,
+            connect_args={
+                "timeout": busy_timeout_ms / 1_000,
+                "check_same_thread": False,
+            },
+            poolclass=QueuePool,
+            pool_size=SQLITE_POOL_SIZE,
+            max_overflow=0,
         )
     except Exception as exc:
         raise PersistenceError(
             f"Failed to create database engine for {resolved_file}"
         ) from exc
+
+    @event.listens_for(engine, "first_connect")
+    def enable_sqlite_wal(
+        dbapi_connection: Any,
+        _connection_record: Any,
+    ) -> None:
+        # Journal mode persists in the file. Change it once per pool, before
+        # any BEGIN; querying first avoids taking a journal-mode write lock
+        # when another process already enabled WAL and is ingesting data.
+        dbapi_connection.isolation_level = None
+        cursor = dbapi_connection.cursor()
+        try:
+            mode = cursor.execute("PRAGMA journal_mode").fetchone()[0]
+            if mode.casefold() != "wal":
+                cursor.execute("PRAGMA journal_mode=WAL")
+        finally:
+            cursor.close()
 
     @event.listens_for(engine, "connect")
     def configure_sqlite_connection(
@@ -61,6 +90,11 @@ def create_sqlite_engine(
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA synchronous=FULL")
+            # Bound page caching to 16 MiB per physical connection (64 MiB
+            # across the pool); SQLite's default WAL checkpoint policy stays
+            # enabled so long imports do not grow the journal without a limit.
+            cursor.execute("PRAGMA cache_size=-16384")
             # This is a local integer connection option, not SQL supplied by a
             # user. SQLite PRAGMA does not accept a bind placeholder here.
             # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
