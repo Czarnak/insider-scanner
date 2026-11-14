@@ -156,7 +156,10 @@ def _sec_transport() -> RequestsSecTransport:
 def close_http_sessions() -> None:
     """Close registered pools after workers stop; later calls create new pools."""
     with _sessions_lock:
-        sessions = [*_sessions.values(), *_sec_transports.values()]
+        sessions: list[HttpSession | RequestsSecTransport] = [
+            *_sessions.values(),
+            *_sec_transports.values(),
+        ]
         _sessions.clear()
         _sec_transports.clear()
     for session in sessions:

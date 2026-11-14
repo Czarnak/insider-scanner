@@ -68,9 +68,11 @@ def test_generic_retries_transient_failures_with_one_attempt_budget(failure):
 def test_retries_are_bounded_and_close_responses():
     responses.get(URL, status=503, headers={"Retry-After": "600"})
     waits = []
-    with http.HttpSession(sleep=waits.append) as session:
-        with pytest.raises(requests.HTTPError):
-            session.get(URL)
+    with (
+        http.HttpSession(sleep=waits.append) as session,
+        pytest.raises(requests.HTTPError),
+    ):
+        session.get(URL)
     assert len(responses.calls) == 4
     assert waits == [30, 30, 30]
 
@@ -78,9 +80,11 @@ def test_retries_are_bounded_and_close_responses():
 @responses.activate
 def test_permanent_http_failure_is_not_retried():
     responses.get(URL, status=404)
-    with http.HttpSession(sleep=lambda _: pytest.fail("unexpected retry")) as session:
-        with pytest.raises(requests.HTTPError):
-            session.get(URL)
+    with (
+        http.HttpSession(sleep=lambda _: pytest.fail("unexpected retry")) as session,
+        pytest.raises(requests.HTTPError),
+    ):
+        session.get(URL)
     assert len(responses.calls) == 1
 
 
