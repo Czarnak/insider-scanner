@@ -45,14 +45,14 @@ def test_normalize_transaction_type(raw, expected):
     ("raw", "expected"),
     [
         ("", "Self"),
-        (" self ", "Self"),
+        (" self ", "SELF"),
         ("SP", "Spouse"),
-        ("spouse", "Spouse"),
+        ("spouse", "SPOUSE"),
         ("dc", "Dependent Child"),
-        ("Dependent Child", "Dependent Child"),
+        ("Dependent Child", "DEPENDENT CHILD"),
         ("JT", "Joint"),
-        ("Joint", "Joint"),
-        ("Other owner", "Other owner"),
+        ("Joint", "JOINT"),
+        ("Other owner", "OTHER OWNER"),
     ],
 )
 def test_normalize_owner(raw, expected):

@@ -18,13 +18,9 @@ _TX_TYPE_MAP: dict[str, CongressTransactionType] = {
 }
 _OWNER_MAP = {
     "": "Self",
-    "self": "Self",
     "sp": "Spouse",
-    "spouse": "Spouse",
     "dc": "Dependent Child",
-    "dependent child": "Dependent Child",
     "jt": "Joint",
-    "joint": "Joint",
 }
 _AMOUNT_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
 _OVER_AMOUNT_RE = re.compile(rf"\bover\s+\$({_AMOUNT_NUMBER})\b", re.IGNORECASE)
@@ -44,9 +40,9 @@ def normalize_tx_type(raw: str) -> CongressTransactionType:
 
 
 def normalize_owner(raw: str) -> str:
-    """Normalize owner codes and known labels while retaining unknown labels."""
+    """Normalize House owner codes, retaining its established uppercase fallback."""
     normalized = raw.strip()
-    return _OWNER_MAP.get(normalized.casefold(), normalized)
+    return _OWNER_MAP.get(normalized.casefold(), normalized.upper())
 
 
 def parse_amount_range(text: str) -> tuple[float, float]:
