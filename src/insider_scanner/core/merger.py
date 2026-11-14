@@ -1,99 +1,70 @@
-"""Deduplicate and merge insider trades from multiple sources.
-
-Merging strategy: trades from different sources are considered duplicates
-if they share the same ticker, insider name, trade date, and approximate
-share count (within 1%). When duplicates are found, the record with more
-data fields populated wins, with EDGAR URL preserved if available.
-"""
+"""Merge raw trades using exact shared identities and explicit update rules."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.trade_identity import sec_identity, us_trade_identity
 from insider_scanner.utils.config import SCAN_OUTPUTS_DIR, ensure_dirs
 from insider_scanner.utils.logging import get_logger
 
 log = get_logger("merger")
 
 
-def _dedup_key(trade: InsiderTrade) -> tuple:
-    """Generate a deduplication key for a trade."""
-    name = trade.insider_name.lower().strip()
-    ticker = trade.ticker.upper().strip()
-    td = str(trade.trade_date) if trade.trade_date else ""
-    # Round shares to nearest 10 for fuzzy matching
-    shares_bucket = round(trade.shares / 10) * 10 if trade.shares else 0
-    return (ticker, name, td, shares_bucket)
-
-
-_MERGED_METADATA_FIELDS = frozenset({"edgar_url", "is_congress", "congress_member"})
-
-
-def _primary_richness_score(trade: InsiderTrade) -> int:
-    """Score stable core fields used to select the primary duplicate."""
-    score = 0
-    if trade.company:
-        score += 1
-    if trade.insider_name:
-        score += 1
-    if trade.insider_title:
-        score += 1
-    if trade.trade_date:
-        score += 1
-    if trade.filing_date:
-        score += 1
-    if trade.shares:
-        score += 1
-    if trade.price:
-        score += 1
-    if trade.value:
-        score += 1
-    return score
-
-
-def _primary_rank(trade: InsiderTrade) -> tuple[int, int, str]:
-    stable_values = {
-        key: value
-        for key, value in trade.to_dict().items()
-        if key not in _MERGED_METADATA_FIELDS
-    }
-    return (
-        _primary_richness_score(trade),
-        # A reported zero carries more information than a compatibility zero
-        # whose missing flag is set. Keep this behind existing richness rules.
-        sum(
-            not missing
-            for missing in (
-                trade.shares_missing,
-                trade.price_missing,
-                trade.value_missing,
-                trade.shares_owned_after_missing,
-            )
-        ),
-        json.dumps(stable_values, sort_keys=True),
-    )
-
-
 def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
-    """Merge duplicate trades deterministically without mutating inputs.
+    """Merge observations without mutation or JSON ranking.
 
-    The SEC-native fields added in Session 5 (accession_number, sec_row_id,
-    form_type, cik_issuer, cik_insider, period_of_report, is_amendment,
-    is_derivative, document_sha256, transaction_code, acquired_disposed,
-    direct_or_indirect, sec_detail_json) are intentionally NOT field-coalesced
-    here: an identical re-ingest still SKIPs because the primary record is
-    returned unchanged, and field-level SEC coalescing is deferred to a later
-    session.
+    For the same SEC filing row, right is the authoritative incoming reparse,
+    including corrected empty values and missing flags. Scraper duplicates
+    coalesce each field independently with a stable typed maximum, so repeated
+    enrichment is associative and independent of input order. Numeric values
+    and their availability flags always travel together. Filing links and
+    Congress annotations survive as enrichment metadata: the SEC parser does
+    not classify Congress membership.
     """
-    left_rank = _primary_rank(left)
-    right_rank = _primary_rank(right)
-    primary = right if right_rank > left_rank else left
+    if left == right:
+        return replace(left)
+    if sec_identity(left) is not None and sec_identity(left) == sec_identity(right):
+        merged = replace(right)
+    else:
+        updates = {}
+        numeric_fields = ("shares", "price", "value", "shares_owned_after")
+        numeric_flags = {f"{field}_missing" for field in numeric_fields}
+        for field in fields(left):
+            name = field.name
+            if name in numeric_flags or name in {"accession_number", "sec_row_id"}:
+                continue
+            if name in numeric_fields:
+                flag = f"{name}_missing"
+                winner = max(
+                    (left, right),
+                    key=lambda trade: (
+                        not getattr(trade, flag),
+                        abs(getattr(trade, name)),
+                        getattr(trade, name),
+                    ),
+                )
+                updates[name] = getattr(winner, name)
+                updates[flag] = getattr(winner, flag)
+            else:
+                values = (getattr(left, name), getattr(right, name))
+                updates[name] = (
+                    max(value for value in values if value is not None)
+                    if any(value is not None for value in values)
+                    else None
+                )
+        # Partial evidence from separate scraper observations cannot be joined
+        # into an invented native identity. Select the entire pair together.
+        updates["accession_number"], updates["sec_row_id"] = max(
+            (trade.accession_number, trade.sec_row_id) for trade in (left, right)
+        )
+        merged = replace(left, **updates)
     edgar_urls = sorted(trade.edgar_url for trade in (left, right) if trade.edgar_url)
     congress_members = sorted(
         {
@@ -103,7 +74,7 @@ def merge_trade_pair(left: InsiderTrade, right: InsiderTrade) -> InsiderTrade:
         }
     )
     return replace(
-        primary,
+        merged,
         edgar_url=edgar_urls[-1] if edgar_urls else "",
         is_congress=left.is_congress or right.is_congress,
         congress_member=congress_members[-1] if congress_members else "",
@@ -129,7 +100,7 @@ def merge_trades(
 
     for trades in trade_lists:
         for trade in trades:
-            key = _dedup_key(trade)
+            key = us_trade_identity(trade)
             existing = seen.get(key)
 
             if existing is None:

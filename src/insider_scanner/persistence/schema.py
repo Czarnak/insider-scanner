@@ -392,3 +392,8 @@ for _missing_field in (
     us_trades.append_column(
         Column(_missing_field, Boolean, nullable=False, server_default=text("0"))
     )
+
+# Migration seven adds source row identity without changing the v1 snapshot.
+congress_trades.append_column(
+    Column("source_row_id", String(128), nullable=False, server_default="")
+)

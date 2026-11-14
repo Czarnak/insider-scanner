@@ -146,6 +146,8 @@ class CongressTrade:
     # Context
     comment: str = ""
     source: str = ""  # "house", "senate"
+    # Filing-local row identity preserves repeated transactions or account lots.
+    source_row_id: str = ""
 
     @property
     def direction(self) -> TransactionDirection:

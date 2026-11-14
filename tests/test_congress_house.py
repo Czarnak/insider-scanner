@@ -535,6 +535,7 @@ class TestTableParsing:
         ]
         col_map = _map_columns(headers)
 
+        assert col_map["id"] == 0
         assert col_map["owner"] == 1
         assert col_map["asset"] == 2
         assert col_map["transaction"] == 3
@@ -641,6 +642,7 @@ class TestParsePtrPdf:
                 transactions = mod.parse_ptr_pdf(b"fake pdf bytes")
 
         assert len(transactions) == 3
+        assert [tx["source_row_id"] for tx in transactions] == ["1", "2", "3"]
         assert transactions[0]["asset"] == "Apple Inc (AAPL) [ST]"
         assert transactions[0]["owner"] == "SP"
         assert transactions[0]["tx_type"] == "P"
@@ -702,6 +704,7 @@ class TestScrapeHouseTrades:
                 "notification_date": "01/16/2026",
                 "amount": "$50,001 - $100,000",
                 "cap_gains_over_200": "",
+                "source_row_id": "17",
             },
             {
                 "owner": "SP",
@@ -740,6 +743,7 @@ class TestScrapeHouseTrades:
         assert t.amount_high == 100000.0
         assert t.source == "house"
         assert t.doc_id == "20034001"
+        assert t.source_row_id == "17"
         assert "20034001" in t.source_url
         sale = trades[1]
         assert sale.ticker == "BRK.B"

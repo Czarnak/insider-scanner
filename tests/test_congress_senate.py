@@ -314,6 +314,7 @@ class TestParsePtrPage:
     def test_parse_standard_table(self):
         transactions = parse_ptr_page(PTR_PAGE_HTML)
         assert len(transactions) == 3
+        assert [tx["source_row_id"] for tx in transactions] == ["1", "2", "3"]
 
         # First: AAPL purchase
         tx1 = transactions[0]
@@ -696,6 +697,7 @@ class TestScrapeSentateTrades:
             )
 
         assert len(trades) == 3
+        assert [trade.source_row_id for trade in trades] == ["1", "2", "3"]
 
         t1 = trades[0]
         assert isinstance(t1, CongressTrade)

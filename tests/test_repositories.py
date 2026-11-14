@@ -185,7 +185,6 @@ def test_us_upsert_is_order_independent_for_three_enriching_duplicates(tmp_path)
             company="",
             insider_title="",
             filing_date=None,
-            price=0.0,
             value=0.0,
             edgar_url="https://sec.test/filing",
             is_congress=True,

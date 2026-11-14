@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from insider_scanner.core.congress_identity import MemberIdentity, name_matches
@@ -194,6 +194,28 @@ class UsTradeRepository:
             raise _wrap("latest US trade query", error) from error
 
 
+def _has_native_congress_observation(
+    connection: Connection, trade: CongressTrade
+) -> bool:
+    """An old export cannot add a lot already represented by known filing rows.
+
+    Matching more than one native lot is expected. Without a source row ID the
+    old observation cannot identify which one to update, so retain those rows.
+    """
+    key = congress_canonical_key(trade)
+    candidates = connection.execute(
+        select(congress_trades).where(
+            func.trim(congress_trades.c.doc_id) == trade.doc_id.strip(),
+            congress_trades.c.source == trade.source,
+            congress_trades.c.source_row_id != "",
+        )
+    ).mappings()
+    return any(
+        congress_canonical_key(replace(congress_from_row(row), source_row_id="")) == key
+        for row in candidates
+    )
+
+
 class CongressTradeRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -213,7 +235,31 @@ class CongressTradeRepository:
                         .mappings()
                         .one_or_none()
                     )
+                    if existing_row is None and trade.source_row_id and trade.doc_id:
+                        # Promote the one retained legacy observation when its
+                        # filing row is recovered. Later identical lots have
+                        # distinct native keys and are inserted independently.
+                        legacy_key = congress_canonical_key(
+                            replace(trade, source_row_id="")
+                        )
+                        existing_row = (
+                            connection.execute(
+                                select(congress_trades).where(
+                                    congress_trades.c.canonical_key == legacy_key,
+                                    congress_trades.c.source_row_id == "",
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
                     if existing_row is None:
+                        if (
+                            not trade.source_row_id
+                            and trade.doc_id
+                            and _has_native_congress_observation(connection, trade)
+                        ):
+                            result += UpsertResult(skipped=1)
+                            continue
                         connection.execute(
                             insert(congress_trades).values(congress_to_values(trade))
                         )
@@ -231,7 +277,7 @@ class CongressTradeRepository:
                     values["updated_at"] = datetime.now(UTC)
                     connection.execute(
                         congress_trades.update()
-                        .where(congress_trades.c.canonical_key == key)
+                        .where(congress_trades.c.id == existing_row["id"])
                         .values(**values)
                     )
                     result += UpsertResult(updated=1)

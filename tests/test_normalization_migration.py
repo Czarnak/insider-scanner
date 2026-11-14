@@ -10,10 +10,9 @@ from sqlalchemy import MetaData, Table, insert, select
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.coverage import CoverageRepository, DateInterval
-from insider_scanner.persistence.mappings import us_to_values
+from insider_scanner.persistence.mappings import congress_to_values, us_to_values
 from insider_scanner.persistence.migrations import MIGRATIONS
 from insider_scanner.persistence.refresh import RefreshStateRepository
-from insider_scanner.persistence.repositories import CongressTradeRepository
 from insider_scanner.persistence.schema import congress_trades, us_trades
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.us import UsScanService
@@ -155,7 +154,17 @@ def test_upgrade_repairs_only_missing_amount_bounds_without_changing_identity(
         amount_low=initial[0],
         amount_high=initial[1],
     )
-    CongressTradeRepository(engine).upsert([trade])
+    table = Table("congress_trades", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(table).values(
+                **{
+                    field: value
+                    for field, value in congress_to_values(trade).items()
+                    if field in table.c
+                }
+            )
+        )
     before = _rows(engine, congress_trades)[0]
 
     bootstrap_database(engine, migrations=MIGRATIONS[:4])
