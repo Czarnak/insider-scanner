@@ -171,14 +171,18 @@ def cmd_resolve_cik(
 
 def cmd_init_congress(
     args: argparse.Namespace,
-    _services: ApplicationServices,
+    _services: ApplicationServices | None,
 ) -> None:
     """Initialize the default Congress member list."""
-    from insider_scanner.core.senate import init_default_congress_file
-    from insider_scanner.utils.config import CONGRESS_FILE
+    from insider_scanner.utils.config import CONGRESS_FILE, initialize_congress_seed
 
-    init_default_congress_file()
-    print(f"Congress member list created at: {CONGRESS_FILE}")
+    status, backup = initialize_congress_seed(force=args.force)
+    if status == "exists":
+        print(f"Congress member list already exists at: {CONGRESS_FILE}")
+    else:
+        print(f"Congress member list {status} at: {CONGRESS_FILE}")
+    if backup is not None:
+        print(f"Previous member list backed up at: {backup}")
 
 
 def cmd_eu_scan(
@@ -631,6 +635,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     # init-congress
     p_init = sub.add_parser("init-congress", help="Create default congress member list")
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset from the packaged seed after a backup",
+    )
     p_init.set_defaults(func=cmd_init_congress)
 
     # eu-scan
@@ -835,6 +844,14 @@ def run(
     parser = build_parser()
     args = parser.parse_args(argv)
     services: ApplicationServices | None = None
+    if args.func is cmd_init_congress:
+        try:
+            cmd_init_congress(args, None)
+        except OSError:
+            log.exception("Congress member list initialization failed")
+            print("Could not initialize Congress member list.", file=sys.stderr)
+            return 1
+        return 0
     try:
         ensure_dirs()
         services = service_factory()
