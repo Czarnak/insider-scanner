@@ -49,6 +49,8 @@ class ComparisonRow:
     accession_number: str
     sec_row_id: str
     edgar_url: str
+    shares_missing: bool = False
+    value_missing: bool = False
 
     @classmethod
     def from_trade(cls, trade: InsiderTrade) -> ComparisonRow:
@@ -64,6 +66,8 @@ class ComparisonRow:
             accession_number=trade.accession_number,
             sec_row_id=trade.sec_row_id,
             edgar_url=trade.edgar_url,
+            shares_missing=trade.shares_missing,
+            value_missing=trade.value_missing,
         )
 
 
@@ -221,8 +225,8 @@ def _fingerprint(row: ComparisonRow) -> tuple[str, str, str, str, str, str, str]
         row.filing_date.isoformat() if row.filing_date else "",
         row.trade_date.isoformat() if row.trade_date else "",
         row.trade_type.strip().casefold(),
-        f"{row.shares:.6f}",
-        f"{row.value:.2f}",
+        "" if row.shares_missing else f"{row.shares:.6f}",
+        "" if row.value_missing else f"{row.value:.2f}",
     )
 
 
@@ -235,7 +239,7 @@ def _row_sort_key(row: ComparisonRow) -> tuple[str, str, str, str, str, str]:
         trade_date,
         row.insider_name.casefold(),
         row.trade_type.casefold(),
-        f"{row.shares:.6f}",
+        "" if row.shares_missing else f"{row.shares:.6f}",
     )
 
 
@@ -270,11 +274,16 @@ def _render_unmatched_rows(label: str, rows: tuple[ComparisonRow, ...]) -> list[
     return [
         (
             f"  - {label}: {row.filing_date or '?'} {row.trade_date or '?'} "
-            f"{row.insider_name} {row.trade_type} shares={row.shares:g} "
-            f"value={row.value:g}"
+            f"{row.insider_name} {row.trade_type} "
+            f"shares={_reported_number(row.shares, row.shares_missing)} "
+            f"value={_reported_number(row.value, row.value_missing)}"
         )
         for row in rows
     ]
+
+
+def _reported_number(value: float, missing: bool) -> str:
+    return "N/A" if missing else f"{value:g}"
 
 
 def _report_to_jsonable(report: SecComparisonReport) -> dict[str, object]:

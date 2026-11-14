@@ -195,3 +195,59 @@ def test_render_report_rejects_unknown_format(persistence):
 
     with pytest.raises(ValueError, match="unknown comparison report format"):
         render_report(report, "html")
+
+
+@pytest.mark.parametrize("field", ["shares", "value"])
+def test_comparison_distinguishes_unreported_numbers_from_real_zero(persistence, field):
+    persistence.us_trades.upsert(
+        [
+            _trade(**{field: 0.0, f"{field}_missing": True}),
+            _trade(
+                source="secform4",
+                accession_number="",
+                sec_row_id="",
+                edgar_url="",
+                **{field: 0.0},
+            ),
+        ]
+    )
+    report = SecComparisonService(persistence).compare(
+        targets=(SecComparisonTarget("AAPL", date(2026, 1, 7), date(2026, 1, 7)),),
+        legacy_sources=("secform4",),
+    )
+
+    summary = report.results[0].summary_for("secform4")
+    assert summary.matched_count == 0
+    assert len(summary.sec_only) == len(summary.legacy_only) == 1
+    for report_format in ("text", "markdown"):
+        rendered = render_report(report, report_format)
+        assert f"{field}=N/A" in rendered
+        assert f"{field}=0" in rendered
+    summary_json = json.loads(render_report(report, "json"))["results"][0]["summaries"][
+        0
+    ]
+    assert summary_json["sec_only"][0][f"{field}_missing"] is True
+    assert summary_json["legacy_only"][0][f"{field}_missing"] is False
+
+
+def test_comparison_still_matches_reported_zero_numbers(persistence):
+    persistence.us_trades.upsert(
+        [
+            _trade(shares=0.0, value=0.0),
+            _trade(
+                source="secform4",
+                shares=0.0,
+                value=0.0,
+                accession_number="",
+                sec_row_id="",
+                edgar_url="",
+            ),
+        ]
+    )
+    report = SecComparisonService(persistence).compare(
+        targets=(SecComparisonTarget("AAPL", date(2026, 1, 7), date(2026, 1, 7)),),
+        legacy_sources=("secform4",),
+    )
+    summary = report.results[0].summary_for("secform4")
+    assert summary.matched_count == 1
+    assert summary.sec_only == summary.legacy_only == ()
