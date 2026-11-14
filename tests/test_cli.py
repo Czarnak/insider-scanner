@@ -522,6 +522,25 @@ class TestCmdSecCompare:
         assert "legacy_sources must not include sec_edgar" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("unsupported", [0, 2])
+@pytest.mark.parametrize("mode", ["daily", "backfill"])
+def test_sec_summary_reports_unsupported_separately_from_failures(
+    capsys, mode, unsupported
+):
+    if mode == "daily":
+        cli._print_sec_summary(_sec_summary(unsupported=unsupported, failures=0))
+    else:
+        from insider_scanner.services.sec_backfill import SecBackfillSummary
+
+        cli._print_backfill_summary(
+            SecBackfillSummary(4, 2, 2, 0, 0, 0, 0, 0, unsupported=unsupported)
+        )
+
+    out = capsys.readouterr().out
+    assert f"unsupported={unsupported}" in out
+    assert "failures:     0" in out
+
+
 class TestCmdSecDaily:
     def test_builds_service_and_ingests_requested_date(self, monkeypatch, capsys):
         monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())

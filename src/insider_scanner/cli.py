@@ -425,7 +425,7 @@ def _print_sec_summary(summary: SecDailyIngestionSummary) -> None:
     )
     print(
         f"  filings:      discovered={summary.filings_discovered} "
-        f"parsed={summary.filings_parsed}"
+        f"parsed={summary.filings_parsed} unsupported={summary.unsupported}"
     )
     print(
         f"  transactions: inserted={summary.transactions_inserted} "
@@ -482,7 +482,7 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
 def _print_backfill_summary(summary: SecBackfillSummary) -> None:
     print(
         f"SEC backfill: discovered={summary.filings_discovered} "
-        f"parsed={summary.filings_parsed}"
+        f"parsed={summary.filings_parsed} unsupported={summary.unsupported}"
     )
     print(
         f"  transactions: inserted={summary.transactions_inserted} "
