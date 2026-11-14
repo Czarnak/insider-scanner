@@ -163,6 +163,9 @@ insider-scanner-cli resolve-cik AAPL
 # Initialize default Congress member list
 insider-scanner-cli init-congress
 
+# Restore the packaged Congress list, backing up the current file first
+insider-scanner-cli init-congress --force
+
 # Congress-only filter
 insider-scanner-cli scan AAPL --congress-only
 
@@ -170,6 +173,33 @@ insider-scanner-cli scan AAPL --congress-only
 insider-scanner-cli import-legacy ./old-exports
 insider-scanner-cli import-legacy ./large.json --max-file-size-mib 100
 ```
+
+Congress searches resolve seed names and disclosure spellings through the member's
+structured first/last name and stable member ID. A unique surname can be searched;
+Congress flagging requires a first name or initial as well. Existing stored
+disclosure names remain readable, including honorifics, middle names and suffixes.
+
+The authoritative bundled member list is
+`src/insider_scanner/resources/seeds/congress_members.json`. Startup copies it only
+when the runtime list is missing, preserving local edits. `init-congress` reports
+an existing list; `--force` installs the bundled version and prints the path of a
+unique backup of the previous file.
+
+Refresh the runtime list from the repository with
+`uv run python scripts/update_congress.py`. Use `--dry-run` to preview,
+`--output <path>` for a separate file, or `--update-seed` to refresh the bundled
+list for a release. A federal-only refresh preserves existing state legislators.
+Failed, incomplete or suspiciously reduced snapshots leave the destination intact;
+successful writes replace it atomically. Committee enrichment is required by
+default; `--no-committees` explicitly skips it.
+
+For state legislators, set `OPENSTATES_API_KEY` in the environment and add
+`--include-state`. The updater requests each state and chamber, spaces requests
+for the free-tier rate limit, and bounds retries for HTTP 429 responses. A full
+state refresh can take several minutes and remains subject to the API's daily
+quota. The compatibility wrapper `scripts/api_key.py` uses the current Python
+interpreter from any working directory, prefers the environment key, and supports
+the existing ignored `scripts/api_key.txt` as a fallback.
 
 ### European scan CLI
 
