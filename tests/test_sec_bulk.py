@@ -119,16 +119,16 @@ def test_bulk_filing_metadata_is_frozen_and_slotted() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_fixture_yields_exactly_four_ownership_records() -> None:
+def test_fixture_yields_exactly_three_transaction_records() -> None:
     results = list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
-    assert len(results) == 4
+    assert len(results) == 3
     for r in results:
         assert r.form_type in OWNERSHIP_FORMS
-        assert r.form_type not in {"8-K", "10-K"}
+        assert r.form_type not in {"3", "3/A", "8-K", "10-K"}
 
 
 # ---------------------------------------------------------------------------
-# 3. Each of the 4 expected records is present with all fields exact
+# 3. Each expected transaction record is present with all fields exact
 # ---------------------------------------------------------------------------
 
 
@@ -170,21 +170,45 @@ def test_fixture_record_form4_tesla_main() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Continuation file: Form 3 record is present, CIK taken from filename
+# 4. Continuation files exclude initial holdings reports
 # ---------------------------------------------------------------------------
 
 
-def test_fixture_record_form3_apple_continuation() -> None:
-    """Continuation file (CIK0000320193-submissions-001.json) is parsed; CIK
-    comes from the filename, not from the JSON body."""
+def test_fixture_form3_apple_continuation_is_excluded() -> None:
     by_acc = _by_accession(
         list(iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_DIR))
     )
-    r = by_acc["0000320193-24-000010"]
-    assert r.cik == "0000320193"
-    assert r.form_type == "3"
-    assert r.filing_date == date(2024, 5, 1)
-    assert r.primary_document == "xslF345X05/form3.xml"
+    assert "0000320193-24-000010" not in by_acc
+
+
+def test_continuation_skips_initial_holdings_and_retains_form5(tmp_path: Path) -> None:
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000320193-submissions-001.json": _cik_json_cont(
+                [
+                    "0000320193-24-000010",
+                    "0000320193-24-000011",
+                    "0000320193-24-000012",
+                ],
+                ["2024-05-01"] * 3,
+                ["3", "3/A", "5"],
+                ["form3.xml", "form3a.xml", "form5.xml"],
+            )
+        },
+    )
+
+    results = list(iter_ownership_filings(archive, cache_root=tmp_path))
+
+    assert results == [
+        BulkFilingMetadata(
+            cik="0000320193",
+            form_type="5",
+            filing_date=date(2024, 5, 1),
+            accession_number="0000320193-24-000012",
+            primary_document="form5.xml",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
