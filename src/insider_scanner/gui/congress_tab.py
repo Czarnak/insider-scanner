@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.congress_identity import identity_for, name_matches
 from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.logging import get_logger
@@ -116,6 +117,15 @@ def congress_trades_to_dataframe(trades: list) -> pd.DataFrame:
     return pd.DataFrame([t.to_dict() for t in trades])
 
 
+def _sectors_for(official: str, mapping: dict[str, list[str]]) -> list[str]:
+    if official in mapping:
+        return mapping[official]
+    matches = [
+        sectors for name, sectors in mapping.items() if name_matches(name, official)
+    ]
+    return matches[0] if len(matches) == 1 else ["Other"]
+
+
 def filter_congress_trades(
     trades: list,
     *,
@@ -159,9 +169,7 @@ def filter_congress_trades(
 
     if sector and sector != "All" and member_sectors:
         result = [
-            t
-            for t in result
-            if sector in member_sectors.get(t.official_name, ["Other"])
+            t for t in result if sector in _sectors_for(t.official_name, member_sectors)
         ]
 
     return result
@@ -481,9 +489,11 @@ class CongressTab(QWidget):
             f"Scanning {'all officials' if selected == 'All' else selected}..."
         )
 
+        member = selected if selected == "All" else identity_for(selected)
+
         def work():
             return self._service.scan(
-                selected,
+                member,
                 sources=sources,
                 start_date=sd,
                 end_date=ed,
@@ -588,7 +598,7 @@ class CongressTab(QWidget):
         trades = self._filtered_trades or self._trades
         if row < len(trades):
             trade = trades[row]
-            sectors = self._member_sectors.get(trade.official_name, ["Other"])
+            sectors = _sectors_for(trade.official_name, self._member_sectors)
             detail = (
                 f"Official: {trade.official_name}  |  "
                 f"Chamber: {trade.chamber}  |  "
