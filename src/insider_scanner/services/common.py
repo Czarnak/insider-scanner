@@ -130,6 +130,9 @@ def bounded_scan_gaps(
 ) -> tuple[DateInterval, ...]:
     """Reuse history, but refresh recent filing dates after the bounded TTL."""
     if not use_cache:
+        # A failed forced refresh must remain retryable on the next normal scan.
+        persistence.refresh.clear(domain, identifier, source)
+        persistence.coverage.remove(domain, identifier, source, requested)
         return (requested,)
     recent = recent_filing_interval(requested, now)
     if recent is None:

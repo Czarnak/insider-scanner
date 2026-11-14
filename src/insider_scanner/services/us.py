@@ -200,6 +200,8 @@ class UsScanService:
             refreshed_at = self._persistence.refresh.get("us", "*", source, mode)
             if use_cache and is_fresh(refreshed_at, now=now, ttl=self._cache_ttl):
                 continue
+            if not use_cache:
+                self._persistence.refresh.clear("us", "*", source)
             try:
                 trades = as_fetch_result(
                     self._latest_adapters[source](

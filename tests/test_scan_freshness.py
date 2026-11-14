@@ -180,3 +180,42 @@ def test_default_ticker_scan_rejects_latest_only_source(persistence):
     )
     with pytest.raises(ValueError, match="unknown source"):
         service.scan("AAPL", sources=("latest_only",), start_date=None, end_date=None)
+
+
+@pytest.mark.parametrize("domain", ["us", "congress"])
+@pytest.mark.parametrize("recent", [False, True])
+def test_incomplete_forced_scan_invalidates_prior_completion(
+    persistence, domain, recent
+):
+    now = datetime(2026, 6, 8, 9, tzinfo=UTC)
+    day = now.date() if recent else date(2025, 1, 1)
+    calls = []
+
+    def fetch(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            return FetchResult(issues=[FetchIssue("result_limit")])
+        return []
+
+    service, identifier, source = _service(persistence, domain, fetch, lambda: now)
+    kwargs = {"sources": (source,), "start_date": day, "end_date": day}
+    assert service.scan(identifier, **kwargs).complete
+    assert not service.scan(identifier, **kwargs, use_cache=False).complete
+    assert service.scan(identifier, **kwargs).complete
+    assert len(calls) == 3
+
+
+def test_incomplete_forced_latest_invalidates_all_capacity_modes(persistence):
+    calls = []
+
+    def fetch(*args):
+        calls.append(args)
+        if len(calls) == 2:
+            return FetchResult(issues=[FetchIssue("result_limit")])
+        return []
+
+    service = UsScanService(persistence, latest_adapters={"openinsider": fetch})
+    assert service.latest(count=500).complete
+    assert not service.latest(count=10, use_cache=False).complete
+    assert service.latest(count=500).complete
+    assert len(calls) == 3

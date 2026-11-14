@@ -176,7 +176,7 @@ class CoverageRepository:
         try:
             with immediate_transaction(self._engine) as connection:
                 rows = connection.execute(select(scan_coverage).where(affected)).all()
-                fragments = []
+                fragments: list[dict[str, object]] = []
                 for row in rows:
                     retained = []
                     if row.start_date < interval.start:
