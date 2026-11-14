@@ -12,24 +12,20 @@ from datetime import date
 from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QHeaderView,
     QLabel,
     QProgressBar,
-    QTableView,
     QVBoxLayout,
     QWidget,
 )
 
+from insider_scanner.core.trade_types import TransactionDirection, classify_direction
 from insider_scanner.gui.feed_page import FeedTableModel
+from insider_scanner.gui.trade_display import make_feed_table
 from insider_scanner.persistence.feed import FeedMarket, FeedRecord
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker
 
 log = get_logger("gui.entity_pages")
-
-_BUY_TERMS: frozenset[str] = frozenset({"buy", "purchase"})
-_SELL_TERMS: frozenset[str] = frozenset({"sell", "sale"})
 
 
 def _latest_date(records: tuple[FeedRecord, ...]) -> date | None:
@@ -45,8 +41,9 @@ def _latest_date(records: tuple[FeedRecord, ...]) -> date | None:
 def _build_summary(records: tuple[FeedRecord, ...]) -> str:
     """Build summary line: "{n} transactions · {buys} buys · {sells} sells · latest {date}"."""
     n = len(records)
-    buys = sum(1 for r in records if r.transaction_type.casefold() in _BUY_TERMS)
-    sells = sum(1 for r in records if r.transaction_type.casefold() in _SELL_TERMS)
+    directions = [classify_direction(r.transaction_type) for r in records]
+    buys = directions.count(TransactionDirection.BUY)
+    sells = directions.count(TransactionDirection.SELL)
     latest = _latest_date(records)
     date_str = latest.isoformat() if latest is not None else "—"
     return f"{n} transactions · {buys} buys · {sells} sells · latest {date_str}"
@@ -113,22 +110,7 @@ class EntityResearchPage(QWidget):
         layout.addWidget(self.state_label)
 
         self.model = FeedTableModel(self)
-        self.table = QTableView()
-        self.table.setAccessibleName("Entity transaction history")
-        self.table.setModel(self.model)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setAlternatingRowColors(True)
-        self.table.setWordWrap(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        for column, width in enumerate(
-            (70, 90, 170, 100, 150, 100, 90, 90, 90, 90, 120, 80)
-        ):
-            self.table.setColumnWidth(column, width)
+        self.table = make_feed_table(self.model, "Entity transaction history")
         layout.addWidget(self.table, stretch=1)
 
     # ------------------------------------------------------------------

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from insider_scanner.core.trade_types import TransactionDirection, classify_direction
+
 if TYPE_CHECKING:
     from PySide6.QtCore import Qt
 
@@ -149,10 +151,6 @@ def column_is_monospace(col_name: str) -> bool:
     return _match_stem(col, NUMERIC_COLS) or _match_stem(col, IDENTIFIER_COLS)
 
 
-_BUY_TYPES: frozenset[str] = frozenset({"Buy", "Purchase", "Exercise"})
-_SELL_TYPES: frozenset[str] = frozenset({"Sell", "Sale"})
-
-
 def cell_foreground(
     col_name: str,
     value: Any,
@@ -184,9 +182,10 @@ def cell_foreground(
 
     trade_type_str = str(trade_type) if trade_type is not None else ""
 
-    if trade_type_str in _BUY_TYPES:
+    direction = classify_direction(trade_type_str)
+    if direction == TransactionDirection.BUY:
         return palette.purchase
-    if trade_type_str in _SELL_TYPES:
+    if direction == TransactionDirection.SELL:
         return palette.sale
 
     return None
