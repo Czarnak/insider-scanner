@@ -7,13 +7,13 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.fetch_outcome import FetchStatus
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.services import (
     CongressScanService,
     EuropeanScanService,
-    ScanError,
     UsScanService,
     open_persistence,
 )
@@ -355,20 +355,21 @@ def test_us_coverage_is_per_source_and_empty_success_closes_gap(persistence):
     )
 
 
-def test_us_exception_wraps_context_and_leaves_gap_uncovered(persistence):
+def test_us_exception_reports_context_and_leaves_gap_uncovered(persistence):
     adapter = BoundedAdapter(lambda *_: [])
     adapter.error = RuntimeError("source down")
     service = UsScanService(persistence, adapters={"secform4": adapter})
 
-    with pytest.raises(ScanError, match="secform4.*2026-03-01.*2026-03-02") as exc:
-        service.scan(
-            "AAPL",
-            sources=("secform4",),
-            start_date=date(2026, 3, 1),
-            end_date=date(2026, 3, 2),
-        )
-
-    assert isinstance(exc.value.__cause__, RuntimeError)
+    result = service.scan(
+        "AAPL",
+        sources=("secform4",),
+        start_date=date(2026, 3, 1),
+        end_date=date(2026, 3, 2),
+    )
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues[0].source == "secform4"
+    assert result.issues[0].identifier == "AAPL 2026-03-01..2026-03-02"
+    assert result.issues[0].reason == "RuntimeError"
     assert persistence.coverage.get("us", "AAPL", "secform4") == ()
 
 
@@ -1166,7 +1167,7 @@ def test_latest_eu_bounded_fr_uses_full_trade_date_adapter(persistence):
     assert persistence.coverage.get("eu", "*", "amf") == ()
 
 
-def test_scan_error_from_latest_preserves_source_and_cause(persistence):
+def test_failed_latest_reports_source_and_does_not_record_freshness(persistence):
     latest = LatestAdapter([])
     latest.error = OSError("offline")
     service = UsScanService(
@@ -1175,10 +1176,11 @@ def test_scan_error_from_latest_preserves_source_and_cause(persistence):
         latest_adapters={"openinsider": latest},
     )
 
-    with pytest.raises(ScanError, match="openinsider.*latest") as exc:
-        service.latest(count=10)
-
-    assert isinstance(exc.value.__cause__, OSError)
+    result = service.latest(count=10)
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues[0].source == "openinsider"
+    assert result.issues[0].identifier == "latest"
+    assert result.issues[0].reason == "OSError"
     assert (
         persistence.refresh.get(
             "us", "*", "openinsider", f"latest:{LATEST_OVERLAP_COUNT}"

@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 from insider_scanner import cli
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.european import EuropeanScanService
@@ -116,6 +117,47 @@ def test_latest_uses_us_service_with_count_dates_and_cache(capsys):
         )
     ]
     assert "Latest 0 insider trades" in capsys.readouterr().out
+
+
+def test_scan_displays_successful_rows_and_warns_about_incomplete_sources(capsys):
+    trade = InsiderTrade(ticker="AAPL", insider_name="Jane", trade_type="Buy")
+    result = FetchResult(
+        [trade],
+        issues=[FetchIssue("request_failed", source="openinsider", identifier="AAPL")],
+    )
+    cli.cmd_scan(
+        Namespace(
+            ticker="AAPL",
+            since=None,
+            until=None,
+            no_cache=False,
+            type=None,
+            min_value=None,
+            congress_only=False,
+            save=False,
+        ),
+        _services(us=FakeUsService(result)),
+    )
+
+    captured = capsys.readouterr()
+    assert "Found 1 trades for AAPL" in captured.out
+    assert "Jane" in captured.out
+    assert (
+        "Warning: Incomplete results (openinsider AAPL: request failed)" in captured.err
+    )
+
+
+def test_latest_failed_empty_warns_but_successful_empty_does_not(capsys):
+    args = Namespace(count=25, since=None, until=None, no_cache=False, save=False)
+    failed = FetchResult(issues=[FetchIssue("request_failed", source="openinsider")])
+    cli.cmd_latest(args, _services(us=FakeUsService(failed)))
+
+    captured = capsys.readouterr()
+    assert "Latest 0 insider trades" in captured.out
+    assert "Incomplete results (openinsider: request failed)" in captured.err
+
+    cli.cmd_latest(args, _services(us=FakeUsService(FetchResult())))
+    assert capsys.readouterr().err == ""
 
 
 def test_eu_scan_uses_service_for_each_watchlist_identifier(monkeypatch, capsys):

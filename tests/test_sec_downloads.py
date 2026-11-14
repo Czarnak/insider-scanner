@@ -17,6 +17,7 @@ from insider_scanner.persistence.json_state import atomic_write_json
 from insider_scanner.services.sec_downloads import (
     SecDownloadProgress,
     SecDownloadReport,
+    SecFilingStatus,
     download_filings_in_range,
 )
 from tests.sec_stubs import (
@@ -60,6 +61,76 @@ def test_fresh_cache_hits_are_counted_as_skipped(tmp_path: Path) -> None:
     assert report.skipped == 2
     assert report.downloaded == 0
     assert report.parsed == 2
+
+
+def test_cache_promotion_failure_keeps_parsed_sink_results(tmp_path, monkeypatch):
+    from insider_scanner.core.sec_downloader import SecDownloadIoError
+
+    seen = []
+
+    def fail_promotion(*args, **kwargs):
+        assert seen  # Persistence is attempted before the optional cache write.
+        raise SecDownloadIoError()
+
+    monkeypatch.setattr(
+        "insider_scanner.services.sec_downloads.promote_validated_filing",
+        fail_promotion,
+    )
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        on_filing_parsed=lambda row, filing: seen.append(row),
+    )
+    assert len(seen) == 2
+    assert report.parsed == 2
+    assert report.failed == 0
+    assert report.dates_completed == 1
+
+
+def test_unsupported_legacy_document_is_a_distinct_non_quarantined_skip(tmp_path):
+    legacy = b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper ownership filing</TEXT>\n</DOCUMENT>"
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(make_transport(filing_bytes=legacy)),
+        cache_root=tmp_path,
+        retain_failed_downloads=True,
+    )
+    assert report.unsupported == 2
+    assert report.failed == 0
+    assert report.dates_completed == 1
+    assert all(item.status is SecFilingStatus.UNSUPPORTED for item in report.outcomes)
+    assert not (tmp_path / "diagnostics").exists()
+
+
+@pytest.mark.parametrize("status", [404, 503])
+def test_fetch_outcome_distinguishes_permanent_and_retryable_failure(tmp_path, status):
+    from tests.sec_stubs import StubResponse
+
+    transport = make_transport()
+    original_get = transport.get.side_effect
+    transport.get.side_effect = lambda url, **kwargs: (
+        original_get(url, **kwargs)
+        if url.endswith(".idx")
+        else StubResponse(status_code=status)
+    )
+    report = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=make_client(transport),
+        cache_root=tmp_path,
+    )
+    expected = (
+        SecFilingStatus.PERMANENT_FAILURE
+        if status == 404
+        else SecFilingStatus.RETRYABLE_FAILURE
+    )
+    assert report.failed == 2
+    assert all(item.status is expected for item in report.outcomes)
+    assert all(item.accession for item in report.outcomes)
+    assert report.dates_completed == (1 if status == 404 else 0)
 
 
 def test_absent_daily_index_is_an_empty_day_not_a_failure(tmp_path: Path) -> None:
@@ -170,6 +241,42 @@ def test_resume_skips_completed_dates_and_restores_counters(tmp_path: Path) -> N
     assert not any("20260615" in url for url in resume_urls)
     assert any("20260616" in url for url in resume_urls)
     assert not checkpoint.exists()  # deleted on clean completion
+
+
+def test_resume_restores_unsupported_count_in_report_and_progress(tmp_path):
+    checkpoint = tmp_path / "checkpoint.json"
+    cancel = _CancelAfterDates(1)
+    legacy = (
+        b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
+    )
+    snapshots = []
+
+    def progress(snapshot):
+        snapshots.append(snapshot)
+        cancel.completed = snapshot.dates_completed
+
+    first = download_filings_in_range(
+        start_date=date(2026, 6, 15),
+        end_date=date(2026, 6, 16),
+        client=make_client(make_transport(filing_bytes=legacy)),
+        cache_root=tmp_path,
+        checkpoint_path=checkpoint,
+        cancelled=cancel,
+        on_progress=progress,
+    )
+    assert first.cancelled
+    assert first.unsupported == snapshots[0].unsupported == 2
+    resumed = download_filings_in_range(
+        start_date=date(2026, 6, 15),
+        end_date=date(2026, 6, 16),
+        client=make_client(make_transport()),
+        cache_root=tmp_path,
+        checkpoint_path=checkpoint,
+        on_progress=snapshots.append,
+    )
+    assert resumed.dates_completed == 2
+    assert resumed.unsupported == snapshots[-1].unsupported == 2
+    assert resumed.parsed == 2
 
 
 def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
@@ -303,6 +410,8 @@ def test_continue_on_error_false_halts_on_first_failed_date(tmp_path: Path) -> N
 
     assert report.dates_total == 2
     assert report.dates_completed == 0
+    assert report.stopped_on_error
+    assert not report.cancelled
     assert not checkpoint.exists()  # no date completed → nothing checkpointed
 
 
@@ -452,7 +561,7 @@ def test_process_filing_row_is_public_and_parses_one_filing(tmp_path):
         counters=counters,
         on_filing_parsed=lambda r, f: seen.append((r, f)),
     )
-    assert ok is True
+    assert ok.status is SecFilingStatus.SUCCESS
     assert counters["parsed"] == 1
     assert len(seen) == 1
 

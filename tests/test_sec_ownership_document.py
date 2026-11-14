@@ -296,6 +296,76 @@ ACCESSION NUMBER:\t\t0001234567-26-000010
     assert result.document_type == "4"
 
 
+@pytest.mark.parametrize(
+    "legacy_body",
+    [
+        "FORM 4\nStatement of Changes in Beneficial Ownership",
+        "<html><body>FORM 4</body></html>",
+    ],
+)
+def test_legacy_ownership_block_is_unsupported_without_xml_parsing(
+    legacy_body: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from insider_scanner.core import sec_ownership_document as module
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("legacy ownership filings must not enter the XML parser")
+
+    monkeypatch.setattr(module, "guard_xml_pre_parse", fail_if_called)
+    monkeypatch.setattr(module, "hardened_xml_parser", fail_if_called)
+    content = f"<SEC-DOCUMENT><DOCUMENT><TYPE>4\n<TEXT>{legacy_body}</TEXT></DOCUMENT></SEC-DOCUMENT>"
+    with pytest.raises(
+        module.UnsupportedOwnershipDocumentError, match="machine-readable XML"
+    ):
+        module.extract_ownership_document(content)
+
+
+def test_unwrapped_ownership_xml_with_dtd_still_rejects_security_violation() -> None:
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    body = '<!DOCTYPE ownershipDocument [<!ENTITY a "b">]><ownershipDocument/>'
+    content = f"<SEC-DOCUMENT><DOCUMENT><TYPE>4\n<TEXT>{body}</TEXT></DOCUMENT></SEC-DOCUMENT>"
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(content)
+
+
+def test_unwrapped_ownership_xml_declaration_is_supported() -> None:
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    body = '<?xml version="1.0"?><ownershipDocument><documentType>4</documentType></ownershipDocument>'
+    content = f"<SEC-DOCUMENT><DOCUMENT><TYPE>4\n<TEXT>{body}</TEXT></DOCUMENT></SEC-DOCUMENT>"
+    assert extract_ownership_document(content).document_type == "4"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<!-- filing comment --><ownershipDocument><documentType>4</documentType></ownershipDocument>",
+        "<?filing machine-readable?><ownershipDocument><documentType>4</documentType></ownershipDocument>",
+        '<o:ownershipDocument xmlns:o="urn:test"><documentType>4</documentType></o:ownershipDocument>',
+        '\ufeff<!-- filing comment --><?filing machine-readable?>\n<o:ownershipDocument xmlns:o="urn:test"><documentType>4</documentType></o:ownershipDocument>',
+    ],
+)
+def test_unwrapped_xml_accepts_preamble_and_qualified_ownership_root(body):
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    content = f"<SEC-DOCUMENT><DOCUMENT><TYPE>4\n<TEXT>{body}</TEXT></DOCUMENT></SEC-DOCUMENT>"
+    document = extract_ownership_document(content)
+    assert document.document_type == "4"
+    assert document.xml_text == body
+
+
+def test_unwrapped_xml_with_preamble_still_applies_dtd_guard():
+    from insider_scanner.core._sec_xml import SecXmlSecurityError
+    from insider_scanner.core.sec_ownership_document import extract_ownership_document
+
+    body = '<!-- comment --><?filing test?><!DOCTYPE ownershipDocument [<!ENTITY a "b">]><ownershipDocument/>'
+    content = f"<SEC-DOCUMENT><DOCUMENT><TYPE>4\n<TEXT>{body}</TEXT></DOCUMENT></SEC-DOCUMENT>"
+    with pytest.raises(SecXmlSecurityError):
+        extract_ownership_document(content)
+
+
 # ---------------------------------------------------------------------------
 # 15. Ownership block with no <TEXT> section at all → SecOwnershipDocumentError,
 #     raw block body not in error message

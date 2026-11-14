@@ -7,6 +7,7 @@ from datetime import date
 import responses
 from bs4 import BeautifulSoup
 
+from insider_scanner.core.fetch_outcome import FetchStatus
 from insider_scanner.core.openinsider import (
     parse_openinsider_html,
     scrape_latest,
@@ -99,6 +100,43 @@ class TestParseOpeninsider:
     def test_empty_html(self):
         trades = parse_openinsider_html("<html><body></body></html>")
         assert trades == []
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert trades.issues[0].reason == "missing_trade_table"
+
+    def test_recognized_empty_table_is_complete(self):
+        soup = BeautifulSoup(OPENINSIDER_HTML, "lxml")
+        for row in soup.select("tr")[1:]:
+            row.decompose()
+        trades = parse_openinsider_html(str(soup))
+        assert trades == []
+        assert trades.status == FetchStatus.EMPTY
+        assert trades.complete
+
+    def test_unrelated_or_redesigned_table_is_not_an_empty_success(self):
+        for html in (
+            "<table><tr><td>Captcha</td></tr></table>",
+            '<table class="tinytable"><tr><th>Security check</th></tr></table>',
+        ):
+            trades = parse_openinsider_html(html, "AAPL")
+            assert not trades.complete
+            assert trades.issues
+
+    def test_malformed_row_preserves_other_trades_as_partial(self):
+        soup = BeautifulSoup(OPENINSIDER_HTML, "lxml")
+        soup.select("tr")[1].find_all("td")[0].string = "not-a-date"
+        trades = parse_openinsider_html(str(soup))
+        assert len(trades) == 2
+        assert trades.status == FetchStatus.PARTIAL
+        assert trades.issues[0].reason == "malformed_trade_row"
+
+    def test_raw_result_cap_reports_incomplete_history(self):
+        soup = BeautifulSoup(OPENINSIDER_HTML, "lxml")
+        header, first, *_ = soup.select("tr")
+        html = f'<table class="tinytable">{header}{str(first) * 100}</table>'
+        trades = parse_openinsider_html(html, result_limit=100)
+        assert len(trades) == 100
+        assert trades.status == FetchStatus.PARTIAL
+        assert trades.issues[0].reason == "result_limit_reached"
 
 
 class TestScrapeOpeninsider:
@@ -135,6 +173,8 @@ class TestScrapeOpeninsider:
         )
         trades = scrape_ticker("AAPL", use_cache=False)
         assert trades == []
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert trades.issues[0].reason == "fetch_failed"
 
     @responses.activate
     def test_scrape_with_date_range_url(self):
@@ -178,3 +218,49 @@ class TestScrapeOpeninsider:
         assert {trade.ticker for trade in trades} == {"AAPL", "MSFT", "TSLA"}
         url = responses.calls[0].request.url
         assert "td=7" in url
+
+    @responses.activate
+    def test_latest_slice_cap_only_limits_bounded_completeness(self):
+        responses.add(
+            responses.GET,
+            "http://openinsider.com/screener",
+            body=OPENINSIDER_HTML,
+            status=200,
+        )
+        recent = scrape_latest(count=3, use_cache=False)
+        bounded = scrape_latest(count=3, use_cache=False, start_date=date(2025, 1, 1))
+        assert recent.complete
+        assert bounded.status == FetchStatus.PARTIAL
+        assert bounded.issues[0].reason == "result_limit_reached"
+
+    @responses.activate
+    def test_optional_cache_write_failure_keeps_trades(self, monkeypatch, tmp_path):
+        from insider_scanner.core import openinsider
+        from insider_scanner.utils import caching
+
+        monkeypatch.setattr(openinsider, "SCRAPER_CACHE_DIR", tmp_path)
+
+        def fail_write(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(caching, "atomic_write_bytes", fail_write)
+        responses.add(
+            responses.GET,
+            "http://openinsider.com/screener",
+            body=OPENINSIDER_HTML,
+            status=200,
+        )
+        trades = scrape_ticker("AAPL", use_cache=True)
+        assert len(trades) == 3
+        assert trades.complete
+
+    def test_cached_block_page_remains_a_failure(self, monkeypatch, tmp_path):
+        from insider_scanner.core import openinsider
+
+        monkeypatch.setattr(openinsider, "SCRAPER_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(
+            openinsider, "fetch_url", lambda *_args, **_kwargs: "<h1>Access denied</h1>"
+        )
+        trades = scrape_ticker("AAPL", use_cache=True)
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert not trades.complete

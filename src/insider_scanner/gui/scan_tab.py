@@ -28,6 +28,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.fetch_outcome import (
+    FetchIssue,
+    FetchResult,
+    FetchStatus,
+    as_fetch_result,
+    describe_incomplete,
+)
 from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import TICKERS_FILE
@@ -397,10 +404,11 @@ class ScanTab(QWidget):
             from insider_scanner.core.merger import merge_trades
 
             all_lists = []
+            issues: list[FetchIssue] = []
             for i, ticker in enumerate(tickers):
                 if cancel.is_set():
                     break
-                all_lists.append(
+                result = as_fetch_result(
                     self._service.scan(
                         ticker,
                         sources=sources,
@@ -410,9 +418,23 @@ class ScanTab(QWidget):
                         cancelled=cancel.is_set,
                     )
                 )
+                all_lists.append(result)
+                issues.extend(result.issues)
+                if not result.complete and not result.issues:
+                    issues.append(FetchIssue(result.status.value, identifier=ticker))
                 worker.signals.progress.emit(i + 1)
 
-            return merge_trades(*all_lists)
+            if cancel.is_set():
+                issues.append(FetchIssue("cancelled"))
+            trades = merge_trades(*all_lists)
+            status = (
+                FetchStatus.UNSUPPORTED
+                if not trades
+                and issues
+                and all(not issue.retryable for issue in issues)
+                else None
+            )
+            return FetchResult(trades, status=status, issues=issues)
 
         worker = Worker(work)
         worker.signals.result.connect(self._on_scan_done)
@@ -467,7 +489,7 @@ class ScanTab(QWidget):
 
         df = trades_to_dataframe(trades)
         if df.empty:
-            self.status_label.setText("No trades found.")
+            self._set_results_status("No trades found.")
             self.trades_model.set_dataframe(pd.DataFrame())
             return
 
@@ -491,9 +513,14 @@ class ScanTab(QWidget):
         ]
         self.trades_model.set_dataframe(df[display_cols])
         congress_count = sum(1 for t in trades if t.is_congress)
-        self.status_label.setText(
+        self._set_results_status(
             f"{len(trades)} trades found  |  {congress_count} congress-flagged"
         )
+
+    def _set_results_status(self, text):
+        if warning := describe_incomplete(self._trades):
+            text += f"  |  {warning}"
+        self.status_label.setText(text)
 
     def _apply_filters(self):
         if not self._trades:

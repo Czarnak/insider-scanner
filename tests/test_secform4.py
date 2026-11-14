@@ -6,7 +6,9 @@ from datetime import date
 from unittest.mock import patch
 
 import responses
+from bs4 import BeautifulSoup
 
+from insider_scanner.core.fetch_outcome import FetchStatus
 from insider_scanner.core.secform4 import parse_secform4_html, scrape_ticker
 from tests.html_samples import SECFORM4_HTML
 
@@ -82,6 +84,32 @@ class TestParseSecform4:
     def test_empty_html(self):
         trades = parse_secform4_html("<html><body></body></html>", "TEST")
         assert trades == []
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert trades.issues[0].reason == "missing_trade_table"
+
+    def test_recognized_empty_table_is_complete(self):
+        soup = BeautifulSoup(SECFORM4_HTML, "lxml")
+        soup.find("tbody").clear()
+        trades = parse_secform4_html(str(soup), "AAPL")
+        assert trades == []
+        assert trades.status == FetchStatus.EMPTY
+
+    def test_unrelated_or_redesigned_table_is_not_an_empty_success(self):
+        for html in (
+            "<table><tr><th>Transaction security check</th></tr></table>",
+            '<table id="filing_table"><tr><th>Captcha</th></tr></table>',
+        ):
+            trades = parse_secform4_html(html, "AAPL")
+            assert not trades.complete
+            assert trades.issues
+
+    def test_malformed_required_field_preserves_valid_rows(self):
+        soup = BeautifulSoup(SECFORM4_HTML, "lxml")
+        soup.select("tbody tr")[1].find_all("td")[0].string = "not-a-date"
+        trades = parse_secform4_html(str(soup), "AAPL")
+        assert len(trades) == 3
+        assert trades.status == FetchStatus.PARTIAL
+        assert trades.issues[0].reason == "malformed_trade_row"
 
 
 class TestScrapeSecform4:
@@ -111,12 +139,15 @@ class TestScrapeSecform4:
         )
         trades = scrape_ticker("AAPL", use_cache=False)
         assert trades == []
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
 
     @patch("insider_scanner.core.edgar.resolve_cik_from_json", return_value=None)
     def test_scrape_cik_not_found(self, mock_cik):
-        """If CIK cannot be resolved, return empty list."""
+        """An unresolved CIK cannot establish empty source history."""
         trades = scrape_ticker("ZZZZ", use_cache=False)
         assert trades == []
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert trades.issues[0].reason == "cik_unresolved"
 
     @responses.activate
     @patch("insider_scanner.core.edgar.resolve_cik_from_json", return_value=AAPL_CIK)
@@ -128,6 +159,26 @@ class TestScrapeSecform4:
         )
         trades = scrape_ticker("AAPL", use_cache=False)
         assert trades == []
+        assert not trades.complete
+
+    @patch(
+        "insider_scanner.core.edgar.resolve_cik_from_json", side_effect=ConnectionError
+    )
+    def test_cik_resolution_exception_is_explicit(self, mock_cik):
+        trades = scrape_ticker("AAPL", use_cache=False)
+        assert trades.status == FetchStatus.TRANSIENT_FAILURE
+        assert trades.issues[0].reason == "cik_resolution_failed"
+
+    @patch("insider_scanner.core.edgar.resolve_cik_from_json", return_value=AAPL_CIK)
+    @patch("insider_scanner.core.secform4.fetch_url")
+    def test_date_filter_preserves_partial_metadata(self, mock_fetch, mock_cik):
+        soup = BeautifulSoup(SECFORM4_HTML, "lxml")
+        soup.select("tbody tr")[0].find_all("td")[0].string = "not-a-date"
+        mock_fetch.return_value = str(soup)
+        trades = scrape_ticker("AAPL", use_cache=False, start_date=date(2025, 10, 17))
+        assert len(trades) == 1
+        assert trades.status == FetchStatus.PARTIAL
+        assert trades.issues[0].reason == "malformed_trade_row"
 
     @responses.activate
     @patch("insider_scanner.core.edgar.resolve_cik_from_json", return_value=AAPL_CIK)

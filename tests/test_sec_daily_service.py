@@ -133,9 +133,11 @@ def test_failed_filing_download_is_counted_and_run_continues(
 
     assert summary.failures == 2
     assert summary.filings_parsed == 0
-    # A fetch failure is filing-level, not date-level: the date still completes.
-    assert summary.dates_completed == 1
-    assert len(_coverage(persistence)) == 1
+    # Temporary fetch failures leave the date available for a later retry.
+    assert summary.dates_completed == 0
+    assert _coverage(persistence) == ()
+    assert len(summary.outcomes) == 2
+    assert all(not item.complete for item in summary.outcomes)
     assert _sec_rows(persistence) == []
 
 
@@ -423,14 +425,10 @@ def test_persistence_error_in_sink_leaves_date_uncovered_then_recovers(
     assert len(_sec_rows(persistence)) == 2
 
 
-def test_mapping_error_is_swallowed_filing_level_and_date_completes(
+def test_mapping_error_leaves_date_uncovered_for_repaired_mapper(
     persistence: PersistenceContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A SecTradeMappingError (malformed filing) is swallowed at filing level.
-
-    The date STILL completes and is covered, ``failures`` counts the mapping
-    failure, and the bad filing is simply not persisted.
-    """
+    """Mapping errors remain retryable after a mapper fix."""
     calls = {"n": 0}
 
     def mapping_raises(
@@ -449,15 +447,72 @@ def test_mapping_error_is_swallowed_filing_level_and_date_completes(
     )
     summary = service.ingest_date(DAY)
 
-    # Both filings parsed, both mapping calls raised and were swallowed.
+    # Both filings parsed, with accession-specific retry outcomes.
     assert calls["n"] == 2
     assert summary.filings_parsed == 2
-    assert summary.failures == 2  # mapping_failures, not download failures
-    # The date STILL completes and is covered (poison-pill avoidance).
-    assert summary.dates_completed == 1
-    assert len(_coverage(persistence)) == 1
+    assert summary.failures == 2
+    assert summary.dates_completed == 0
+    assert _coverage(persistence) == ()
+    assert all(item.stage == "mapping" for item in summary.outcomes)
     # No rows persisted (mapping never produced trades).
     assert _sec_rows(persistence) == []
+    monkeypatch.undo()
+    recovered = service.ingest_date(DAY)
+    assert recovered.transactions_inserted == 2
+    assert recovered.dates_completed == 1
+
+
+def test_stop_on_error_does_not_start_later_coverage_gap(persistence, tmp_path):
+    from datetime import timedelta
+
+    from insider_scanner.persistence.coverage import DateInterval
+
+    middle = DAY + timedelta(days=1)
+    end = DAY + timedelta(days=2)
+    persistence.coverage.add(
+        "us", SEC_DAILY_IDENTIFIER, "sec_edgar", DateInterval(middle, middle)
+    )
+    fetched = []
+    service = _make_service(
+        persistence,
+        tmp_path,
+        make_transport(index_status=500, fetched=fetched),
+        continue_on_error=False,
+    )
+    summary = service.ingest_range(DAY, end)
+    assert summary.stopped_on_error
+    assert not summary.cancelled
+    assert summary.dates_completed == 1  # Only the pre-existing covered day.
+    assert len(set(fetched)) == 1
+    assert "20260615" in fetched[0]
+
+
+def test_partial_date_persists_good_filing_and_retries_failed_one(
+    persistence, tmp_path
+):
+    from tests.sec_stubs import StubResponse
+
+    transport = make_transport()
+    original_get = transport.get.side_effect
+
+    def get(url, **kwargs):
+        if "/789019/" in url:
+            return StubResponse(status_code=503)
+        return original_get(url, **kwargs)
+
+    transport.get.side_effect = get
+    service = _make_service(persistence, tmp_path, transport)
+    first = service.ingest_date(DAY)
+    assert first.transactions_inserted == 1
+    assert first.failures == 1
+    assert first.dates_completed == 0
+    assert _coverage(persistence) == ()
+    assert len(_sec_rows(persistence)) == 1
+
+    second = _make_service(persistence, tmp_path, make_transport()).ingest_date(DAY)
+    assert second.dates_completed == 1
+    assert second.transactions_inserted == 1
+    assert len(_sec_rows(persistence)) == 2
 
 
 # ---------------------------------------------------------------------------

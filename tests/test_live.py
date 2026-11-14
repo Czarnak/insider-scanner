@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import pytest
 
+from insider_scanner.core.fetch_outcome import FetchStatus
+
 pytestmark = pytest.mark.live
+
+
+def _assert_live_trades(trades):
+    # A result cap is an explicit completeness warning, not a broken fetch.
+    assert trades.status in {FetchStatus.COMPLETE, FetchStatus.PARTIAL}, trades.issues
+    assert all(issue.reason == "result_limit_reached" for issue in trades.issues)
+    assert trades, "An active source must return trades; empty failures must not pass."
 
 
 class TestSecform4Live:
@@ -16,11 +25,9 @@ class TestSecform4Live:
         from insider_scanner.core.secform4 import scrape_ticker
 
         trades = scrape_ticker("AAPL", use_cache=False)
-        # May return 0 if site structure changed, but should not error
-        assert isinstance(trades, list)
-        if trades:
-            assert trades[0].ticker == "AAPL"
-            assert trades[0].source == "secform4"
+        _assert_live_trades(trades)
+        assert trades[0].ticker == "AAPL"
+        assert trades[0].source == "secform4"
 
 
 class TestOpeninsiderLive:
@@ -28,15 +35,14 @@ class TestOpeninsiderLive:
         from insider_scanner.core.openinsider import scrape_ticker
 
         trades = scrape_ticker("AAPL", use_cache=False)
-        assert isinstance(trades, list)
-        if trades:
-            assert trades[0].source == "openinsider"
+        _assert_live_trades(trades)
+        assert trades[0].source == "openinsider"
 
     def test_scrape_latest(self):
         from insider_scanner.core.openinsider import scrape_latest
 
         trades = scrape_latest(count=10, use_cache=False)
-        assert isinstance(trades, list)
+        _assert_live_trades(trades)
 
 
 class TestEdgarLive:
@@ -45,8 +51,7 @@ class TestEdgarLive:
 
         cik = resolve_cik("AAPL", use_cache=False)
         # AAPL's CIK is well-known: 0000320193
-        if cik:
-            assert cik == "0000320193"
+        assert cik == "0000320193"
 
     def test_resolve_cik_unknown(self):
         from insider_scanner.core.edgar import resolve_cik
@@ -64,10 +69,11 @@ class TestFullPipelineLive:
 
         sf4_trades = sf4("AAPL", use_cache=False)
         oi_trades = oi("AAPL", use_cache=False)
+        _assert_live_trades(sf4_trades)
+        _assert_live_trades(oi_trades)
         merged = merge_trades(sf4_trades, oi_trades)
         flag_congress_trades(merged)
 
         assert isinstance(merged, list)
-        # Verify dedup worked if both returned data
-        if sf4_trades and oi_trades:
-            assert len(merged) <= len(sf4_trades) + len(oi_trades)
+        assert merged
+        assert len(merged) <= len(sf4_trades) + len(oi_trades)

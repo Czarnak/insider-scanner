@@ -204,6 +204,12 @@ failures are reported in the summary without failing the command. Exit codes:
 `2` for an invalid range
 or a `sec-backfill` invocation missing `--confirm-full-backfill`.
 
+Transient filing downloads, mapping failures, and database write failures leave
+their dates uncovered so a later run retries them. Successful filings are kept
+even when another filing fails or an optional validated-cache write fails.
+Deterministic rejections and non-XML ownership filings are reported separately
+from retryable failures; unsupported legacy filings do not count as parse errors.
+
 #### SEC full bulk backfill
 
 For a one-time historical import of all SEC ownership filings you can download the
@@ -271,6 +277,18 @@ python -c "from insider_scanner.utils.config import DEFAULT_PATHS; print(DEFAULT
 The SQLite database stores normalized trade records, successful source/date
 coverage, and latest-refresh state. HTTP caches remain transient files under the
 platform cache directory and can be removed without deleting parsed trades.
+
+US and Congress scans retain available trades when a source, filing, or page
+fails, and display an incomplete-result warning in the CLI or GUI. Only complete
+responses, including recognized empty responses, record source/date coverage or
+latest-refresh state. OpenInsider's 100-row ticker limit and the Senate's
+1,000-result search limit produce incomplete outcomes when reached; these limits
+do not prove that the full requested interval was fetched.
+
+Python scraper and scan APIs return a list-compatible `FetchResult` with
+`status`, `issues`, and `complete` metadata. Status distinguishes complete,
+empty, partial, transient failure, and unsupported responses. Inspect this
+metadata before treating returned records as a complete source history.
 
 Source dates accept ISO timestamps and US dates with two- or four-digit years.
 OpenInsider sale quantities and values are stored as positive magnitudes; the

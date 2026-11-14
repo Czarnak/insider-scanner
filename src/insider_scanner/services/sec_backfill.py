@@ -9,13 +9,9 @@ Known limitation: the checkpoint stores the full set of completed accessions; fo
 a whole-archive backfill this set can grow large. Acceptable for fixture-scale and
 repair runs; a compact cursor is a future optimization (do not silently cap it).
 
-Resume convergence: a filing that fails BEFORE the persist sink (fetch 404, a
-document that never parses as valid ownership XML, or a security-bound rejection)
-is intentionally retried on every resume run -- it is never added to the completed
-set. This guarantees transient failures are retried, but a *deterministic*
-non-mapping failure is therefore re-fetched on each run and never converges
-(bounded, no data loss). Distinguishing deterministic from transient failures
-(e.g. a separate failed_accessions checkpoint set) is a deferred follow-up.
+Successful filings, unsupported legacy documents and deterministic rejections
+are terminal checkpoint entries. Transient fetch, mapping and persistence errors
+remain retryable; their accessions and reasons are included in the run summary.
 """
 
 from __future__ import annotations
@@ -45,7 +41,12 @@ from insider_scanner.persistence.json_state import atomic_write_json, read_json_
 from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.common import not_cancelled
 from insider_scanner.services.context import PersistenceContext
-from insider_scanner.services.sec_downloads import new_counters, process_filing_row
+from insider_scanner.services.sec_downloads import (
+    SecFilingOutcome,
+    SecFilingStatus,
+    new_counters,
+    process_filing_row,
+)
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_backfill")
@@ -74,6 +75,9 @@ class SecBackfillSummary:
     skipped_resume: int
     skipped_metadata: int
     failures: int
+    unsupported: int = 0
+    outcomes: tuple[SecFilingOutcome, ...] = ()
+    cancelled: bool = False
 
 
 class SecBackfillService:
@@ -110,10 +114,11 @@ class SecBackfillService:
 
         counters = new_counters()
         upserts = UpsertResult()
-        mapping_failures = 0
         skipped_resume = 0
         skipped_metadata = 0
         discovered = 0
+        outcomes: list[SecFilingOutcome] = []
+        has_retryable_failures = False
 
         completed = self._load_completed(zip_path)
         gen = iter_ownership_filings(
@@ -135,23 +140,23 @@ class SecBackfillService:
                     skipped_metadata += 1
                     continue
 
-                reached_sink = [False]
-
                 def _sink(
                     r: SecMasterIndexRow,
                     filing: OwnershipFiling,
-                    reached_sink: list[bool] = reached_sink,
                 ) -> None:
-                    nonlocal upserts, mapping_failures
-                    reached_sink[0] = True
+                    nonlocal upserts
                     try:
                         trades = ownership_filing_to_trades(filing, r)
-                    except SecTradeMappingError:
-                        mapping_failures += 1
-                        return
+                    except SecTradeMappingError as exc:
+                        _log.warning(
+                            "SEC backfill mapping failed accession=%s reason=%s",
+                            r.archive_path.rsplit("/", 1)[-1].removesuffix(".txt"),
+                            type(exc).__name__,
+                        )
+                        raise
                     upserts = upserts + self._persistence.us_trades.upsert(trades)
 
-                ok = process_filing_row(
+                outcome = process_filing_row(
                     row,
                     client=self._client,
                     cache_root=self._cache_root,
@@ -159,13 +164,17 @@ class SecBackfillService:
                     policy=self._policy,
                     on_filing_parsed=_sink,
                 )
-                if ok and reached_sink[0]:
+                if outcome.status is not SecFilingStatus.SUCCESS:
+                    outcomes.append(outcome)
+                if outcome.complete:
                     completed.add(meta.accession_number)
                     self._save_completed(zip_path, completed)
+                else:
+                    has_retryable_failures = True
         finally:
             gen.close()  # release the ZIP handle promptly on early exit
 
-        fully_done = not interrupted
+        fully_done = not interrupted and not has_retryable_failures
         if fully_done:
             self._delete_checkpoint()
             if self._cleanup:
@@ -179,7 +188,10 @@ class SecBackfillService:
             transactions_skipped=upserts.skipped,
             skipped_resume=skipped_resume,
             skipped_metadata=skipped_metadata,
-            failures=counters["failed"] + mapping_failures,
+            failures=counters["failed"],
+            unsupported=counters["unsupported"],
+            outcomes=tuple(outcomes),
+            cancelled=interrupted,
         )
         if on_progress is not None:
             on_progress(summary)

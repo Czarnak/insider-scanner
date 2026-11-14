@@ -7,13 +7,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
 
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, as_fetch_result
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.services.adapters import default_congress_adapters
 from insider_scanner.services.common import (
     BoundedSourceAdapter,
-    ScanError,
     normalize_identifier,
     not_cancelled,
+    scan_result,
+    source_issues,
     validate_range,
     validate_sources,
 )
@@ -43,7 +45,7 @@ class CongressScanService:
         end_date: date | None,
         use_cache: bool = True,
         cancelled: Callable[[], bool] = not_cancelled,
-    ) -> list[CongressTrade]:
+    ) -> FetchResult[CongressTrade]:
         normalized = normalize_identifier(official, "official")
         identifier = "*" if normalized.casefold() in {"*", "all"} else normalized
         if start_date is None and end_date is None:
@@ -51,31 +53,42 @@ class CongressScanService:
             start_date = _subtract_months(end_date, 6)
         requested = validate_range(start_date, end_date)
         selected = validate_sources(sources, self._adapters)
+        issues: list[FetchIssue] = []
 
         for source in selected:
             for gap in self._persistence.coverage.gaps(
                 "congress", identifier, source, requested
             ):
                 if cancelled():
-                    return self._query(identifier, selected, requested)
-                try:
-                    fetched = self._adapters[source](
-                        None if identifier == "*" else identifier,
-                        gap.start,
-                        gap.end,
-                        use_cache,
+                    issues.append(FetchIssue("cancelled", source, identifier))
+                    return scan_result(
+                        self._query(identifier, selected, requested), issues
                     )
-                except Exception as error:
-                    raise ScanError(
-                        f"Congress source {source} failed for {gap.start}..{gap.end}"
-                    ) from error
+                context = f"{identifier} {gap.start}..{gap.end}"
+                try:
+                    fetched = as_fetch_result(
+                        self._adapters[source](
+                            None if identifier == "*" else identifier,
+                            gap.start,
+                            gap.end,
+                            use_cache,
+                        )
+                    )
+                except (OSError, RuntimeError, ValueError) as error:
+                    issues.append(FetchIssue(type(error).__name__, source, context))
+                    continue
                 if cancelled():
-                    return self._query(identifier, selected, requested)
+                    issues.append(FetchIssue("cancelled", source, context))
+                    return scan_result(
+                        self._query(identifier, selected, requested), issues
+                    )
+                issues.extend(source_issues(fetched, source=source, identifier=context))
                 self._persistence.congress_trades.upsert(
                     [replace(trade, source=source) for trade in fetched]
                 )
-                self._persistence.coverage.add("congress", identifier, source, gap)
-        return self._query(identifier, selected, requested)
+                if fetched.complete:
+                    self._persistence.coverage.add("congress", identifier, source, gap)
+        return scan_result(self._query(identifier, selected, requested), issues)
 
     def _query(self, identifier, sources, requested) -> list[CongressTrade]:
         official = None if identifier == "*" else identifier

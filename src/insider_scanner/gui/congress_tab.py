@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import dispatch
@@ -534,7 +535,7 @@ class CongressTab(QWidget):
 
     def _display_trades(self, trades):
         if not trades:
-            self.status_label.setText("No trades found.")
+            self._set_results_status("No trades found.")
             self.trades_model.set_dataframe(pd.DataFrame())
             self.btn_open_filing.setEnabled(False)
             return
@@ -544,7 +545,12 @@ class CongressTab(QWidget):
         # Select display columns that exist
         cols = [c for c in DISPLAY_COLUMNS if c in df.columns]
         self.trades_model.set_dataframe(df[cols])
-        self.status_label.setText(f"{len(trades)} congress trades found")
+        self._set_results_status(f"{len(trades)} congress trades found")
+
+    def _set_results_status(self, text):
+        if warning := describe_incomplete(self._trades):
+            text += f"  |  {warning}"
+        self.status_label.setText(text)
 
     def _apply_filters(self):
         if not self._trades:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
+import requests
 from bs4 import BeautifulSoup
 
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.sec_client import SecClientError
 from insider_scanner.utils.config import SCRAPER_CACHE_DIR
 from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
@@ -30,7 +33,7 @@ def scrape_ticker(
     use_cache: bool = True,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> list[InsiderTrade]:
+) -> FetchResult[InsiderTrade]:
     """Scrape insider trades for a specific ticker from secform4.com.
 
     Resolves the ticker to a CIK number via SEC's company_tickers.json,
@@ -54,21 +57,31 @@ def scrape_ticker(
     from insider_scanner.core.edgar import resolve_cik_from_json
 
     # Resolve ticker → CIK (raw, not zero-padded)
-    raw_cik = resolve_cik_from_json(ticker, use_cache=use_cache)
+    try:
+        raw_cik = resolve_cik_from_json(ticker, use_cache=use_cache)
+    except (requests.RequestException, SecClientError, OSError, UnicodeError) as exc:
+        log.warning(
+            "SECForm4 CIK resolution failed ticker=%s reason=%s",
+            ticker,
+            type(exc).__name__,
+        )
+        return _failed("cik_resolution_failed", ticker)
     if not raw_cik:
-        log.warning("Could not resolve CIK for %s — skipping secform4", ticker)
-        return []
+        return _failed("cik_unresolved", ticker)
 
     url = f"{BASE_URL}/{raw_cik}.htm"
     cache_dir = SCRAPER_CACHE_DIR if use_cache else None
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=3600)
-    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
-        log.warning("Failed to fetch %s: %s", url, exc)
-        return []
+    except (requests.RequestException, SecClientError, OSError, UnicodeError) as exc:
+        log.warning(
+            "SECForm4 fetch failed ticker=%s reason=%s", ticker, type(exc).__name__
+        )
+        return _failed("fetch_failed", ticker)
 
-    trades = parse_secform4_html(html, ticker)
+    result = parse_secform4_html(html, ticker)
+    trades = list(result)
 
     # Post-filter by filing date (secform4 doesn't support date params in URL)
     if start_date:
@@ -76,10 +89,14 @@ def scrape_ticker(
     if end_date:
         trades = [t for t in trades if t.filing_date and t.filing_date <= end_date]
 
-    return trades
+    return FetchResult(
+        trades,
+        status=result.status if not result.complete else None,
+        issues=result.issues,
+    )
 
 
-def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
+def parse_secform4_html(html: str, ticker: str = "") -> FetchResult[InsiderTrade]:
     """Parse insider trades from secform4.com HTML.
 
     secform4.com uses compound table cells where multiple data fields are
@@ -100,27 +117,16 @@ def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
     """
     soup = BeautifulSoup(html, "lxml")
     trades: list[InsiderTrade] = []
+    issues: list[FetchIssue] = []
 
-    # Prefer the known table id; fall back to header keyword search
+    # Only the known table is evidence of a successful source response.
     data_table = soup.find("table", id="filing_table")
     if data_table is None:
-        for table in soup.find_all("table"):
-            header = table.find("tr")
-            if header and "transaction" in header.get_text().lower():
-                data_table = table
-                break
-    if data_table is None:
-        tables = soup.find_all("table")
-        if not tables:
-            log.debug("No tables found for %s", ticker)
-            return trades
-        data_table = max(tables, key=lambda t: len(t.find_all("tr")))
+        return _failed("missing_trade_table", ticker)
 
     # Collect data rows (skip <thead>)
     tbody = data_table.find("tbody")
     rows = tbody.find_all("tr") if tbody else data_table.find_all("tr")[1:]
-    if not rows:
-        return trades
 
     # Build column index from the header row
     header_row = data_table.find("thead")
@@ -154,9 +160,23 @@ def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
         elif "filing" in h:
             col.setdefault("filing", i)
 
+    required = {"transaction", "reported", "insider", "shares"}
+    if not ticker:
+        required.add("symbol")
+    if not required.issubset(col):
+        return _failed("missing_trade_headers", ticker)
+
     for row in rows:
         cells = row.find_all("td")
-        if len(cells) < 5:
+        if not cells:
+            continue
+        if len(cells) == 1 and any(
+            text in cells[0].get_text(" ", strip=True).lower()
+            for text in ("no data", "no results", "no matching", "no transactions")
+        ):
+            continue
+        if len(cells) <= max(col[key] for key in required):
+            issues.append(FetchIssue("malformed_trade_row", "secform4", ticker))
             continue
 
         def _cell(key: str, cells=cells):
@@ -276,11 +296,26 @@ def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
             edgar_url=edgar_url,
         )
 
-        if trade.insider_name or trade.shares != 0:
+        if (
+            trade.insider_name
+            and trade.trade_date
+            and trade.filing_date
+            and trade.ticker
+        ):
             trades.append(trade)
+        else:
+            issues.append(FetchIssue("malformed_trade_row", "secform4", ticker))
 
     log.info("secform4: parsed %d trades for %s", len(trades), ticker)
-    return trades
+    return FetchResult(trades, issues=issues)
+
+
+def _failed(reason: str, ticker: str) -> FetchResult[InsiderTrade]:
+    log.warning("SECForm4 incomplete ticker=%s reason=%s", ticker, reason)
+    return FetchResult(
+        status=FetchStatus.TRANSIENT_FAILURE,
+        issues=(FetchIssue(reason, "secform4", ticker),),
+    )
 
 
 def _br_split(td) -> list[str]:

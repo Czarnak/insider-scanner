@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from typing import Protocol, TypeVar
 
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.senate import flag_congress_trades
 from insider_scanner.persistence.coverage import DateInterval
@@ -42,6 +43,37 @@ class LatestSourceAdapter(Protocol[TradeT]):
 
 class ScanError(RuntimeError):
     """A source scan failed without marking its interval as covered."""
+
+
+def source_issues(
+    result: FetchResult[TradeT], *, source: str, identifier: str
+) -> list[FetchIssue]:
+    """Attach request context, including an incomplete result with no details."""
+    issues = result.issues
+    if not result.complete and not issues:
+        issues = (
+            FetchIssue(
+                result.status.value,
+                retryable=result.status != FetchStatus.UNSUPPORTED,
+            ),
+        )
+    return [
+        replace(
+            issue,
+            source=source,
+            identifier=(
+                f"{identifier}: {issue.identifier}" if issue.identifier else identifier
+            ),
+        )
+        for issue in issues
+    ]
+
+
+def scan_result(records: list[TradeT], issues: list[FetchIssue]) -> FetchResult[TradeT]:
+    status = None
+    if issues and not records and all(not issue.retryable for issue in issues):
+        status = FetchStatus.UNSUPPORTED
+    return FetchResult(records, issues=issues, status=status)
 
 
 def normalize_identifier(value: str, label: str) -> str:

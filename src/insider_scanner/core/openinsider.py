@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
+import requests
 from bs4 import BeautifulSoup
 
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.sec_client import SecClientError
 from insider_scanner.utils.config import SCRAPER_CACHE_DIR
 from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
@@ -30,7 +33,7 @@ def scrape_ticker(
     use_cache: bool = True,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> list[InsiderTrade]:
+) -> FetchResult[InsiderTrade]:
     """Scrape insider trades for a specific ticker from openinsider.com.
 
     Parameters
@@ -66,11 +69,13 @@ def scrape_ticker(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=3600)
-    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
-        log.warning("Failed to fetch %s: %s", url, exc)
-        return []
+    except (requests.RequestException, SecClientError, OSError, UnicodeError) as exc:
+        log.warning(
+            "OpenInsider fetch failed ticker=%s reason=%s", ticker, type(exc).__name__
+        )
+        return _failed("fetch_failed", ticker)
 
-    return parse_openinsider_html(html, ticker)
+    return parse_openinsider_html(html, ticker, result_limit=100)
 
 
 def scrape_latest(
@@ -78,7 +83,7 @@ def scrape_latest(
     use_cache: bool = True,
     start_date: date | None = None,
     end_date: date | None = None,
-) -> list[InsiderTrade]:
+) -> FetchResult[InsiderTrade]:
     """Scrape the latest insider trades across all tickers.
 
     Parameters
@@ -96,6 +101,8 @@ def scrape_latest(
     -------
     list of InsiderTrade
     """
+    if count < 1:
+        raise ValueError("count must be positive")
     td_param = "0"
     tdr_param = ""
     if start_date or end_date:
@@ -113,14 +120,19 @@ def scrape_latest(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=1800)
-    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
-        log.warning("Failed to fetch latest: %s", exc)
-        return []
+    except (requests.RequestException, SecClientError, OSError, UnicodeError) as exc:
+        log.warning("OpenInsider latest fetch failed reason=%s", type(exc).__name__)
+        return _failed("fetch_failed")
 
-    return parse_openinsider_html(html)
+    # An unbounded latest request promises only the requested recent slice.
+    # A bounded request, however, cannot prove its interval complete at the cap.
+    result_limit = count if start_date or end_date else None
+    return parse_openinsider_html(html, result_limit=result_limit)
 
 
-def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
+def parse_openinsider_html(
+    html: str, ticker: str = "", *, result_limit: int | None = None
+) -> FetchResult[InsiderTrade]:
     """Parse insider trades from openinsider.com HTML.
 
     Parameters
@@ -137,19 +149,15 @@ def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
     soup = BeautifulSoup(html, "lxml")
     trades: list[InsiderTrade] = []
 
-    # openinsider uses a table with class "tinytable"
+    issues: list[FetchIssue] = []
+    # A block/redesign page is not evidence of an empty trading history.
     table = soup.find("table", class_="tinytable")
     if table is None:
-        # Fallback: largest table
-        tables = soup.find_all("table")
-        if not tables:
-            log.debug("No tables found")
-            return trades
-        table = max(tables, key=lambda t: len(t.find_all("tr")))
+        return _failed("missing_trade_table", ticker)
 
     rows = table.find_all("tr")
-    if len(rows) < 2:
-        return trades
+    if not rows:
+        return _failed("missing_trade_headers", ticker)
 
     # Parse header
     header_cells = rows[0].find_all(["th", "td"])
@@ -182,10 +190,26 @@ def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
         elif "owned" in h:
             col_map.setdefault("owned_after", i)
 
+    required = {"filing_date", "trade_date", "name", "shares", "type"}
+    if not ticker:
+        required.add("ticker")
+    if not required.issubset(col_map):
+        return _failed("missing_trade_headers", ticker)
+
+    data_rows = 0
     # Parse data rows
     for row in rows[1:]:
         cells = row.find_all("td")
-        if len(cells) < 4:
+        if not cells:
+            continue
+        if len(cells) == 1 and any(
+            text in cells[0].get_text(" ", strip=True).lower()
+            for text in ("no data", "no results", "no matching", "no transactions")
+        ):
+            continue
+        data_rows += 1
+        if len(cells) <= max(col_map[key] for key in required):
+            issues.append(FetchIssue("malformed_trade_row", "openinsider", ticker))
             continue
 
         def cell_text(key: str, cells=cells) -> str:
@@ -213,8 +237,27 @@ def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
             source="openinsider",
         )
 
-        if trade.insider_name or trade.shares != 0:
+        if (
+            trade.insider_name
+            and trade.trade_date
+            and trade.filing_date
+            and trade.ticker
+        ):
             trades.append(trade)
+        else:
+            issues.append(FetchIssue("malformed_trade_row", "openinsider", ticker))
 
+    if result_limit is not None and data_rows >= result_limit:
+        issues.append(FetchIssue("result_limit_reached", "openinsider", ticker))
     log.info("openinsider: parsed %d trades for %s", len(trades), ticker or "latest")
-    return trades
+    return FetchResult(trades, issues=issues)
+
+
+def _failed(reason: str, ticker: str = "") -> FetchResult[InsiderTrade]:
+    log.warning(
+        "OpenInsider incomplete ticker=%s reason=%s", ticker or "latest", reason
+    )
+    return FetchResult(
+        status=FetchStatus.TRANSIENT_FAILURE,
+        issues=(FetchIssue(reason, "openinsider", ticker),),
+    )

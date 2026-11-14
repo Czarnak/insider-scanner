@@ -25,6 +25,12 @@ from curl_cffi import requests as curl_requests
 
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
+from insider_scanner.core.fetch_outcome import (
+    FetchIssue,
+    FetchResult,
+    FetchStatus,
+    as_fetch_result,
+)
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.core.sec_fair_access import RateLimiter
 from insider_scanner.utils.logging import get_logger
@@ -352,7 +358,7 @@ def parse_search_results(data: dict) -> list[dict]:
 # -----------------------------------------------------------------------
 
 
-def parse_ptr_page(html: str) -> list[dict]:
+def parse_ptr_page(html: str) -> FetchResult[dict]:
     """Extract transactions from a Senate PTR HTML page.
 
     The page contains a table with columns:
@@ -368,8 +374,10 @@ def parse_ptr_page(html: str) -> list[dict]:
     # class "table-responsive" or a <table> with specific headers
     table = _find_transaction_table(soup)
     if not table:
-        log.debug("No transaction table found on PTR page")
-        return []
+        if "no transactions to display" in soup.get_text(" ", strip=True).lower():
+            return FetchResult()
+        log.warning("No transaction table found on Senate PTR page")
+        return FetchResult(issues=[FetchIssue("ptr_layout", source="senate")])
 
     # Parse header row
     headers = []
@@ -385,8 +393,11 @@ def parse_ptr_page(html: str) -> list[dict]:
                 headers.append(cell.get_text(strip=True).lower())
 
     col_map = _map_senate_columns(headers)
+    if not {"tx_date", "asset_name", "type", "amount"}.issubset(col_map):
+        return FetchResult(issues=[FetchIssue("ptr_headers", source="senate")])
 
     # Parse data rows
+    issues: list[FetchIssue] = []
     tbody = table.find("tbody") or table
     for tr in tbody.find_all("tr"):
         cells = tr.find_all("td")
@@ -396,8 +407,10 @@ def parse_ptr_page(html: str) -> list[dict]:
         tx = _parse_senate_row(cells, col_map)
         if tx:
             transactions.append(tx)
+        elif any(cell.get_text(strip=True) for cell in cells):
+            issues.append(FetchIssue("ptr_row", source="senate"))
 
-    return transactions
+    return FetchResult(transactions, issues=issues)
 
 
 def _find_transaction_table(soup: BeautifulSoup):
@@ -515,52 +528,88 @@ def search_senate_filings(
     last_name: str = "",
     date_from: date | None = None,
     date_to: date | None = None,
-) -> list[dict]:
+) -> FetchResult[dict]:
     """Search for Senate PTR filings and return parsed results.
 
     Handles pagination automatically (up to 1000 results).
     Filters out paper filings (scanned PDFs).
     """
     all_results: list[dict] = []
+    issues: list[FetchIssue] = []
     start = 0
     page_size = 100
 
     while True:
-        data = session.search(
-            first_name=first_name,
-            last_name=last_name,
-            report_types=[REPORT_TYPE_PTR],
-            date_from=date_from,
-            date_to=date_to,
-            start=start,
-            length=page_size,
-        )
-
-        if data.get("result") != "ok":
-            log.warning("EFD search returned non-ok: %s", data.get("result"))
+        try:
+            data = session.search(
+                first_name=first_name,
+                last_name=last_name,
+                report_types=[REPORT_TYPE_PTR],
+                date_from=date_from,
+                date_to=date_to,
+                start=start,
+                length=page_size,
+            )
+            if data.get("result") != "ok":
+                raise ValueError("search returned non-ok response")
+            rows = data["data"]
+            total = int(data["recordsFiltered"])
+            if not isinstance(rows, list) or total < 0:
+                raise ValueError("invalid search result metadata")
+            results = parse_search_results(data)
+        except Exception as exc:  # noqa: BLE001 - retain previously fetched pages
+            log.warning(
+                "Senate search failed offset=%d reason=%s", start, type(exc).__name__
+            )
+            issues.append(
+                FetchIssue("search_failed", source="senate", identifier=str(start))
+            )
             break
 
-        results = parse_search_results(data)
-        if not results:
+        if len(results) != len(rows):
+            issues.append(
+                FetchIssue("search_rows", source="senate", identifier=str(start))
+            )
+        if not rows:
+            if start < total:
+                issues.append(
+                    FetchIssue(
+                        "search_incomplete", source="senate", identifier=str(start)
+                    )
+                )
             break
 
         all_results.extend(results)
-
-        total = data.get("recordsFiltered", 0)
-        start += page_size
-
-        if start >= total or start >= 1000:
+        start += len(rows)
+        if start >= total:
+            break
+        if start >= 1000:
+            issues.append(
+                FetchIssue("result_limit", source="senate", identifier="1000")
+            )
             break
 
     # Filter out paper filings
     electronic = [r for r in all_results if not r["is_paper"]]
+    issues.extend(
+        FetchIssue(
+            "paper_filing", source="senate", identifier=r["report_url"], retryable=False
+        )
+        for r in all_results
+        if r["is_paper"]
+    )
     log.info(
         "Found %d Senate PTR filings (%d electronic, %d paper)",
         len(all_results),
         len(electronic),
         len(all_results) - len(electronic),
     )
-    return electronic
+    status = (
+        FetchStatus.UNSUPPORTED
+        if issues and not electronic and all(not issue.retryable for issue in issues)
+        else None
+    )
+    return FetchResult(electronic, issues=issues, status=status)
 
 
 def scrape_senate_trades(
@@ -572,7 +621,7 @@ def scrape_senate_trades(
     date_to: date | None = None,
     session: EFDSession | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
-) -> list[CongressTrade]:
+) -> FetchResult[CongressTrade]:
     """Scrape Senate PTR filings and return CongressTrade records.
 
     Parameters
@@ -600,21 +649,35 @@ def scrape_senate_trades(
     # The caller retains ownership of an explicitly supplied session.
     owns_session = session is None
     if session is None:
-        session = create_efd_session()
+        try:
+            session = create_efd_session()
+        except Exception as exc:  # noqa: BLE001 - expose authentication failures
+            log.warning("Senate authentication failed reason=%s", type(exc).__name__)
+            return FetchResult(
+                issues=[FetchIssue("authentication_failed", source="senate")]
+            )
 
     try:
         # Search for filings
-        filings = search_senate_filings(
-            session,
-            first_name=first_name,
-            last_name=last_name,
-            date_from=date_from,
-            date_to=date_to,
+        filings = as_fetch_result(
+            search_senate_filings(
+                session,
+                first_name=first_name,
+                last_name=last_name,
+                date_from=date_from,
+                date_to=date_to,
+            )
         )
+        issues = list(filings.issues)
 
         if not filings:
             log.info("No Senate PTR filings found")
-            return []
+            status: FetchStatus | None = (
+                FetchStatus.UNSUPPORTED
+                if issues and all(not issue.retryable for issue in issues)
+                else filings.status
+            )
+            return FetchResult(status=status, issues=issues)
 
         total = len(filings)
         log.info("Processing %d Senate PTR filings...", total)
@@ -630,14 +693,35 @@ def scrape_senate_trades(
 
             if not filing["report_uuid"]:
                 log.debug("Skipping filing without UUID: %s", filing["report_title"])
+                issues.append(
+                    FetchIssue("missing_uuid", source="senate", identifier=ptr_url)
+                )
                 continue
 
             try:
                 html = session.fetch_page(ptr_url)
-                raw_transactions = parse_ptr_page(html)
+                raw_transactions = as_fetch_result(parse_ptr_page(html))
             except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
-                log.warning("Failed to fetch/parse PTR %s: %s", ptr_url, exc)
+                log.warning(
+                    "Senate PTR failed id=%s reason=%s",
+                    filing["report_uuid"],
+                    type(exc).__name__,
+                )
+                issues.append(
+                    FetchIssue(
+                        "ptr_failed", source="senate", identifier=filing["report_uuid"]
+                    )
+                )
                 continue
+            issues.extend(
+                FetchIssue(
+                    issue.reason,
+                    source="senate",
+                    identifier=filing["report_uuid"],
+                    retryable=issue.retryable,
+                )
+                for issue in raw_transactions.issues
+            )
 
             source_url = (
                 BASE_URL + ptr_url if not ptr_url.startswith("http") else ptr_url
@@ -678,7 +762,14 @@ def scrape_senate_trades(
             len(all_trades),
             total,
         )
-        return all_trades
+        status = (
+            FetchStatus.UNSUPPORTED
+            if issues
+            and not all_trades
+            and all(not issue.retryable for issue in issues)
+            else None
+        )
+        return FetchResult(all_trades, issues=issues, status=status)
     finally:
         if owns_session:
             session.close()

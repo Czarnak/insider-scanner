@@ -178,5 +178,21 @@ def test_download_batch_continues_after_locked_cached_filing(tmp_path, monkeypat
         on_filing_parsed=lambda row, filing: seen.append(row.cik),
     )
     assert (report.discovered, report.failed, report.parsed) == (2, 1, 1)
-    assert report.dates_completed == 1
+    assert report.dates_completed == 0
+    assert report.outcomes[0].stage == "fetch"
+    assert report.outcomes[0].status.value == "retryable_failure"
     assert seen == ["0000789019"]
+
+    # Unlocking the cache must let the same date retry the missed filing.
+    monkeypatch.setattr(Path, "read_bytes", original)
+    seen.clear()
+    retried = download_filings_in_range(
+        start_date=DAY,
+        end_date=DAY,
+        client=client,
+        cache_root=tmp_path,
+        on_filing_parsed=lambda row, filing: seen.append(row.cik),
+    )
+    assert retried.dates_completed == 1
+    assert retried.failed == 0
+    assert seen == ["0000320193", "0000789019"]

@@ -16,9 +16,12 @@ from tests.sec_stubs import (
     make_transport,
 )
 
+BACKFILL_FILING = VALID_FILING.replace(b"2026-06-12", b"2024-01-01")
+
 
 def _service(persistence, tmp_path, transport=None, **kw) -> SecBackfillService:
-    transport = transport or make_transport(filing_bytes=VALID_FILING)
+    # The ZIP spans 2024-2026; its generic XML must predate every indexed filing.
+    transport = transport or make_transport(filing_bytes=BACKFILL_FILING)
     return SecBackfillService(
         persistence,
         client=make_client(transport),
@@ -104,7 +107,7 @@ def test_persistence_error_is_not_checkpointed_and_is_retried(
     assert summary2.transactions_inserted > 0
 
 
-def test_mapping_error_is_checkpointed_and_skipped_on_resume(
+def test_mapping_error_is_not_checkpointed_and_recovers_after_mapper_fix(
     persistence, tmp_path, monkeypatch
 ):
     def _raise(filing, row):
@@ -119,16 +122,20 @@ def test_mapping_error_is_checkpointed_and_skipped_on_resume(
         seen["n"] += 1
         return seen["n"] > 1
 
-    # Run 1: process exactly one filing (mapping fails -> still retired), then interrupt.
+    # Run 1: process one mapping failure, then interrupt without retiring it.
     svc = _service(persistence, tmp_path)
     first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
     assert first.failures >= 1
-    assert (tmp_path / "backfill.json").exists()  # interrupted -> checkpoint kept
+    assert not (tmp_path / "backfill.json").exists()
+    assert first.outcomes[0].stage == "mapping"
+    assert first.outcomes[0].accession
 
-    # Run 2 (resume): the mapping-poisoned accession is retired -> skipped, not retried.
+    # Run 2: repaired mapper sees the failed accession again and persists it.
+    monkeypatch.undo()
     resume = _service(persistence, tmp_path)
     second = resume.run(FIXTURE_ZIP, confirm=True)
-    assert second.skipped_resume >= 1
+    assert second.skipped_resume == 0
+    assert second.transactions_inserted > 0
 
 
 def test_blocked_backfill_stops_and_preserves_completed_checkpoint(
@@ -161,3 +168,45 @@ def test_blocked_backfill_stops_and_preserves_completed_checkpoint(
     assert len(checkpoint["completed_accessions"]) == 1
     assert len(fetched) == 3
     archive.rename(tmp_path / "closed-archive.zip")  # ZIP handle closed on abort
+
+
+def test_partial_backfill_keeps_successful_checkpoint_for_retry(persistence, tmp_path):
+    from tests.sec_stubs import StubResponse
+
+    transport = make_transport(filing_bytes=BACKFILL_FILING)
+    original_get = transport.get.side_effect
+
+    def get(url, **kwargs):
+        if "/1318605/" in url:
+            return StubResponse(status_code=503)
+        return original_get(url, **kwargs)
+
+    transport.get.side_effect = get
+    first = _service(persistence, tmp_path, transport).run(FIXTURE_ZIP, confirm=True)
+    assert first.failures == 1
+    assert (tmp_path / "backfill.json").exists()
+    second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
+    assert second.skipped_resume == 3
+    assert second.filings_parsed == 1
+    assert second.failures == 0
+
+
+def test_unsupported_accession_is_terminal_on_resume(persistence, tmp_path):
+    legacy = (
+        b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
+    )
+    calls = 0
+
+    def cancel_after_one():
+        nonlocal calls
+        calls += 1
+        return calls > 1
+
+    first = _service(persistence, tmp_path, make_transport(filing_bytes=legacy)).run(
+        FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one
+    )
+    assert first.unsupported == 1
+    assert first.failures == 0
+    second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
+    assert second.skipped_resume == 1
+    assert second.filings_parsed == 3
