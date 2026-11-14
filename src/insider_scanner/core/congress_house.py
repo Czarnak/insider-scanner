@@ -27,6 +27,11 @@ from xml.etree import ElementTree as ET
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_owner as _normalize_owner
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
+from insider_scanner.core.congress_identity import (
+    MemberIdentity,
+    identity_for,
+    name_matches,
+)
 from insider_scanner.core.fetch_outcome import (
     FetchIssue,
     FetchResult,
@@ -235,7 +240,7 @@ def parse_house_index(year: int) -> FetchResult[dict]:
 def search_filings(
     year: int,
     *,
-    name: str | None = None,
+    name: str | MemberIdentity | dict | None = None,
     filing_type: str = FILING_TYPE_PTR,
     date_from: date | None = None,
     date_to: date | None = None,
@@ -261,29 +266,21 @@ def search_filings(
     filings = as_fetch_result(parse_house_index(year))
     results = []
 
-    name_lower = name.lower().strip() if name else None
+    member = (
+        identity_for(name) if name is not None and not isinstance(name, str) else name
+    )
 
     for f in filings:
         # Filter by filing type
         if filing_type and f["filing_type"] != filing_type:
             continue
 
-        # Filter by name
-        if name_lower:
-            last_first = f"{f['last']} {f['first']}".lower().strip()
-            first_last = f"{f['first']} {f['last']}".lower().strip()
-            official = (
-                f"{f['prefix']} {f['first']} {f['last']} {f['suffix']}".lower().strip()
-            )
-
-            if not (
-                name_lower in last_first
-                or name_lower in first_last
-                or name_lower in official
-                or last_first in name_lower
-                or first_last in name_lower
-            ):
-                continue
+        # Empty filing names must never match a nonempty member query.
+        if member is not None and not name_matches(
+            member,
+            {"first_name": f["first"], "last_name": f["last"]},
+        ):
+            continue
 
         # Filter by date range
         fd = f.get("filing_date")
@@ -559,6 +556,7 @@ def _parse_table_row(row: list, col_map: dict[str, int]) -> dict | None:
 def scrape_house_trades(
     *,
     official_name: str | None = None,
+    member: MemberIdentity | dict | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
     use_cache: bool = True,
@@ -584,7 +582,9 @@ def scrape_house_trades(
     """
     with _house_session() if session is None else nullcontext(session) as http:
         return _scrape_house_trades(
-            official_name=official_name,
+            official_name=identity_for(member).official_name
+            if member is not None
+            else official_name,
             date_from=date_from,
             date_to=date_to,
             use_cache=use_cache,

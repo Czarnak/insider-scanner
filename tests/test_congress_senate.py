@@ -213,7 +213,7 @@ class TestSplitName:
     def test_middle_name(self):
         first, last = _split_name("John D. Booker")
         assert first == "John"
-        assert last == "D. Booker"
+        assert last == "Booker"
 
     def test_single_name(self):
         assert _split_name("Pelosi") == ("", "Pelosi")
@@ -784,7 +784,7 @@ class TestScrapeSentateTrades:
         # Should have called search with split name
         mock_search.assert_called_once()
         call_kwargs = mock_search.call_args
-        assert call_kwargs.kwargs["first_name"] == "Tommy"
+        assert call_kwargs.kwargs["first_name"] == ""
         assert call_kwargs.kwargs["last_name"] == "Tuberville"
 
     def test_fetch_error_skipped(self):
@@ -1092,3 +1092,52 @@ def test_default_sessions_share_the_senate_request_budget(
         second.authenticate()
     assert senate_clock.now == pytest.approx(3.0)
     assert senate_clock.sleep.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "full_name,expected",
+    [
+        ("Katie Boyd Britt", ("Katie", "Britt")),
+        ("Nicholas J. Begich III", ("Nicholas", "Begich")),
+        ("Gilbert Ray Cisneros, Jr.", ("Gilbert", "Cisneros")),
+        ("Angus S. King, Jr.", ("Angus", "King")),
+    ],
+)
+def test_split_name_ignores_middle_names_and_trailing_suffixes(full_name, expected):
+    assert _split_name(full_name) == expected
+
+
+def test_structured_senate_member_uses_surname_search_and_local_first_name_filter():
+    session = MagicMock(spec=EFDSession)
+    filings = [
+        {
+            "first_name": "Katie",
+            "last_name": "Britt",
+            "report_uuid": "correct",
+            "report_url": "/correct",
+        },
+        {
+            "first_name": "Other",
+            "last_name": "Britt",
+            "report_uuid": "wrong",
+            "report_url": "/wrong",
+        },
+    ]
+    with (
+        patch(
+            "insider_scanner.core.congress_senate.search_senate_filings",
+            return_value=filings,
+        ) as search,
+        patch("insider_scanner.core.congress_senate.parse_ptr_page", return_value=[]),
+    ):
+        scrape_senate_trades(
+            member={
+                "first_name": "Katie",
+                "last_name": "Britt",
+                "official_name": "Katie Boyd Britt",
+            },
+            session=session,
+        )
+    assert search.call_args.kwargs["first_name"] == ""
+    assert search.call_args.kwargs["last_name"] == "Britt"
+    session.fetch_page.assert_called_once_with("/correct")

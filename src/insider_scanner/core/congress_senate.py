@@ -26,6 +26,11 @@ from curl_cffi import requests as curl_requests
 
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
+from insider_scanner.core.congress_identity import (
+    MemberIdentity,
+    identity_for,
+    name_matches,
+)
 from insider_scanner.core.fetch_outcome import (
     FetchIssue,
     FetchResult,
@@ -529,30 +534,9 @@ def _parse_senate_row(cells: list, col_map: dict[str, int]) -> dict | None:
 
 
 def _split_name(full_name: str) -> tuple[str, str]:
-    """Split an official name into (first_name, last_name) for search.
-
-    Handles formats like:
-    - "Pelosi Nancy" → ("Nancy", "Pelosi")
-    - "Nancy Pelosi" → ("Nancy", "Pelosi")
-    - "John D. Booker" → ("John D.", "Booker")
-    - "Booker, Cory" → ("Cory", "Booker")
-    """
-    name = full_name.strip()
-
-    # Handle "Last, First" format
-    if "," in name:
-        parts = name.split(",", 1)
-        return parts[1].strip(), parts[0].strip()
-
-    parts = name.split()
-    if len(parts) < 2:
-        return "", name
-
-    # Heuristic: if the first word is all-caps or starts with a title,
-    # assume "Last First" format
-    # Otherwise assume "First Last" format (more common in our data)
-    # Since our congress_members.json uses "Last First", we try both
-    return parts[0], " ".join(parts[1:])
+    """Resolve structured seed fields, with a conservative full-name fallback."""
+    member = identity_for(full_name)
+    return member.first_name, member.last_name
 
 
 # -----------------------------------------------------------------------
@@ -654,6 +638,7 @@ def search_senate_filings(
 def scrape_senate_trades(
     *,
     official_name: str | None = None,
+    member: MemberIdentity | dict | None = None,
     first_name: str = "",
     last_name: str = "",
     date_from: date | None = None,
@@ -681,9 +666,15 @@ def scrape_senate_trades(
     -------
     list of CongressTrade
     """
-    # Split name if needed
-    if official_name:
-        first_name, last_name = _split_name(official_name)
+    # Prefer structured fields over any display-name parsing. The remote first
+    # name search is strict, so filter the returned surname filings locally.
+    query = (
+        identity_for(member if member is not None else official_name)
+        if member is not None or official_name
+        else None
+    )
+    if query is not None:
+        first_name, last_name = query.first_name, query.last_name
 
     # The caller retains ownership of an explicitly supplied session.
     owns_session = session is None
@@ -701,7 +692,7 @@ def scrape_senate_trades(
         filings = as_fetch_result(
             search_senate_filings(
                 session,
-                first_name=first_name,
+                first_name="" if query is not None else first_name,
                 last_name=last_name,
                 date_from=date_from,
                 date_to=date_to,
@@ -724,6 +715,8 @@ def scrape_senate_trades(
         all_trades: list[CongressTrade] = []
 
         for i, filing in enumerate(filings):
+            if query is not None and not name_matches(query, filing):
+                continue
             official = f"{filing['first_name']} {filing['last_name']}".strip()
             ptr_url = filing["report_url"]
 

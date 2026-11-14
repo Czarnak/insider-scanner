@@ -12,7 +12,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from insider_scanner.core.congress_identity import (
+    MemberIndex,
+    get_member_index,
+    name_tokens,
+)
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.utils.atomic_file import atomic_write_bytes
 from insider_scanner.utils.config import CONGRESS_FILE
 from insider_scanner.utils.logging import get_logger
 
@@ -41,17 +47,13 @@ def load_congress_members(path: Path | None = None) -> list[dict]:
 def save_congress_members(members: list[dict], path: Path | None = None) -> None:
     """Save the Congress member list to disk."""
     p = path or CONGRESS_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(members, indent=2), encoding="utf-8")
+    atomic_write_bytes(p, json.dumps(members, indent=2).encode("utf-8"))
     log.info("Saved %d congress members to %s", len(members), p)
 
 
 def _normalize_name(name: str) -> str:
-    """Normalize a name for fuzzy matching (lowercase, strip suffixes)."""
-    name = name.lower().strip()
-    for suffix in (" jr", " sr", " iii", " ii", " iv", ","):
-        name = name.replace(suffix, "")
-    return " ".join(name.split())  # collapse whitespace
+    """Normalize whole tokens without deleting substrings inside surnames."""
+    return " ".join(name_tokens(name))
 
 
 def flag_congress_trades(
@@ -72,35 +74,12 @@ def flag_congress_trades(
     list of InsiderTrade
         Same list, mutated in place (is_congress and congress_member set).
     """
-    if members is None:
-        members = load_congress_members()
-
-    if not members:
-        return trades
-
-    # Build lookup set of normalized names
-    member_lookup: dict[str, str] = {}
-    for m in members:
-        raw_name = m.get("name", "")
-        if raw_name:
-            norm = _normalize_name(raw_name)
-            member_lookup[norm] = raw_name
-
+    index = get_member_index(CONGRESS_FILE) if members is None else MemberIndex(members)
     for trade in trades:
-        norm_insider = _normalize_name(trade.insider_name)
-
-        # Exact match
-        if norm_insider in member_lookup:
+        member = index.resolve(trade.insider_name, allow_surname=False)
+        if member is not None:
             trade.is_congress = True
-            trade.congress_member = member_lookup[norm_insider]
-            continue
-
-        # Partial match: check if any member name is contained in insider name or vice versa
-        for norm_member, raw_member in member_lookup.items():
-            if norm_member in norm_insider or norm_insider in norm_member:
-                trade.is_congress = True
-                trade.congress_member = raw_member
-                break
+            trade.congress_member = member.name
 
     flagged_count = sum(1 for t in trades if t.is_congress)
     if flagged_count:
@@ -109,21 +88,8 @@ def flag_congress_trades(
     return trades
 
 
-# Default seed data
-DEFAULT_CONGRESS_MEMBERS: list[dict] = [
-    {"name": "Pelosi Nancy", "state": "CA", "chamber": "House", "party": "D"},
-    {"name": "Tuberville Tommy", "state": "AL", "chamber": "Senate", "party": "R"},
-    {"name": "Crenshaw Dan", "state": "TX", "chamber": "House", "party": "R"},
-    {"name": "Ossoff Jon", "state": "GA", "chamber": "Senate", "party": "D"},
-    {"name": "Sullivan Dan", "state": "AK", "chamber": "Senate", "party": "R"},
-    {"name": "Hagerty Bill", "state": "TN", "chamber": "Senate", "party": "R"},
-    {"name": "Manchin Joe", "state": "WV", "chamber": "Senate", "party": "D"},
-    {"name": "Lummis Cynthia", "state": "WY", "chamber": "Senate", "party": "R"},
-]
-
-
 def init_default_congress_file(path: Path | None = None) -> None:
-    """Create the default congress members file if it doesn't exist."""
-    p = path or CONGRESS_FILE
-    if not p.exists():
-        save_congress_members(DEFAULT_CONGRESS_MEMBERS, p)
+    """Create a missing member file from the authoritative packaged seed."""
+    from insider_scanner.utils.config import initialize_congress_seed
+
+    initialize_congress_seed(path or CONGRESS_FILE)

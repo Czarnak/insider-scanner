@@ -7,7 +7,6 @@ from datetime import date
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.senate import (
-    DEFAULT_CONGRESS_MEMBERS,
     _normalize_name,
     flag_congress_trades,
     init_default_congress_file,
@@ -53,7 +52,10 @@ class TestLoadSave:
         init_default_congress_file(path)
         assert path.exists()
         data = json.loads(path.read_text())
-        assert len(data) == len(DEFAULT_CONGRESS_MEMBERS)
+        assert len(data) > 100
+        assert all(
+            member.get("first_name") and member.get("last_name") for member in data
+        )
 
     def test_init_no_overwrite(self, tmp_path):
         path = tmp_path / "congress.json"
@@ -115,3 +117,34 @@ class TestFlagCongressTrades:
         assert trades[0].is_congress
         assert not trades[1].is_congress
         assert trades[2].is_congress
+
+
+def test_flagging_rejects_empty_partial_and_similar_surnames():
+    members = [{"first_name": "Dan", "last_name": "Sullivan"}]
+    trades = [
+        InsiderTrade(ticker="AAPL", insider_name=name, trade_type="Buy")
+        for name in ("", "Dan", "Sullivan", "Dan Sullivanson")
+    ]
+    flag_congress_trades(trades, members)
+    assert not any(trade.is_congress for trade in trades)
+
+
+def test_flagging_default_file_uses_cached_stat_invalidated_index(
+    tmp_path, monkeypatch
+):
+    from insider_scanner.core import senate
+
+    path = tmp_path / "members.json"
+    monkeypatch.setattr(senate, "CONGRESS_FILE", path)
+    save_congress_members([{"name": "Pelosi Nancy"}], path)
+    trades = [
+        InsiderTrade(ticker="AAPL", insider_name="Nancy Pelosi", trade_type="Buy")
+    ]
+    flag_congress_trades(trades)
+    assert trades[0].is_congress
+    save_congress_members([{"name": "Tuberville Tommy"}], path)
+    trades = [
+        InsiderTrade(ticker="AAPL", insider_name="Nancy Pelosi", trade_type="Buy")
+    ]
+    flag_congress_trades(trades)
+    assert not trades[0].is_congress
