@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from insider_scanner.core._sec_xml import (
     SecXmlSecurityError,
 )
+from insider_scanner.core.edgar import normalize_cik
 from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES
 from insider_scanner.core.sec_ownership_document import (
     OwnershipDocument,
@@ -48,6 +49,9 @@ class _TransactionCommon:
     acquired_disposed: str | None
     shares_owned_following: Decimal | None
     direct_or_indirect: str | None
+    transaction_total_value: Decimal | None
+    value_owned_following: Decimal | None
+    price_footnote_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +75,8 @@ _log = get_logger("sec_ownership_parser")
 # Category mapping
 # ---------------------------------------------------------------------------
 
+# SEC Form 4, General Instruction 8 (Transaction Codes):
+# https://www.sec.gov/files/form4.pdf
 _CATEGORY_MAP: dict[str, str] = {
     "P": "purchase",
     "S": "sale",
@@ -81,8 +87,17 @@ _CATEGORY_MAP: dict[str, str] = {
     "X": "exercise",
     "F": "tax",
     "G": "gift",
-    "W": "gift",
-    "Z": "gift",
+    "D": "disposition_to_issuer",
+    "E": "expiration",
+    "H": "expiration",
+    "I": "discretionary",
+    "J": "other",
+    "K": "equity_swap",
+    "L": "small_acquisition",
+    "U": "tender",
+    "V": "voluntary_report",
+    "W": "inheritance",
+    "Z": "trust",
 }
 
 # ---------------------------------------------------------------------------
@@ -121,6 +136,7 @@ class ReportingOwner:
     is_ten_percent_owner: bool
     is_other: bool
     officer_title: str | None
+    other_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +153,9 @@ class NonDerivativeTransaction:
     direct_or_indirect: str | None
     footnote_ids: tuple[str, ...]
     warnings: tuple[str, ...] = ()
+    transaction_total_value: Decimal | None = None
+    value_owned_following: Decimal | None = None
+    price_footnote_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +177,10 @@ class DerivativeTransaction:
     direct_or_indirect: str | None
     footnote_ids: tuple[str, ...]
     warnings: tuple[str, ...] = ()
+    transaction_total_value: Decimal | None = None
+    value_owned_following: Decimal | None = None
+    price_footnote_ids: tuple[str, ...] = ()
+    underlying_security_value: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +197,7 @@ class OwnershipFiling:
     derivative_transactions: tuple[DerivativeTransaction, ...]
     footnotes: tuple[Footnote, ...]
     warnings: tuple[str, ...] = ()
+    reporting_owners: tuple[ReportingOwner, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +252,14 @@ def parse_ownership_document(
     remarks = _remarks(root, ctx)
 
     issuer = _parse_issuer(root, ctx)
-    reporting_owner = _parse_reporting_owner(root, ctx)
+    reporting_owners = tuple(
+        _parse_reporting_owner(el, ctx) for el in root.findall("reportingOwner")
+    )
+    reporting_owner = (
+        reporting_owners[0]
+        if reporting_owners
+        else ReportingOwner(None, None, False, False, False, False, None)
+    )
     if not issuer.cik or not reporting_owner.cik:
         raise SecOwnershipParseError(
             "Ownership XML requires issuer and reporting-owner CIKs"
@@ -251,6 +282,7 @@ def parse_ownership_document(
         derivative_transactions=derivative_transactions,
         footnotes=footnotes,
         warnings=tuple(ctx.warnings),
+        reporting_owners=reporting_owners,
     )
 
 
@@ -263,30 +295,19 @@ def _parse_issuer(root: _Element, ctx: _ParseContext) -> Issuer:
     el = root.find("issuer")
     if el is None:
         return Issuer(cik=None, name=None, trading_symbol=None)
-    symbol = _text(el, "issuerTradingSymbol", ctx) or None
+    symbol = _normalize_symbol(_text(el, "issuerTradingSymbol", ctx))
     return Issuer(
-        cik=_text(el, "issuerCik", ctx),
+        cik=_normalized_cik(_text(el, "issuerCik", ctx), ctx, "issuerCik"),
         name=_text(el, "issuerName", ctx),
         trading_symbol=symbol,
     )
 
 
-def _parse_reporting_owner(root: _Element, ctx: _ParseContext) -> ReportingOwner:
-    el = root.find("reportingOwner")
-    if el is None:
-        return ReportingOwner(
-            cik=None,
-            name=None,
-            is_director=False,
-            is_officer=False,
-            is_ten_percent_owner=False,
-            is_other=False,
-            officer_title=None,
-        )
+def _parse_reporting_owner(el: _Element, ctx: _ParseContext) -> ReportingOwner:
     id_el = el.find("reportingOwnerId")
     rel_el = el.find("reportingOwnerRelationship")
 
-    cik = _text(id_el, "rptOwnerCik", ctx) if id_el is not None else None
+    cik = _normalized_cik(_text(id_el, "rptOwnerCik", ctx), ctx, "rptOwnerCik")
     name = _text(id_el, "rptOwnerName", ctx) if id_el is not None else None
 
     is_director = _bool_flag(rel_el, "isDirector")
@@ -294,6 +315,7 @@ def _parse_reporting_owner(root: _Element, ctx: _ParseContext) -> ReportingOwner
     is_ten_pct = _bool_flag(rel_el, "isTenPercentOwner")
     is_other = _bool_flag(rel_el, "isOther")
     officer_title = _text(rel_el, "officerTitle", ctx) if rel_el is not None else None
+    other_text = _text(rel_el, "otherText", ctx)
 
     return ReportingOwner(
         cik=cik,
@@ -303,7 +325,29 @@ def _parse_reporting_owner(root: _Element, ctx: _ParseContext) -> ReportingOwner
         is_ten_percent_owner=is_ten_pct,
         is_other=is_other,
         officer_title=officer_title,
+        other_text=other_text,
     )
+
+
+def _normalized_cik(value: str | None, ctx: _ParseContext, field: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        return normalize_cik(value)
+    except ValueError:
+        _optional_warning(ctx, field, "invalid_cik")
+        return None
+
+
+def _normalize_symbol(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = _WHITESPACE_RE.sub(" ", value).strip().upper()
+    placeholders = {"NONE", "N/A", "NA", "-", "NOT APPLICABLE"}
+    if normalized in placeholders:
+        return None
+    symbol = re.split(r"[,\s]+", normalized, maxsplit=1)[0]
+    return None if symbol in placeholders else symbol
 
 
 def _parse_footnotes(root: _Element, ctx: _ParseContext) -> tuple[Footnote, ...]:
@@ -370,6 +414,19 @@ def _parse_transaction_common(el: _Element, ctx: _ParseContext) -> _TransactionC
         acquired_disposed=acquired_disposed,
         shares_owned_following=shares_owned_following,
         direct_or_indirect=direct_or_indirect,
+        transaction_total_value=_value_decimal(
+            el.find("transactionAmounts/transactionTotalValue"),
+            ctx,
+            "transactionTotalValue",
+        ),
+        value_owned_following=_value_decimal(
+            el.find("postTransactionAmounts/valueOwnedFollowingTransaction"),
+            ctx,
+            "valueOwnedFollowingTransaction",
+        ),
+        price_footnote_ids=_collect_footnote_ids(
+            el.find("transactionAmounts/transactionPricePerShare")
+        ),
     )
 
 
@@ -435,6 +492,9 @@ def _parse_non_derivative_txn(
         direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
         warnings=tuple(ctx.warnings),
+        transaction_total_value=common.transaction_total_value,
+        value_owned_following=common.value_owned_following,
+        price_footnote_ids=common.price_footnote_ids,
     )
 
 
@@ -485,6 +545,11 @@ def _parse_derivative_txn(
         if underlying is not None
         else None
     )
+    underlying_value = _value_decimal(
+        el.find("underlyingSecurity/underlyingSecurityValue"),
+        ctx,
+        "underlyingSecurityValue",
+    )
 
     footnote_ids = _collect_footnote_ids(el)
 
@@ -506,6 +571,10 @@ def _parse_derivative_txn(
         direct_or_indirect=common.direct_or_indirect,
         footnote_ids=footnote_ids,
         warnings=tuple(ctx.warnings),
+        transaction_total_value=common.transaction_total_value,
+        value_owned_following=common.value_owned_following,
+        price_footnote_ids=common.price_footnote_ids,
+        underlying_security_value=underlying_value,
     )
 
 
@@ -657,9 +726,11 @@ def _bool_flag(parent: _Element | None, tag: str) -> bool:
     return el.text.strip().lower() in ("1", "true")
 
 
-def _collect_footnote_ids(el: _Element) -> tuple[str, ...]:
+def _collect_footnote_ids(el: _Element | None) -> tuple[str, ...]:
     """Collect all <footnoteId id="..."/> values in document order, deduplicated."""
     seen: dict[str, None] = {}
+    if el is None:
+        return ()
     for fn_el in el.iter("footnoteId"):
         fid = fn_el.get("id")
         if fid and fid not in seen:

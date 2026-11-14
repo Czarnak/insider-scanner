@@ -57,7 +57,7 @@ def _primary_richness_score(trade: InsiderTrade) -> int:
     return score
 
 
-def _primary_rank(trade: InsiderTrade) -> tuple[int, str]:
+def _primary_rank(trade: InsiderTrade) -> tuple[int, int, str]:
     stable_values = {
         key: value
         for key, value in trade.to_dict().items()
@@ -65,6 +65,17 @@ def _primary_rank(trade: InsiderTrade) -> tuple[int, str]:
     }
     return (
         _primary_richness_score(trade),
+        # A reported zero carries more information than a compatibility zero
+        # whose missing flag is set. Keep this behind existing richness rules.
+        sum(
+            not missing
+            for missing in (
+                trade.shares_missing,
+                trade.price_missing,
+                trade.value_missing,
+                trade.shares_owned_after_missing,
+            )
+        ),
         json.dumps(stable_values, sort_keys=True),
     )
 
@@ -182,7 +193,9 @@ def filter_trades(
     if trade_type:
         result = [t for t in result if t.trade_type == trade_type]
     if min_value is not None:
-        result = [t for t in result if abs(t.value) >= min_value]
+        result = [
+            t for t in result if not t.value_missing and abs(t.value) >= min_value
+        ]
     if congress_only:
         result = [t for t in result if t.is_congress]
     if since:

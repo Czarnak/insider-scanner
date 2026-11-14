@@ -21,6 +21,7 @@ from insider_scanner.services.application import (
 from insider_scanner.services.sec_downloads import sec_today
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
 from insider_scanner.utils.logging import get_logger, setup_logging
+from insider_scanner.utils.trade_display import format_reported_number
 
 if TYPE_CHECKING:
     from insider_scanner.core.sec_client import SecClient
@@ -104,10 +105,12 @@ def cmd_scan(args: argparse.Namespace, services: ApplicationServices) -> None:
     print(f"\nFound {len(filtered)} trades for {ticker}")
     for t in filtered[:20]:
         congress_tag = " [CONGRESS]" if t.is_congress else ""
+        shares = format_reported_number(t.shares, missing=t.shares_missing)
+        value = format_reported_number(t.value, missing=t.value_missing, currency=True)
         print(
             f"  {t.trade_date or '?':>10}  {t.trade_type:<8}  "
-            f"{t.insider_name:<25}  {t.shares:>10,.0f} shares  "
-            f"${t.value:>12,.0f}{congress_tag}"
+            f"{t.insider_name:<25}  {shares:>10} shares  "
+            f"{value:>13}{congress_tag}"
         )
     if len(filtered) > 20:
         print(f"  ... and {len(filtered) - 20} more")
@@ -137,9 +140,10 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     print(f"\nLatest {len(trades)} insider trades:")
     for t in trades[:30]:
         congress_tag = " [CONGRESS]" if t.is_congress else ""
+        value = format_reported_number(t.value, missing=t.value_missing, currency=True)
         print(
             f"  {t.trade_date or '?':>10}  {t.ticker:<6}  {t.trade_type:<8}  "
-            f"{t.insider_name:<25}  ${t.value:>12,.0f}{congress_tag}"
+            f"{t.insider_name:<25}  {value:>13}{congress_tag}"
         )
 
     if args.save:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from insider_scanner.core import edgar
-from insider_scanner.core.sec_forms import OWNERSHIP_FORM_TYPES as OWNERSHIP_FORMS
+from insider_scanner.core.sec_forms import TRANSACTION_FORM_TYPES as OWNERSHIP_FORMS
 
 
 @dataclass(frozen=True, slots=True)

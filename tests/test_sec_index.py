@@ -18,7 +18,7 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sec_master_20260615_excerpt
 
 
 def test_ownership_forms_are_exact_and_immutable() -> None:
-    assert OWNERSHIP_FORMS == frozenset({"3", "3/A", "4", "4/A", "5", "5/A"})
+    assert OWNERSHIP_FORMS == frozenset({"4", "4/A", "5", "5/A"})
     assert isinstance(OWNERSHIP_FORMS, frozenset)
 
 
@@ -45,26 +45,15 @@ def test_master_index_row_is_frozen_and_slotted() -> None:
 def test_parse_master_index_filters_validates_deduplicates_and_preserves_order() -> (
     None
 ):
-    text = FIXTURE_PATH.read_text(encoding="utf-8")
+    text = FIXTURE_PATH.read_text(encoding="utf-8").replace(
+        "999999|DUPLICATE SHOULD NOT WIN|5/A|2026-06-16|edgar/data/320193/0000320193-26-000061.txt",
+        "999999|DUPLICATE SHOULD NOT WIN|5/A|2026-06-16|edgar/data/789019/0001062993-26-009876.txt",
+    )
 
     result = parse_master_index(text)
 
     assert isinstance(result, tuple)
     assert result == (
-        SecMasterIndexRow(
-            cik="0000320193",
-            company_name="APPLE INC",
-            form_type="3",
-            filing_date=date(2026, 6, 15),
-            archive_path="edgar/data/320193/0000320193-26-000061.txt",
-        ),
-        SecMasterIndexRow(
-            cik="0001652044",
-            company_name="ALPHABET INC.",
-            form_type="3/A",
-            filing_date=date(2026, 6, 15),
-            archive_path="edgar/data/1652044/0001652044-26-000072.txt",
-        ),
         SecMasterIndexRow(
             cik="0000789019",
             company_name="MICROSOFT CORP",
@@ -104,6 +93,13 @@ def test_parse_master_index_rejects_non_string_input(invalid_text: object) -> No
 
 def test_parse_master_index_returns_empty_tuple_when_no_ownership_rows() -> None:
     text = "CIK|Company Name|Form Type|Date Filed|Filename\n1|Issuer|8-K|bad|bad"
+
+    assert parse_master_index(text) == ()
+
+
+@pytest.mark.parametrize("form", ["3", "3/A"])
+def test_initial_holdings_are_excluded_from_transaction_discovery(form: str) -> None:
+    text = f"320193|APPLE INC|{form}|2026-06-15|edgar/data/320193/filing.txt"
 
     assert parse_master_index(text) == ()
 

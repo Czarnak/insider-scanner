@@ -40,6 +40,7 @@ from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import TICKERS_FILE
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker, dispatch
+from insider_scanner.utils.trade_display import format_reported_number
 
 log = get_logger("scan_tab")
 
@@ -493,6 +494,11 @@ class ScanTab(QWidget):
             self.trades_model.set_dataframe(pd.DataFrame())
             return
 
+        for column in ("shares", "price", "value"):
+            df[column] = (
+                df[column].astype(object).where(~df[f"{column}_missing"], "N/A")
+            )
+
         # Select display columns
         display_cols = [
             c
@@ -555,10 +561,17 @@ class ScanTab(QWidget):
         source_index = self.trades_model.mapToSource(index)
         if row < len(self._trades):
             trade = self._trades[source_index.row()]
+            shares = format_reported_number(trade.shares, missing=trade.shares_missing)
+            price = format_reported_number(
+                trade.price, missing=trade.price_missing, decimals=2, currency=True
+            )
+            value = format_reported_number(
+                trade.value, missing=trade.value_missing, currency=True
+            )
             detail = (
                 f"Name: {trade.insider_name}  |  Title: {trade.insider_title}\n"
-                f"Type: {trade.trade_type}  |  Shares: {trade.shares:,.0f}  |  "
-                f"Price: ${trade.price:,.2f}  |  Value: ${trade.value:,.0f}\n"
+                f"Type: {trade.trade_type}  |  Shares: {shares}  |  "
+                f"Price: {price}  |  Value: {value}\n"
                 f"Source: {trade.source}"
             )
             if trade.is_congress:

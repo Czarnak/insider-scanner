@@ -4,11 +4,49 @@ import json
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.importer import import_legacy_path
 
 DEFAULT_MAX_LEGACY_FILE_SIZE_BYTES = 50 * 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ("shares_missing", "price_missing", "value_missing", "shares_owned_after_missing"),
+)
+@pytest.mark.parametrize("value", (True, False))
+def test_import_preserves_numeric_availability_boolean(tmp_path, flag, value):
+    path = tmp_path / "availability.json"
+    path.write_text(json.dumps([{**_us_record(), flag: value}]), encoding="utf-8")
+    persistence = open_persistence(tmp_path / "db.sqlite3")
+    try:
+        report = import_legacy_path(path, persistence)
+        assert report.inserted == 1
+        assert report.errors == 0
+        assert getattr(persistence.us_trades.query("AAPL")[0], flag) is value
+    finally:
+        persistence.close()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ("shares_missing", "price_missing", "value_missing", "shares_owned_after_missing"),
+)
+@pytest.mark.parametrize("value", ("false", "true", 0, 1, None))
+def test_import_rejects_non_boolean_numeric_availability(tmp_path, flag, value):
+    path = tmp_path / "availability.json"
+    path.write_text(json.dumps([{**_us_record(), flag: value}]), encoding="utf-8")
+    persistence = open_persistence(tmp_path / "db.sqlite3")
+    try:
+        report = import_legacy_path(path, persistence)
+        assert report.inserted == 0
+        assert report.errors == 1
+        assert persistence.us_trades.query("AAPL") == []
+    finally:
+        persistence.close()
 
 
 def _us_record() -> dict:

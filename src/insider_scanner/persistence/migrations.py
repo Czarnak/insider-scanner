@@ -149,6 +149,53 @@ def _repair_unfinished_scan_coverage(connection: Connection) -> None:
     )
 
 
+def _preserve_sec_financial_meaning(connection: Connection) -> None:
+    """Add availability flags and repair SEC meaning supported by stored evidence.
+
+    Old rows did not retain the raw numeric XML. Their zero values cannot be
+    classified safely; retain the legacy meaning until the filing is reparsed.
+    """
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN shares_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN price_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN value_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN shares_owned_after_missing BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.execute(
+        us_trades.update()
+        .where(us_trades.c.source == "sec_edgar", us_trades.c.is_derivative.is_(True))
+        .values(trade_type="Other")
+    )
+    rows = connection.execute(
+        select(us_trades.c.id, us_trades.c.cik_issuer, us_trades.c.cik_insider).where(
+            us_trades.c.source == "sec_edgar"
+        )
+    )
+    for row in rows:
+        repaired: dict[str, str] = {}
+        for field in ("cik_issuer", "cik_insider"):
+            original = row._mapping[field]
+            candidate = original.strip()
+            if (
+                1 <= len(candidate) <= 10
+                and candidate.isascii()
+                and candidate.isdigit()
+            ):
+                normalized = candidate.zfill(10)
+                if normalized != original:
+                    repaired[field] = normalized
+        if repaired:
+            connection.execute(
+                us_trades.update().where(us_trades.c.id == row.id).values(**repaired)
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -174,5 +221,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=5,
         name="repair_unfinished_scan_coverage",
         upgrade=_repair_unfinished_scan_coverage,
+    ),
+    Migration(
+        version=6,
+        name="preserve_sec_financial_meaning",
+        upgrade=_preserve_sec_financial_meaning,
     ),
 )

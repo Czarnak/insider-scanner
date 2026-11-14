@@ -10,7 +10,7 @@ from insider_scanner.services.sec_backfill import (
     SecBackfillSummary,
 )
 from tests.sec_stubs import (
-    FIXTURE_ZIP,  # reuse the 4-record fixture
+    FIXTURE_ZIP,  # three transaction filings plus one excluded Form 3
     VALID_FILING,
     make_client,
     make_transport,
@@ -47,8 +47,8 @@ def test_run_processes_all_fixture_records(persistence, tmp_path):
     svc = _service(persistence, tmp_path)
     summary = svc.run(FIXTURE_ZIP, confirm=True)
     assert isinstance(summary, SecBackfillSummary)
-    assert summary.filings_discovered == 4
-    assert summary.filings_parsed == 4
+    assert summary.filings_discovered == 3
+    assert summary.filings_parsed == 3
     assert not (tmp_path / "backfill.json").exists()
 
 
@@ -95,7 +95,7 @@ def test_persistence_error_is_not_checkpointed_and_is_retried(
     monkeypatch.setattr(persistence.us_trades, "upsert", _boom)
     svc = _service(persistence, tmp_path)
     summary1 = svc.run(FIXTURE_ZIP, confirm=True)
-    assert summary1.failures == 4
+    assert summary1.failures == 3
     assert summary1.transactions_inserted == 0
     assert not (tmp_path / "backfill.json").exists()  # nothing checkpointed
 
@@ -186,7 +186,7 @@ def test_partial_backfill_keeps_successful_checkpoint_for_retry(persistence, tmp
     assert first.failures == 1
     assert (tmp_path / "backfill.json").exists()
     second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
-    assert second.skipped_resume == 3
+    assert second.skipped_resume == 2
     assert second.filings_parsed == 1
     assert second.failures == 0
 
@@ -209,4 +209,4 @@ def test_unsupported_accession_is_terminal_on_resume(persistence, tmp_path):
     assert first.failures == 0
     second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
     assert second.skipped_resume == 1
-    assert second.filings_parsed == 3
+    assert second.filings_parsed == 2

@@ -17,6 +17,7 @@ from insider_scanner.core.trade_types import TransactionDirection, classify_dire
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.trade_display import format_reported_number
 
 _log = get_logger("gui.price_chart")
 
@@ -179,6 +180,8 @@ class PriceChartWidget(QWidget):
         for t in trades:
             if t.trade_date is None:
                 continue
+            if isinstance(t, InsiderTrade) and t.price_missing and not self._bars:
+                continue
             spot = {
                 "pos": (_to_timestamp(t.trade_date), marker_y_for_trade(t, self._bars)),
                 "data": {"tip": build_marker_tooltip(t)},
@@ -249,9 +252,13 @@ def build_marker_tooltip(trade: InsiderTrade | CongressTrade) -> str:
         ),
         f"Date: {trade.trade_date.isoformat() if trade.trade_date else 'n/a'}",
     ]
-    if hasattr(trade, "shares"):
-        lines.append(f"Shares: {trade.shares:,.0f}")
-        lines.append(f"Value: ${trade.value:,.0f}")
+    if isinstance(trade, InsiderTrade):
+        shares = format_reported_number(trade.shares, missing=trade.shares_missing)
+        value = format_reported_number(
+            trade.value, missing=trade.value_missing, currency=True
+        )
+        lines.append(f"Shares: {shares}")
+        lines.append(f"Value: {value}")
     elif hasattr(trade, "amount_range"):
         lines.append(f"Value: {trade.amount_range}")
     return "\n".join(lines)

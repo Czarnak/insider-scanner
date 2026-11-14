@@ -6,15 +6,16 @@ Pure module — no database access, no network I/O.  Call
 
 Field mapping rules
 -------------------
-* ``trade_type`` derives from the parser ``category`` field:
-  purchase→Buy, sale→Sell, exercise→Exercise, everything else→Other.
+* Stock ``trade_type`` derives from ``category``: purchase→Buy, sale→Sell,
+  exercise→Exercise. Derivatives remain neutral ``Other`` with their original
+  category and amounts retained in detail, so an exercise's option leg is not
+  counted as another stock acquisition.
 * ``ticker`` = ``filing.issuer.trading_symbol`` when truthy, else ``""``.
-* ``company`` = ``filing.issuer.name`` when truthy, else
-  ``index_row.company_name`` (fall-through to index authoritative name).
-* ``insider_title`` = ``officer_title`` when truthy, else a joined string of
-  the active boolean-role flags (Director / Officer / 10% Owner / Other).
-* ``value`` = ``float(shares * price_per_share)`` when BOTH numeric fields are
-  present, else ``0.0``.
+* The index company name is a fallback only for the issuer's own index row.
+* The primary owner's columns remain stable; all reporting owners and roles
+  are retained in ``sec_detail_json`` without duplicating transactions.
+* Value uses shares times price, or the separately reported transaction total.
+  Missing numeric fields carry explicit flags; their legacy floats remain zero.
 * ``sec_detail_json`` is serialized with ``sort_keys=True`` so repeated calls
   on identical input yield byte-identical output (idempotent re-ingest).
 """
@@ -35,6 +36,7 @@ from insider_scanner.core.sec_ownership_parser import (
     Footnote,
     NonDerivativeTransaction,
     OwnershipFiling,
+    ReportingOwner,
 )
 from insider_scanner.utils.logging import get_logger
 
@@ -77,19 +79,40 @@ def _insider_title(
     is_officer: bool,
     is_ten_percent_owner: bool,
     is_other: bool,
+    other_text: str | None = None,
 ) -> str:
-    if officer_title:
-        return officer_title
-    roles: list[str] = []
+    roles: list[str] = [officer_title] if officer_title else []
     if is_director:
         roles.append("Director")
-    if is_officer:
+    if is_officer and not officer_title:
         roles.append("Officer")
     if is_ten_percent_owner:
         roles.append("10% Owner")
     if is_other:
-        roles.append("Other")
+        roles.append(other_text or "Other")
     return ", ".join(roles)
+
+
+def _normalized_cik(cik: str | None) -> str:
+    if not cik:
+        return ""
+    try:
+        return edgar.normalize_cik(cik.strip())
+    except (TypeError, ValueError) as exc:
+        raise SecTradeMappingError("SEC CIK is invalid") from exc
+
+
+def _owner_detail(owner: ReportingOwner) -> dict[str, object]:
+    return {
+        "cik": _normalized_cik(owner.cik),
+        "name": owner.name,
+        "officer_title": owner.officer_title,
+        "is_director": owner.is_director,
+        "is_officer": owner.is_officer,
+        "is_ten_percent_owner": owner.is_ten_percent_owner,
+        "is_other": owner.is_other,
+        "other_text": owner.other_text,
+    }
 
 
 def _footnote_index(footnotes: tuple[Footnote, ...]) -> dict[str, str]:
@@ -160,11 +183,25 @@ def _amends_key(
 def _build_detail(
     txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> str:
-    capped_ids = txn.footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
+    price_ids = txn.price_footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
+    capped_ids = tuple(dict.fromkeys((*price_ids, *txn.footnote_ids)))[
+        :_MAX_EMBEDDED_FOOTNOTES
+    ]
     detail: dict[str, object] = {
         "footnote_ids": list(capped_ids),
         "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},
         "security_title": txn.security_title,
+        "category": txn.category,
+        "transaction_shares": _decimal_or_null(txn.shares),
+        "transaction_price_per_share": _decimal_or_null(txn.price_per_share),
+        "shares_owned_following": _decimal_or_null(txn.shares_owned_following),
+        "transaction_total_value": _decimal_or_null(txn.transaction_total_value),
+        "value_owned_following": _decimal_or_null(txn.value_owned_following),
+        "price_footnote_ids": list(price_ids),
+        "reporting_owners": [
+            _owner_detail(owner)
+            for owner in (ctx.filing.reporting_owners or (ctx.filing.reporting_owner,))
+        ],
     }
     warnings = [*ctx.warnings, *txn.warnings]
     if isinstance(txn, DerivativeTransaction):
@@ -179,6 +216,9 @@ def _build_detail(
                     txn.underlying_security_shares
                 ),
                 "underlying_security_title": txn.underlying_security_title,
+                "underlying_security_value": _decimal_or_null(
+                    txn.underlying_security_value
+                ),
             }
         )
         if (
@@ -206,20 +246,29 @@ def _build_trade(
     txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> InsiderTrade:
     filing = ctx.filing
+    value = (
+        txn.shares * txn.price_per_share
+        if txn.shares is not None and txn.price_per_share is not None
+        else txn.transaction_total_value
+    )
     return InsiderTrade(
         ticker=ctx.ticker,
         company=ctx.company,
         insider_name=ctx.insider_name,
         insider_title=ctx.insider_title,
-        trade_type=_trade_type(txn.category),  # type: ignore[arg-type]
+        trade_type="Other"
+        if isinstance(txn, DerivativeTransaction)
+        else _trade_type(txn.category),  # type: ignore[arg-type]
         trade_date=txn.transaction_date,
         filing_date=ctx.index_row.filing_date,
         shares=_finite_float(txn.shares),
         price=_finite_float(txn.price_per_share),
-        value=_finite_float(txn.shares * txn.price_per_share)
-        if txn.shares is not None and txn.price_per_share is not None
-        else 0.0,
+        value=_finite_float(value),
         shares_owned_after=_finite_float(txn.shares_owned_following),
+        shares_missing=txn.shares is None,
+        price_missing=txn.price_per_share is None,
+        value_missing=value is None,
+        shares_owned_after_missing=txn.shares_owned_following is None,
         source="sec_edgar",
         edgar_url=ctx.edgar_url,
         accession_number=filing.accession_number or "",
@@ -277,11 +326,14 @@ def ownership_filing_to_trades(
         _log.warning(
             "SEC data-quality warning reason=period_of_report_after_filing_date"
         )
+    cik_issuer = _normalized_cik(filing.issuer.cik)
+    index_cik = _normalized_cik(index_row.cik)
     ctx = _MappingContext(
         filing=filing,
         index_row=index_row,
         ticker=filing.issuer.trading_symbol or "",
-        company=filing.issuer.name or index_row.company_name,
+        company=filing.issuer.name
+        or (index_row.company_name if cik_issuer and cik_issuer == index_cik else ""),
         insider_name=filing.reporting_owner.name or "",
         insider_title=_insider_title(
             filing.reporting_owner.officer_title,
@@ -289,10 +341,11 @@ def ownership_filing_to_trades(
             filing.reporting_owner.is_officer,
             filing.reporting_owner.is_ten_percent_owner,
             filing.reporting_owner.is_other,
+            filing.reporting_owner.other_text,
         ),
         edgar_url=edgar.build_filing_archive_url(index_row.archive_path),
-        cik_issuer=filing.issuer.cik or "",
-        cik_insider=filing.reporting_owner.cik or "",
+        cik_issuer=cik_issuer,
+        cik_insider=_normalized_cik(filing.reporting_owner.cik),
         footnotes=_footnote_index(filing.footnotes),
         warnings=tuple(warnings),
     )

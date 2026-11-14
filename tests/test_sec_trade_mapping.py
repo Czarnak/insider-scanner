@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -234,9 +235,9 @@ class TestCategoryToTradeType:
     @pytest.mark.parametrize(
         "category, expected",
         [
-            ("purchase", "Buy"),
-            ("sale", "Sell"),
-            ("exercise", "Exercise"),
+            ("purchase", "Other"),
+            ("sale", "Other"),
+            ("exercise", "Other"),
             ("award", "Other"),
             ("other", "Other"),
         ],
@@ -253,6 +254,77 @@ class TestCategoryToTradeType:
 
 
 class TestNumericFields:
+    def test_missing_fields_differ_from_reported_zero(self) -> None:
+        missing = _non_deriv(
+            shares=None, price_per_share=None, shares_owned_following=None
+        )
+        zero = _non_deriv(
+            shares=Decimal(0),
+            price_per_share=Decimal(0),
+            shares_owned_following=Decimal(0),
+        )
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(missing, zero)), _INDEX_ROW
+        )
+        for flag in (
+            "shares_missing",
+            "price_missing",
+            "value_missing",
+            "shares_owned_after_missing",
+        ):
+            assert getattr(trades[0], flag) is True
+            assert getattr(trades[1], flag) is False
+        assert trades[0].value == trades[1].value == 0
+
+    @pytest.mark.parametrize("total", [Decimal("1234.50"), Decimal(0)])
+    def test_reported_total_value_is_not_a_share_quantity(self, total) -> None:
+        txn = replace(
+            _non_deriv(shares=None, price_per_share=None),
+            transaction_total_value=total,
+            value_owned_following=Decimal(9000),
+        )
+        trade = ownership_filing_to_trades(_filing(non_derivs=(txn,)), _INDEX_ROW)[0]
+        assert trade.value == float(total)
+        assert trade.value_missing is False
+        assert trade.shares_missing is True
+        assert trade.price_missing is True
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["transaction_total_value"] == str(total)
+        assert detail["value_owned_following"] == "9000"
+
+    def test_derivative_underlying_value_keeps_its_unit(self) -> None:
+        txn = replace(
+            _deriv(underlying_security_shares=None),
+            underlying_security_value=Decimal(7000),
+        )
+        trade = ownership_filing_to_trades(_filing(derivs=(txn,)), _INDEX_ROW)[0]
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["underlying_security_shares"] is None
+        assert detail["underlying_security_value"] == "7000"
+        assert detail["category"] == "exercise"
+        assert trade.direction.value == "Other"
+
+    def test_price_footnote_remains_identifiable_and_resolvable(self) -> None:
+        txn = replace(
+            _non_deriv(price_per_share=None, footnote_ids=("F1", "F2")),
+            price_footnote_ids=("F2",),
+        )
+        trade = ownership_filing_to_trades(
+            _filing(
+                non_derivs=(txn,),
+                footnotes=(
+                    Footnote("F1", "Ownership"),
+                    Footnote("F2", "Weighted average"),
+                ),
+            ),
+            _INDEX_ROW,
+        )[0]
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["price_footnote_ids"] == ["F2"]
+        assert detail["footnotes"]["F2"] == "Weighted average"
+        assert detail["transaction_price_per_share"] is None
+        assert trade.price_missing and trade.value_missing
+
     def test_value_equals_shares_times_price(self) -> None:
         nd = _non_deriv(shares=Decimal(100), price_per_share=Decimal(50))
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
@@ -317,9 +389,17 @@ class TestTickerCompanyFallback:
     def test_company_falls_back_to_index_row_name_when_issuer_name_none(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(
-            _filing(non_derivs=(nd,), issuer=_issuer(name=None)), _INDEX_ROW
+            _filing(non_derivs=(nd,), issuer=_issuer(name=None, cik="1234567")),
+            _INDEX_ROW,
         )
         assert trades[0].company == _INDEX_ROW.company_name
+
+    def test_owner_index_name_is_never_used_as_company(self) -> None:
+        trade = ownership_filing_to_trades(
+            _filing(non_derivs=(_non_deriv(),), issuer=_issuer(name=None)),
+            replace(_INDEX_ROW, company_name="OWNER NAME"),
+        )[0]
+        assert trade.company == ""
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +408,19 @@ class TestTickerCompanyFallback:
 
 
 class TestInsiderTitle:
+    def test_officer_title_preserves_all_active_roles(self) -> None:
+        owner = replace(
+            _owner(),
+            is_director=True,
+            is_ten_percent_owner=True,
+            is_other=True,
+            other_text="Investment manager",
+        )
+        trade = ownership_filing_to_trades(
+            _filing(non_derivs=(_non_deriv(),), owner=owner), _INDEX_ROW
+        )[0]
+        assert trade.insider_title == "CEO, Director, 10% Owner, Investment manager"
+
     def test_officer_title_used_when_present(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(
@@ -384,6 +477,33 @@ class TestInsiderTitle:
 
 
 class TestFirstClassSecFields:
+    def test_all_reporting_owners_retained_without_expanding_transactions(self) -> None:
+        primary = replace(_owner(), cik="1111111")
+        joint = replace(
+            _owner(name="Joint Fund"),
+            cik="2222222",
+            is_other=True,
+            other_text="General partner",
+        )
+        filing = replace(
+            _filing(non_derivs=(_non_deriv(row_id="stable-row"),), owner=primary),
+            reporting_owners=(primary, joint),
+            issuer=_issuer(cik="9876543"),
+        )
+        trades = ownership_filing_to_trades(filing, _INDEX_ROW)
+        assert len(trades) == 1
+        trade = trades[0]
+        assert (trade.cik_issuer, trade.cik_insider, trade.sec_row_id) == (
+            "0009876543",
+            "0001111111",
+            "stable-row",
+        )
+        owners = json.loads(trade.sec_detail_json)["reporting_owners"]
+        assert [owner["cik"] for owner in owners] == ["0001111111", "0002222222"]
+        assert owners[1]["name"] == "Joint Fund"
+        assert owners[1]["is_other"] is True
+        assert owners[1]["other_text"] == "General partner"
+
     def test_source_is_sec_edgar(self) -> None:
         nd = _non_deriv()
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)

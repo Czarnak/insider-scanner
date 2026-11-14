@@ -170,6 +170,14 @@ def _parse_us(item: dict) -> InsiderTrade:
         raise ValueError("invalid trade_type")
     if "is_congress" in item and not isinstance(item["is_congress"], bool):
         raise ValueError("is_congress must be a boolean")
+    for flag in (
+        "shares_missing",
+        "price_missing",
+        "value_missing",
+        "shares_owned_after_missing",
+    ):
+        if flag in item and not isinstance(item[flag], bool):
+            raise ValueError(f"{flag} must be a boolean")
     _require_finite((trade.shares, trade.price, trade.value, trade.shares_owned_after))
     return replace(trade, ticker=ticker, source=source)
 

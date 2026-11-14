@@ -6,16 +6,14 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import MetaData, Table, insert, select
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.coverage import CoverageRepository, DateInterval
+from insider_scanner.persistence.mappings import us_to_values
 from insider_scanner.persistence.migrations import MIGRATIONS
 from insider_scanner.persistence.refresh import RefreshStateRepository
-from insider_scanner.persistence.repositories import (
-    CongressTradeRepository,
-    UsTradeRepository,
-)
+from insider_scanner.persistence.repositories import CongressTradeRepository
 from insider_scanner.persistence.schema import congress_trades, us_trades
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.us import UsScanService
@@ -37,21 +35,42 @@ def legacy_database(tmp_path):
 
 
 def _rows(engine, table):
+    historical_table = Table(table.name, MetaData(), autoload_with=engine)
     with engine.connect() as connection:
-        return [dict(row) for row in connection.execute(select(table)).mappings()]
+        return [
+            dict(row) for row in connection.execute(select(historical_table)).mappings()
+        ]
+
+
+def _insert_legacy_us_trades(engine, trades):
+    """Seed the persisted historical schema without current repository fields."""
+    table = Table("us_trades", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            insert(table),
+            [
+                {
+                    field: value
+                    for field, value in us_to_values(trade).items()
+                    if field in table.c
+                }
+                for trade in trades
+            ],
+        )
 
 
 def test_upgrade_preserves_trades_and_invalidates_only_affected_source_state(
     legacy_database,
 ):
     engine, _ = legacy_database
-    UsTradeRepository(engine).upsert(
+    _insert_legacy_us_trades(
+        engine,
         [
             us_trade(ticker="AAPL", source="openinsider", filing_date=None),
             us_trade(ticker="MSFT", filing_date=None),
             us_trade(ticker="NVDA", source="openinsider"),
             us_trade(ticker="IBM", filing_date=None),
-        ]
+        ],
     )
     with engine.begin() as connection:
         connection.execute(
@@ -101,8 +120,9 @@ def test_upgrade_preserves_trades_and_invalidates_only_affected_source_state(
 
 def test_upgrade_without_missing_openinsider_dates_keeps_coverage(legacy_database):
     engine, _ = legacy_database
-    UsTradeRepository(engine).upsert(
-        [us_trade(source="openinsider"), us_trade(ticker="IBM", filing_date=None)]
+    _insert_legacy_us_trades(
+        engine,
+        [us_trade(source="openinsider"), us_trade(ticker="IBM", filing_date=None)],
     )
     coverage = CoverageRepository(engine)
     coverage.add("us", "*", "openinsider", INTERVAL)
@@ -149,7 +169,7 @@ def test_upgrade_repairs_only_missing_amount_bounds_without_changing_identity(
 def test_upgrade_allows_bounded_rescan_to_fill_date_under_existing_key(legacy_database):
     engine, database_file = legacy_database
     old_trade = us_trade(source="openinsider", filing_date=None)
-    UsTradeRepository(engine).upsert([old_trade])
+    _insert_legacy_us_trades(engine, [old_trade])
     CoverageRepository(engine).add("us", "AAPL", "openinsider", INTERVAL)
     before = _rows(engine, us_trades)[0]
     calls = []

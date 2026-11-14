@@ -247,7 +247,7 @@ def test_bootstrap_sets_schema_version_to_one(engine):
             select(schema_version.c.version).order_by(schema_version.c.version)
         ).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5]
+        assert list(versions) == [1, 2, 3, 4, 5, 6]
 
 
 def test_bootstrap_is_idempotent(engine):
@@ -257,7 +257,7 @@ def test_bootstrap_is_idempotent(engine):
     with engine.connect() as connection:
         versions = connection.execute(select(schema_version.c.version)).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5]
+        assert list(versions) == [1, 2, 3, 4, 5, 6]
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
 
 
@@ -506,7 +506,7 @@ def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
                     select(schema_version.c.version).order_by(schema_version.c.version)
                 ).scalars()
             )
-            assert versions == [1, 2, 3, 4, 5]
+            assert versions == [1, 2, 3, 4, 5, 6]
 
             # Legacy row preserved with v3 column defaults
             row = (
