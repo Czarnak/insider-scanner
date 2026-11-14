@@ -15,12 +15,11 @@ import pandas as pd
 
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.gui.congress_tab import (
+    DISPLAY_COLUMNS,
     congress_trades_to_dataframe,
     filter_congress_trades,
     save_congress_results,
-    DISPLAY_COLUMNS,
 )
-
 
 # -----------------------------------------------------------------------
 # Shared fixtures

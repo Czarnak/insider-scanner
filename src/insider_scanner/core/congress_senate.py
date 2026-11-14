@@ -641,7 +641,7 @@ def scrape_senate_trades(
         try:
             html = session.fetch_page(ptr_url)
             raw_transactions = parse_ptr_page(html)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
             log.warning("Failed to fetch/parse PTR %s: %s", ptr_url, exc)
             continue
 

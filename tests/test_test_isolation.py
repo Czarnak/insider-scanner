@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
-
+from pathlib import Path
 
 CONFTEST = Path(__file__).with_name("conftest.py")
 
@@ -55,6 +54,7 @@ finally:
             str(CONFTEST),
             str(profile),
         ],
+        check=False,
         env=env,
         capture_output=True,
         text=True,
@@ -87,6 +87,7 @@ finally:
 """,
             str(CONFTEST),
         ],
+        check=False,
         capture_output=True,
         text=True,
         timeout=30,
@@ -173,6 +174,7 @@ finally:
 """,
             str(CONFTEST),
         ],
+        check=False,
         cwd=tmp_path,
         env=env,
         capture_output=True,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
 import math
+from dataclasses import FrozenInstanceError, replace
 from typing import Any, cast
 
 import pytest
@@ -15,7 +15,6 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
-
 
 MIB = 1024 * 1024
 

@@ -31,7 +31,6 @@ from insider_scanner.persistence.feed_state import (
     state_to_dict,
 )
 
-
 # ---------------------------------------------------------------------------
 # criteria_to_dict / criteria_from_dict round-trip
 # ---------------------------------------------------------------------------

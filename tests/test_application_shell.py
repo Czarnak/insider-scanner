@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.alerts import load_alerts
+from insider_scanner.persistence.coverage import CoverageRepository
 from insider_scanner.persistence.feed import FeedCriteria, FeedMarket, FeedRecord
 from insider_scanner.persistence.feed_state import (
     FeedState,
@@ -16,16 +17,15 @@ from insider_scanner.persistence.feed_state import (
     load_feed_state,
     save_feed_state,
 )
-from insider_scanner.persistence.watchlists import load_watchlists
-from insider_scanner.services.alerts import AlertHit
-from insider_scanner.services.context import PersistenceContext
-from insider_scanner.persistence.coverage import CoverageRepository
 from insider_scanner.persistence.refresh import RefreshStateRepository
 from insider_scanner.persistence.repositories import (
     CongressTradeRepository,
     EuropeanTradeRepository,
     UsTradeRepository,
 )
+from insider_scanner.persistence.watchlists import load_watchlists
+from insider_scanner.services.alerts import AlertHit
+from insider_scanner.services.context import PersistenceContext
 
 
 def _services(tmp_path):

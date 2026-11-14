@@ -49,7 +49,7 @@ class ThemeManager(QObject):
     # Public API
     # ------------------------------------------------------------------
 
-    def install(self, app: object) -> None:  # noqa: C901
+    def install(self, app: object) -> None:
         """One-time setup — tolerates stub app objects (only setApplicationName required).
 
         Guards every call with ``hasattr`` so a ``DummyApp`` (test stub) never
@@ -130,7 +130,7 @@ class ThemeManager(QObject):
 
         # SYSTEM — read OS preference
         try:
-            from PySide6.QtCore import Qt  # noqa: PLC0415
+            from PySide6.QtCore import Qt
 
             app = QApplication.instance()
             if app is None:
@@ -206,7 +206,7 @@ class ThemeManager(QObject):
         Returns ``None`` on any error so the caller can guard.
         """
         try:
-            from PySide6.QtGui import QColor, QPalette  # noqa: PLC0415
+            from PySide6.QtGui import QColor, QPalette
 
             p = self._resolve()
             pal = QPalette()
@@ -242,7 +242,7 @@ def get_theme_manager() -> ThemeManager:
     Creates the instance on first call.  Safe to call even before a
     ``QApplication`` is constructed (returns manager with LIGHT palette).
     """
-    global _manager  # noqa: PLW0603
+    global _manager
     if _manager is None:
         _manager = ThemeManager()
     return _manager
@@ -255,7 +255,7 @@ def reset_theme_manager() -> None:
     ``get_theme_manager()`` builds a clean manager.  Primarily used by tests to
     isolate the singleton between cases and avoid signal accumulation.
     """
-    global _manager  # noqa: PLW0603
+    global _manager
     if _manager is not None:
         _manager._disconnect_color_scheme()
         _manager = None

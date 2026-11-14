@@ -83,10 +83,10 @@ def _validate_filters(
     """Raise ValueError when any filter argument is out of range or wrong type."""
     for m in markets:
         if not isinstance(m, FeedMarket):
-            raise ValueError(f"markets contains invalid value: {m!r}")
+            raise ValueError(f"markets contains invalid value: {m!r}")  # noqa: TRY004 - filter validation exposes ValueError
     for d in directions:
         if not isinstance(d, TransactionDirection):
-            raise ValueError(f"directions contains invalid value: {d!r}")
+            raise ValueError(f"directions contains invalid value: {d!r}")  # noqa: TRY004 - filter validation exposes ValueError
     if (
         transaction_date_from is not None
         and transaction_date_to is not None
@@ -129,7 +129,7 @@ class FeedQuery:
     def __post_init__(self) -> None:
         normalized_search = _normalize_search(self.search)
         if not isinstance(self.sort_field, FeedSortField):
-            raise ValueError("sort_field is invalid")
+            raise ValueError("sort_field is invalid")  # noqa: TRY004 - query validation exposes ValueError
         if not 1 <= self.limit <= MAX_PAGE_SIZE:
             raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
         if self.offset < 0:

@@ -6,12 +6,16 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
+
+# These stdlib APIs are available at the supported Python floor (>=3.11.5).
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 from importlib.resources import files
+
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from platformdirs import PlatformDirs
-
 
 APP_NAME = "Insider Scanner"
 APP_AUTHOR = "Insider Scanner"
@@ -144,18 +148,20 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
 
     temp_path: Path | None = None
     try:
-        with source.open("rb") as source_file:
-            with tempfile.NamedTemporaryFile(
+        with (
+            source.open("rb") as source_file,
+            tempfile.NamedTemporaryFile(
                 mode="wb",
                 dir=target.parent,
                 prefix=f".{target.name}.",
                 suffix=".tmp",
                 delete=False,
-            ) as temp_file:
-                temp_path = Path(temp_file.name)
-                shutil.copyfileobj(source_file, temp_file)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
+            ) as temp_file,
+        ):
+            temp_path = Path(temp_file.name)
+            shutil.copyfileobj(source_file, temp_file)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
 
         try:
             os.link(temp_path, target)
@@ -172,7 +178,10 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
 
 
 def ensure_dirs(paths: RuntimePaths | None = None) -> None:
-    """Create runtime directories and copy packaged seeds when absent."""
+    """Create runtime directories, prune HTTP caches, and copy absent seeds."""
+    # caching imports DEFAULT_CACHE_TTL from this module.
+    from insider_scanner.utils.caching import prune_expired_cache
+
     resolved = paths or DEFAULT_PATHS
     for directory in (
         resolved.data_dir,
@@ -185,6 +194,13 @@ def ensure_dirs(paths: RuntimePaths | None = None) -> None:
         resolved.house_disclosures_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+
+    for cache_directory in (
+        resolved.edgar_cache_dir,
+        resolved.scraper_cache_dir,
+        resolved.eu_cache_dir,
+    ):
+        prune_expired_cache(cache_directory)
 
     seed_root = files(SEED_PACKAGE)
     for target in (

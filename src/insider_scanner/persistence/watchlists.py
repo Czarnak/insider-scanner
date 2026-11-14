@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Literal
 
 from insider_scanner.persistence.feed import FeedMarket
-from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
+from insider_scanner.persistence.json_state import (
+    atomic_write_json,
+    preserve_json_state,
+    read_json_dict,
+)
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("watchlists")
@@ -225,12 +229,13 @@ def load_watchlists(path: Path) -> WatchlistStore:
         return store_from_dict(data)
     except Exception as exc:  # noqa: BLE001 - never fail a load
         _log.warning("Failed to parse watchlists from %s: %s", path, exc)
+        preserve_json_state(path)
         return WatchlistStore()
 
 
 def save_watchlists(path: Path, store: WatchlistStore) -> None:
     """Atomically write *store* to *path* as JSON."""
-    atomic_write_json(path, store_to_dict(store))
+    atomic_write_json(path, store_to_dict(store), protect_existing=True)
 
 
 def watchlists_path(data_dir: Path) -> Path:

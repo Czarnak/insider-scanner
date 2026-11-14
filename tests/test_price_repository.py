@@ -1,14 +1,12 @@
 from datetime import date
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
-from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.core.prices import repository as repo
+from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.persistence.schema import metadata
-
-
-import pytest
 
 
 @pytest.fixture

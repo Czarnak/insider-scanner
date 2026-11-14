@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from datetime import date as Date
 from datetime import datetime, timedelta
-import re
-from typing import Mapping
 from urllib.parse import quote
 
 import requests

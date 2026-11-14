@@ -1,7 +1,7 @@
 from datetime import date
 
-from insider_scanner.core.prices.model import PriceBar
 from insider_scanner import cli
+from insider_scanner.core.prices.model import PriceBar
 
 
 def test_cmd_price_prints_bars(capsys, monkeypatch):

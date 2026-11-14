@@ -84,7 +84,7 @@ class InsiderTrade:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "InsiderTrade":
+    def from_dict(cls, d: dict) -> InsiderTrade:
         td = d.get("trade_date", "")
         fd = d.get("filing_date", "")
         pr = d.get("period_of_report", "")
@@ -175,7 +175,7 @@ class CongressTrade:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "CongressTrade":
+    def from_dict(cls, d: dict) -> CongressTrade:
         td = d.get("trade_date", "")
         fd = d.get("filing_date", "")
         return cls(

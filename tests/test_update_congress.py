@@ -12,8 +12,7 @@ import responses
 _scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(_scripts_dir))
 
-import update_congress  # noqa: E402
-
+import update_congress
 
 SAMPLE_YAML = """
 - id:

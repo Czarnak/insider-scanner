@@ -28,9 +28,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import requests
 import sys
 from pathlib import Path
+
+import requests
 
 # Add project root to path so we can import project modules
 _project_root = Path(__file__).resolve().parent.parent
@@ -172,7 +173,7 @@ def fetch_committees() -> dict[str, str]:
         print(f"  Found {len(committees)} committees + subcommittees")
         return committees
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional enrichment must not abort an update
         print(f"  Failed to fetch committees: {exc}")
         return {}
 
@@ -205,7 +206,7 @@ def fetch_committee_membership() -> dict[str, list[str]]:
         print(f"  Found membership data for {len(bioguide_to_committees)} legislators")
         return bioguide_to_committees
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional enrichment must not abort an update
         print(f"  Failed to fetch committee membership: {exc}")
         return {}
 
@@ -312,7 +313,7 @@ def fetch_federal_legislators() -> list[dict]:
         print(f"  Found {len(members)} federal legislators")
         return members
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - any YAML source failure tries the JSON fallback
         print(f"  YAML fetch failed: {exc}")
 
     # Fallback: try JSON format
@@ -348,7 +349,7 @@ def fetch_federal_legislators() -> list[dict]:
         print(f"  Found {len(members)} federal legislators (JSON fallback)")
         return members
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - isolate failure of the fallback source
         print(f"  JSON fallback also failed: {exc}")
         return []
 
@@ -445,7 +446,7 @@ def fetch_state_legislators(api_key: str) -> list[dict]:
                 return []
             print(f"  HTTP error on page {page}: {exc}")
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - retain earlier pages after a source failure
             print(f"  Error on page {page}: {exc}")
             break
 

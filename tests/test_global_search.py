@@ -12,7 +12,6 @@ from insider_scanner.persistence.feed import (
     FeedMarket,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test infrastructure
 # ---------------------------------------------------------------------------
@@ -500,7 +499,7 @@ class TestReturnPressed:
         # Arrange
         results = _make_results()
         repo = FakeRepository(results)
-        line_edit, controller = _make_controller(qtbot, repository=repo)
+        line_edit, _controller = _make_controller(qtbot, repository=repo)
         line_edit.setText("")
 
         # Act
@@ -522,5 +521,5 @@ class TestReturnPressed:
         with qtbot.waitSignal(controller.companyChosen, timeout=1000) as blocker:
             line_edit.returnPressed.emit()
 
-        identifier, market = blocker.args
+        identifier, _market = blocker.args
         assert identifier == "AAPL"

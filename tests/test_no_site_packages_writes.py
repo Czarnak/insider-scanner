@@ -7,7 +7,6 @@ from pathlib import Path
 import insider_scanner
 from insider_scanner.utils import config
 
-
 SEED_TARGETS = (
     "congress_file",
     "tickers_file",

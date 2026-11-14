@@ -8,18 +8,16 @@ from __future__ import annotations
 
 import pytest
 
-from insider_scanner.gui.theme.tokens import DARK, LIGHT
-
 # We import helpers from the package __init__ (as other units will)
 from insider_scanner.gui.theme import (
-    NUMERIC_COLS,
     IDENTIFIER_COLS,
+    NUMERIC_COLS,
     TEXT_COLS,
     cell_foreground,
     column_alignment,
     column_is_monospace,
 )
-
+from insider_scanner.gui.theme.tokens import DARK, LIGHT
 
 # ---------------------------------------------------------------------------
 # Frozenset membership

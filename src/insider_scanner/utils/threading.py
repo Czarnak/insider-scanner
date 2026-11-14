@@ -55,7 +55,7 @@ class Worker(QRunnable):
             kwargs = {**self.kwargs, "progress_callback": self._emit_progress}
         try:
             result = self.fn(*self.args, **kwargs)
-        except Exception:
+        except Exception:  # noqa: BLE001 - arbitrary worker failures must reach the GUI error signal
             self._safe_emit(self.signals.error, sys.exc_info())
         else:
             self._safe_emit(self.signals.result, result)

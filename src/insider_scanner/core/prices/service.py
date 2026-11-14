@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import date
 
-from insider_scanner.core.prices.model import PriceBar
-from insider_scanner.core.prices.source import PriceSource, PriceSourceError
-from insider_scanner.core.prices.registry import get_price_source
-from insider_scanner.core.prices import repository as repo
-from insider_scanner.utils.logging import get_logger
-
 from sqlalchemy.engine import Engine
+
+from insider_scanner.core.prices import repository as repo
+from insider_scanner.core.prices.model import PriceBar
+from insider_scanner.core.prices.registry import get_price_source
+from insider_scanner.core.prices.source import PriceSource, PriceSourceError
+from insider_scanner.utils.logging import get_logger
 
 log = get_logger("prices.service")
 
@@ -52,7 +52,7 @@ def get_price_history(
                 fetched = src.fetch_daily(symbol, g_start, g_end)
                 src_name = getattr(src, "name", "unknown")
                 repo.upsert_bars(e, fetched, source=src_name)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - retain cached bars when a provider or persistence refresh fails
                 fetch_failed = True
                 log.warning(
                     "Price fetch failed for %s %s..%s: %s", symbol, g_start, g_end, exc
@@ -83,6 +83,6 @@ def validate_coverage(
     for sym in symbols:
         try:
             result[sym] = bool(src.fetch_daily(sym, start, end))
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed provider check marks only that symbol unavailable
             result[sym] = False
     return result

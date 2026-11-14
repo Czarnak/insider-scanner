@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QThreadPool, Qt
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,

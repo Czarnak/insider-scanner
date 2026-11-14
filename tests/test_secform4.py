@@ -50,14 +50,14 @@ class TestParseSecform4:
 
     def test_trade_dates_parsed(self):
         trades = parse_secform4_html(SECFORM4_HTML, "AAPL")
-        ceo = [t for t in trades if "COOK" in t.insider_name][0]
+        ceo = next(t for t in trades if "COOK" in t.insider_name)
         assert ceo.trade_date == date(2025, 10, 2)
         assert ceo.filing_date == date(2025, 10, 3)
 
     def test_insider_title_parsed(self):
         """Insider title comes from <span class="pos">."""
         trades = parse_secform4_html(SECFORM4_HTML, "AAPL")
-        ceo = [t for t in trades if "COOK" in t.insider_name][0]
+        ceo = next(t for t in trades if "COOK" in t.insider_name)
         assert ceo.insider_title == "Chief Executive Officer"
 
     def test_company_parsed(self):
@@ -70,13 +70,13 @@ class TestParseSecform4:
         assert all(
             t.edgar_url.startswith("https://www.secform4.com/filings/") for t in trades
         )
-        ceo = [t for t in trades if "COOK" in t.insider_name][0]
+        ceo = next(t for t in trades if "COOK" in t.insider_name)
         assert "0001214156-25-000011" in ceo.edgar_url
 
     def test_shares_owned_ignores_ownership_span(self):
         """Shares Owned should be the number, not '15,098(Direct)'."""
         trades = parse_secform4_html(SECFORM4_HTML, "AAPL")
-        kondo = [t for t in trades if "KONDO" in t.insider_name][0]
+        kondo = next(t for t in trades if "KONDO" in t.insider_name)
         assert kondo.shares_owned_after == 15_098
 
     def test_empty_html(self):

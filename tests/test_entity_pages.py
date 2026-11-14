@@ -11,7 +11,6 @@ import pytest
 
 from insider_scanner.persistence.feed import FeedMarket, FeedRecord
 
-
 # ---------------------------------------------------------------------------
 # Test helpers / fakes
 # ---------------------------------------------------------------------------

@@ -45,7 +45,6 @@ import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Optional
 
 import pdfplumber
 import requests
@@ -80,8 +79,8 @@ _HEADERS = {
 
 def _search_dd_documents(
     isin: str,
-    since: Optional[date],
-    until: Optional[date],
+    since: date | None,
+    until: date | None,
     session: requests.Session,
 ) -> list[dict]:
     """
@@ -140,7 +139,7 @@ def _search_dd_documents(
     return results
 
 
-def _parse_iso_date(raw: str) -> Optional[date]:
+def _parse_iso_date(raw: str) -> date | None:
     """Parse ISO datetime string to date, tolerating timezone suffixes."""
     if not raw:
         return None
@@ -153,7 +152,7 @@ def _parse_iso_date(raw: str) -> Optional[date]:
 # ── PDF download ──────────────────────────────────────────────────────────────
 
 
-def _download_pdf(path: str, session: requests.Session) -> Optional[bytes]:
+def _download_pdf(path: str, session: requests.Session) -> bytes | None:
     """
     Download a PDF given its path from the API (e.g. "2026/2026DD1099088/{hash}.pdf").
     Returns raw bytes or None on failure.
@@ -238,19 +237,19 @@ def _parse_pdf_text(text: str) -> dict:
     # Aggregated section fallback for price/volume
     if "price_raw" not in fields:
         m = re.search(
-            r"PRIX\s*:\s*([0-9\s.,]+(?:Euro|EUR|€|GBP|USD)?)", full_text, re.I
+            r"PRIX\s*:\s*([0-9\s.,]+(?:Euro|EUR|€|GBP|USD)?)", full_text, re.IGNORECASE
         )
         if m:
             fields["price_raw"] = m.group(1).strip()
     if "volume_raw" not in fields:
-        m = re.search(r"VOLUME\s*:\s*([0-9\s.,]+)", full_text, re.I)
+        m = re.search(r"VOLUME\s*:\s*([0-9\s.,]+)", full_text, re.IGNORECASE)
         if m:
             fields["volume_raw"] = m.group(1).strip()
 
     return fields
 
 
-def _parse_french_date(raw: str) -> Optional[date]:
+def _parse_french_date(raw: str) -> date | None:
     raw = raw.strip().lower()
     try:
         return datetime.strptime(raw[:10], "%Y-%m-%d").date()
@@ -268,7 +267,7 @@ def _parse_french_date(raw: str) -> Optional[date]:
     return None
 
 
-def _parse_price(raw: str) -> tuple[Optional[float], str]:
+def _parse_price(raw: str) -> tuple[float | None, str]:
     currency = "EUR"
     for sym, code in [
         ("euro", "EUR"),
@@ -302,7 +301,7 @@ def _item_to_trade(
     item: dict,
     pdf_bytes: bytes,
     original_isin: str,
-) -> Optional[EuropeanInsiderTrade]:
+) -> EuropeanInsiderTrade | None:
     """Convert a search result item + PDF bytes into an EuropeanInsiderTrade."""
     doc_id = item.get("numero", "")
     detail_url = f"{_BDIF}/en/details/{doc_id}"
@@ -310,7 +309,7 @@ def _item_to_trade(
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - PDF backends raise several unrelated exception types
         logger.error("PDF parse error for %s: %s", doc_id, exc)
         return None
 
@@ -322,7 +321,7 @@ def _item_to_trade(
 
     price, currency = _parse_price(fields.get("price_raw", ""))
 
-    volume: Optional[float] = None
+    volume: float | None = None
     vol_raw = fields.get("volume_raw", "")
     if vol_raw:
         vol_clean = re.sub(r"[^\d.,]", "", vol_raw.replace("\xa0", "").replace(" ", ""))
@@ -338,7 +337,7 @@ def _item_to_trade(
         item.get("datePublication", "")
     ) or _parse_french_date(fields.get("filing_date_raw", ""))
 
-    total_value: Optional[float] = None
+    total_value: float | None = None
     if price is not None and volume is not None:
         total_value = round(price * volume, 2)
 
@@ -371,9 +370,9 @@ def _item_to_trade(
 
 def fetch_fr_trades(
     isin: str,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    session: Optional[requests.Session] = None,
+    since: date | None = None,
+    until: date | None = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """
     Fetch AMF insider trade disclosures for a French ISIN.
@@ -449,9 +448,9 @@ def fetch_fr_trades(
 
 def fetch_fr_latest(
     n: int = 50,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    session: Optional[requests.Session] = None,
+    since: date | None = None,
+    until: date | None = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """Fetch the N most recent AMF Director Disclosure filings without ISIN filter.
 

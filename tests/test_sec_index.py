@@ -14,7 +14,6 @@ from insider_scanner.core.sec_index import (
     parse_master_index,
 )
 
-
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "sec_master_20260615_excerpt.idx"
 
 

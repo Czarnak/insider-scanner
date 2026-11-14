@@ -72,7 +72,7 @@ def scrape_eu_trades_for_isin(
 
             batch = fetch_uk_trades(isin, since=date_from, until=date_to)
             trade_batches.append(_verify_isin(batch, isin))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("RNS scrape failed for %s: %s", isin, exc)
 
     if run_de:
@@ -81,7 +81,7 @@ def scrape_eu_trades_for_isin(
 
             batch = fetch_de_trades(isin, since=date_from, until=date_to)
             trade_batches.append(_verify_isin(batch, isin))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("BaFin scrape failed for %s: %s", isin, exc)
 
     if run_fr:
@@ -90,7 +90,7 @@ def scrape_eu_trades_for_isin(
 
             batch = fetch_fr_trades(isin, since=date_from, until=date_to)
             trade_batches.append(_verify_isin(batch, isin))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("AMF scrape failed for %s: %s", isin, exc)
 
     if run_nl:
@@ -99,7 +99,7 @@ def scrape_eu_trades_for_isin(
 
             batch = scrape_afm_trades(isin, date_from=date_from, date_to=date_to)
             trade_batches.append(_verify_isin(batch, isin))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("AFM scrape failed for %s: %s", isin, exc)
 
     return merge_eu_trades(*trade_batches) if trade_batches else []
@@ -139,7 +139,7 @@ def scrape_eu_latest(
             from insider_scanner.core.rns_investegate import fetch_uk_latest
 
             trade_batches.append(fetch_uk_latest(n=n, since=date_from, until=date_to))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("RNS latest failed: %s", exc)
 
     if run_de:
@@ -147,7 +147,7 @@ def scrape_eu_latest(
             from insider_scanner.core.bafin import fetch_de_latest
 
             trade_batches.append(fetch_de_latest(n=n, since=date_from, until=date_to))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("BaFin latest failed: %s", exc)
 
     if run_fr:
@@ -155,7 +155,7 @@ def scrape_eu_latest(
             from insider_scanner.core.amf import fetch_fr_latest
 
             trade_batches.append(fetch_fr_latest(n=n, since=date_from, until=date_to))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate independent scraper implementations
             log.warning("AMF latest failed: %s", exc)
 
     return merge_eu_trades(*trade_batches) if trade_batches else []

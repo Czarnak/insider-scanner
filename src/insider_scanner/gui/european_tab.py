@@ -17,7 +17,7 @@ from datetime import date
 from threading import Event
 
 import pandas as pd
-from PySide6.QtCore import Qt, QDate, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,7 +39,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.eu_merger import (
     DISPLAY_COLUMNS,
     eu_trades_to_dataframe,
@@ -47,6 +46,7 @@ from insider_scanner.core.eu_merger import (
     merge_eu_trades,
     save_eu_results,
 )
+from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, load_eu_watchlist
 from insider_scanner.utils.logging import get_logger

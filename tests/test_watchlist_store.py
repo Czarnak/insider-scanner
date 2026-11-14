@@ -9,8 +9,8 @@ import pytest
 
 from insider_scanner.persistence.feed import FeedMarket
 from insider_scanner.persistence.watchlists import (
-    WATCHLISTS_FILENAME,
     SCHEMA_VERSION,
+    WATCHLISTS_FILENAME,
     WatchEntry,
     Watchlist,
     WatchlistStore,

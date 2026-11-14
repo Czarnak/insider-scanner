@@ -24,6 +24,35 @@ from insider_scanner.utils.config import (
 )
 
 
+def test_startup_prunes_unrequested_http_cache_entries(tmp_path):
+    from insider_scanner.utils.caching import get_cached, set_cached
+
+    paths = resolve_runtime_paths(
+        data_dir=tmp_path / "data", cache_dir=tmp_path / "cache"
+    )
+    for cache_dir in (
+        paths.edgar_cache_dir,
+        paths.scraper_cache_dir,
+        paths.eu_cache_dir,
+    ):
+        with patch("insider_scanner.utils.caching.time.time", return_value=1):
+            set_cached(cache_dir, "expired", "old")
+        set_cached(cache_dir, "fresh", "keep")
+        (cache_dir / "legacy.txt").write_text("old format", encoding="utf-8")
+        (cache_dir / "legacy.meta").write_text("{}", encoding="utf-8")
+
+    ensure_dirs(paths)
+
+    for cache_dir in (
+        paths.edgar_cache_dir,
+        paths.scraper_cache_dir,
+        paths.eu_cache_dir,
+    ):
+        assert get_cached(cache_dir, "expired") is None
+        assert get_cached(cache_dir, "fresh") == "keep"
+        assert [p.name for p in cache_dir.iterdir()] == ["fresh.response-cache"]
+
+
 class TestRuntimePaths:
     def test_environment_overrides_both_runtime_roots(self, monkeypatch, tmp_path):
         monkeypatch.setenv("INSIDER_SCANNER_DATA_DIR", str(tmp_path / "profile"))
@@ -312,19 +341,21 @@ class TestPackagedSeeds:
                         observed_partial_files.append(target)
                 time.sleep(0.001)
 
-        with patch(
-            "insider_scanner.utils.config.shutil.copyfileobj",
-            side_effect=slow_copy,
+        with (
+            patch(
+                "insider_scanner.utils.config.shutil.copyfileobj",
+                side_effect=slow_copy,
+            ),
+            ThreadPoolExecutor(max_workers=9) as executor,
         ):
-            with ThreadPoolExecutor(max_workers=9) as executor:
-                writers = [executor.submit(ensure_dirs, paths) for _ in range(8)]
-                assert copy_started.wait(timeout=5)
-                observer = executor.submit(observe_published_files)
-                time.sleep(0.05)
-                release_copy.set()
-                for future in writers:
-                    future.result(timeout=10)
-                observer.result(timeout=5)
+            writers = [executor.submit(ensure_dirs, paths) for _ in range(8)]
+            assert copy_started.wait(timeout=5)
+            observer = executor.submit(observe_published_files)
+            time.sleep(0.05)
+            release_copy.set()
+            for future in writers:
+                future.result(timeout=10)
+            observer.result(timeout=5)
 
         assert observed_partial_files == []
         for target in (

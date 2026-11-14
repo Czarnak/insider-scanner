@@ -100,9 +100,9 @@ def test_main_initialises_app():
             "insider_scanner.gui.main_window.MainWindow",
             side_effect=lambda value: dummy_window,
         ),
+        pytest.raises(SystemExit) as exc,
     ):
-        with pytest.raises(SystemExit) as exc:
-            app_main.main()
+        app_main.main()
 
     assert exc.value.code == 7
     setup_logging.assert_called_once()
@@ -127,9 +127,9 @@ def test_main_bootstrap_failure_exits_before_showing_window(capsys):
         patch("PySide6.QtWidgets.QApplication", side_effect=DummyApp),
         patch("PySide6.QtWidgets.QMessageBox.critical") as critical,
         patch("insider_scanner.gui.main_window.MainWindow") as window,
+        pytest.raises(SystemExit) as exc,
     ):
-        with pytest.raises(SystemExit) as exc:
-            app_main.main()
+        app_main.main()
 
     assert exc.value.code == 1
     assert "Could not initialize local database." in capsys.readouterr().err

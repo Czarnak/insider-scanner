@@ -7,7 +7,6 @@ from types import ModuleType
 
 import pytest
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_install.py"
 
 
@@ -45,7 +44,7 @@ def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> Non
     assert calls == [
         (
             [cli_path, "--help"],
-            {"capture_output": True, "text": True},
+            {"check": False, "capture_output": True, "text": True},
         )
     ]
 

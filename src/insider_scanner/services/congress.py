@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from calendar import monthrange
 from datetime import date
 
 from insider_scanner.core.models import CongressTrade

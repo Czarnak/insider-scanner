@@ -90,8 +90,10 @@ class TestFilingArchiveUrl:
         [
             (
                 "edgar/data/1000228/0001190297-26-000004.txt",
-                "https://www.sec.gov/Archives/edgar/data/1000228/"
-                "0001190297-26-000004.txt",
+                (
+                    "https://www.sec.gov/Archives/edgar/data/1000228/"
+                    "0001190297-26-000004.txt"
+                ),
             ),
             (
                 "edgar/data/1000228/ownership.xml",

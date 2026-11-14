@@ -135,7 +135,7 @@ def test_default_european_adapters_cover_all_country_sources(monkeypatch):
     start = date(2026, 4, 1)
     end = date(2026, 4, 2)
 
-    for source, adapter in adapters.items():
+    for adapter in adapters.values():
         adapter("GB0002875804", start, end, True)
 
     assert set(adapters) == {"rns", "bafin", "amf", "afm"}
@@ -166,7 +166,7 @@ def test_default_european_latest_excludes_afm(monkeypatch):
     )
     adapters = default_european_latest_adapters()
 
-    for source, adapter in adapters.items():
+    for adapter in adapters.values():
         assert adapter(50, True, None, None) == []
 
     assert set(adapters) == {"rns", "bafin", "amf"}

@@ -10,7 +10,6 @@ from PySide6.QtCore import QSettings
 from insider_scanner.gui.theme.manager import ThemeManager, get_theme_manager
 from insider_scanner.gui.theme.tokens import DARK, LIGHT, ThemeMode
 
-
 # ---------------------------------------------------------------------------
 # Singleton
 # ---------------------------------------------------------------------------

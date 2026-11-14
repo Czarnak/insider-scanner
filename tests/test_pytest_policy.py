@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 
 CONFIG = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
@@ -31,6 +30,7 @@ def _run_pytest(tmp_path, source, *args):
             str(test_file),
             *args,
         ],
+        check=False,
         cwd=tmp_path,
         env=env,
         capture_output=True,

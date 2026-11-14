@@ -14,7 +14,6 @@ from insider_scanner.persistence.feed import (
     TransactionDirection,
 )
 
-
 # ---------------------------------------------------------------------------
 # FeedFilterPanel tests
 # ---------------------------------------------------------------------------

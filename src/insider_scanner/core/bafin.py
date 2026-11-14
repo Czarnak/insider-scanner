@@ -35,7 +35,6 @@ import io
 import logging
 import time
 from datetime import date, datetime
-from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -77,7 +76,7 @@ _INSTRUMENT_MAP: dict[str, str] = {
 # normalize_position() (in eu_models) handles Vorstand→Executive etc.
 
 
-def _parse_trade_date(raw: str) -> Optional[date]:
+def _parse_trade_date(raw: str) -> date | None:
     """Parse DD.MM.YYYY or YYYY-MM-DD."""
     for fmt in ("%d.%m.%Y", "%Y-%m-%d"):
         try:
@@ -87,7 +86,7 @@ def _parse_trade_date(raw: str) -> Optional[date]:
     return None
 
 
-def _parse_filing_date(raw: str) -> Optional[date]:
+def _parse_filing_date(raw: str) -> date | None:
     """Parse 'DD.MM.YYYY HH:MM:SS' filing timestamp."""
     try:
         return datetime.strptime(raw.strip()[:10], "%d.%m.%Y").date()
@@ -171,7 +170,7 @@ def _parse_result_table(html: str) -> list[dict]:
     return rows
 
 
-def _row_to_trade(row: dict) -> Optional[EuropeanInsiderTrade]:
+def _row_to_trade(row: dict) -> EuropeanInsiderTrade | None:
     """Convert a parsed result row to EuropeanInsiderTrade."""
     trade_date = _parse_trade_date(row["trade_date_raw"])
     filing_date = _parse_filing_date(row["filing_raw"])
@@ -202,8 +201,8 @@ def _row_to_trade(row: dict) -> Optional[EuropeanInsiderTrade]:
 def _fetch_csv_export(
     isin: str,
     session: requests.Session,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> list[dict]:
     """
     Download the CSV export from BaFin and parse it.
@@ -249,7 +248,7 @@ def _fetch_csv_export(
         text = resp.content.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text), delimiter=";")
         return [row for row in reader]
-    except Exception as exc:
+    except csv.Error as exc:
         logger.warning("BaFin CSV parse error: %s", exc)
         return []
 
@@ -259,9 +258,9 @@ def _fetch_csv_export(
 
 def fetch_de_trades(
     isin: str,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    session: Optional[requests.Session] = None,
+    since: date | None = None,
+    until: date | None = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """
     Fetch BaFin Directors' Dealings for a given ISIN.
@@ -357,9 +356,9 @@ def _map_csv_rows(csv_rows: list[dict], isin: str) -> list[dict]:
             if k in row:
                 return row[k].strip()
             # Case-insensitive fallback
-            for rk in row:
+            for rk, value in row.items():
                 if rk.strip().lower() == k.lower():
-                    return row[rk].strip()
+                    return value.strip()
         return default
 
     mapped = []
@@ -394,9 +393,9 @@ def _map_csv_rows(csv_rows: list[dict], isin: str) -> list[dict]:
 
 def fetch_de_latest(
     n: int = 50,
-    since: Optional[date] = None,
-    until: Optional[date] = None,
-    session: Optional[requests.Session] = None,
+    since: date | None = None,
+    until: date | None = None,
+    session: requests.Session | None = None,
 ) -> list[EuropeanInsiderTrade]:
     """Fetch the N most recent BaFin Directors' Dealings without ISIN filter.
 

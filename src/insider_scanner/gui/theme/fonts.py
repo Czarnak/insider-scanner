@@ -22,11 +22,13 @@ def load_application_fonts() -> list[str]:
     Never raises: per-file errors are logged as warnings and skipped.
     Returns an empty list when the fonts package or directory does not exist.
     """
-    from PySide6.QtGui import QFontDatabase  # noqa: PLC0415 — lazy Qt import
+    from PySide6.QtGui import QFontDatabase
 
     families: list[str] = []
 
     try:
+        # The project requires Python >=3.11.5, which includes this stdlib API.
+        # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
         import importlib.resources as pkg_resources
 
         fonts_pkg = pkg_resources.files("insider_scanner.resources.fonts")
@@ -44,8 +46,7 @@ def load_application_fonts() -> list[str]:
             data = entry.read_bytes()
             font_id = QFontDatabase.addApplicationFontFromData(data)
             if font_id >= 0:
-                for family in QFontDatabase.applicationFontFamilies(font_id):
-                    families.append(family)
+                families.extend(QFontDatabase.applicationFontFamilies(font_id))
             else:
                 _log.warning("Qt rejected font file: %s", name)
         except Exception as exc:  # noqa: BLE001

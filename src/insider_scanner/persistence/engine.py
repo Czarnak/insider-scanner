@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event, NullPool
-from sqlalchemy.engine import Connection, Engine, URL
+from sqlalchemy import NullPool, create_engine, event
+from sqlalchemy.engine import URL, Connection, Engine
 
 from insider_scanner.persistence.errors import PersistenceError
 
@@ -19,11 +19,13 @@ SQLITE_IMMEDIATE_OPTION = "sqlite_begin_immediate"
 @contextmanager
 def immediate_transaction(engine: Engine) -> Iterator[Connection]:
     """Serialize a SQLite read-modify-write transaction before its first read."""
-    with engine.connect().execution_options(
-        **{SQLITE_IMMEDIATE_OPTION: True}
-    ) as connection:
-        with connection.begin():
-            yield connection
+    with (
+        engine.connect().execution_options(
+            **{SQLITE_IMMEDIATE_OPTION: True}
+        ) as connection,
+        connection.begin(),
+    ):
+        yield connection
 
 
 def create_sqlite_engine(
@@ -59,6 +61,9 @@ def create_sqlite_engine(
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
+            # This is a local integer connection option, not SQL supplied by a
+            # user. SQLite PRAGMA does not accept a bind placeholder here.
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
             cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         finally:
             cursor.close()

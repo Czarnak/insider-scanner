@@ -44,8 +44,8 @@ def _load_doc(
 
 def test_ownership_filing_is_frozen_and_slotted() -> None:
     from insider_scanner.core.sec_ownership_parser import (
-        OwnershipFiling,
         Issuer,
+        OwnershipFiling,
         ReportingOwner,
     )
 
@@ -178,9 +178,9 @@ def test_non_derivative_transaction_primary_all_fields() -> None:
     assert txn.transaction_code == "S"
     assert txn.category == "sale"
     assert txn.acquired_disposed == "D"
-    assert txn.shares == Decimal("100000")
+    assert txn.shares == Decimal(100000)
     assert txn.price_per_share == Decimal("195.50")
-    assert txn.shares_owned_following == Decimal("3200000")
+    assert txn.shares_owned_following == Decimal(3200000)
     assert txn.direct_or_indirect == "D"
     assert txn.footnote_ids == ("F1",)
 
@@ -238,9 +238,9 @@ def test_derivatives_fixture_derivative_transaction_all_fields() -> None:
     assert d.exercise_date is None
     assert d.expiration_date == date(2036, 6, 12)
     assert d.underlying_security_title == "Common Stock"
-    assert d.underlying_security_shares == Decimal("50000")
-    assert d.shares == Decimal("50000")
-    assert d.shares_owned_following == Decimal("200000")
+    assert d.underlying_security_shares == Decimal(50000)
+    assert d.shares == Decimal(50000)
+    assert d.shares_owned_following == Decimal(200000)
     assert d.direct_or_indirect == "D"
     assert d.footnote_ids == ("F1", "F2")
 

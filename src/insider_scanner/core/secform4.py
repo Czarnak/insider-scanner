@@ -12,7 +12,11 @@ from insider_scanner.utils.http import fetch_url
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.parsing import (
     classify_trade as _classify_trade,
+)
+from insider_scanner.utils.parsing import (
     parse_date as _parse_date,
+)
+from insider_scanner.utils.parsing import (
     parse_number as _parse_number,
 )
 
@@ -60,7 +64,7 @@ def scrape_ticker(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=3600)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
         log.warning("Failed to fetch %s: %s", url, exc)
         return []
 
@@ -155,7 +159,7 @@ def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
         if len(cells) < 5:
             continue
 
-        def _cell(key: str):
+        def _cell(key: str, cells=cells):
             """Return the <td> element for *key*, or None."""
             idx = col.get(key)
             if idx is not None and idx < len(cells):

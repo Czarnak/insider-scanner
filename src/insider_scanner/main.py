@@ -13,6 +13,7 @@ GUI_INSTALL_COMMAND = 'pip install "insider-scanner[gui]"'
 
 def _load_gui_components():
     from PySide6.QtWidgets import QApplication, QMessageBox
+
     from insider_scanner.gui.main_window import MainWindow
 
     return QApplication, QMessageBox, MainWindow
@@ -32,6 +33,8 @@ def _report_missing_gui_dependency(exc: ModuleNotFoundError) -> bool:
 def verify_gui_install() -> int:
     """Verify GUI dependencies without opening an application window."""
     try:
+        # The project requires Python >=3.11.5, which includes this stdlib API.
+        # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
         from importlib.resources import files
 
         _load_gui_components()
@@ -61,9 +64,9 @@ def _close_services(services) -> None:
 
 def run() -> int:
     """Launch the Insider Scanner desktop application."""
+    from insider_scanner.core.senate import init_default_congress_file
     from insider_scanner.utils.config import ensure_dirs
     from insider_scanner.utils.logging import setup_logging
-    from insider_scanner.core.senate import init_default_congress_file
 
     try:
         QApplication, QMessageBox, MainWindow = _load_gui_components()

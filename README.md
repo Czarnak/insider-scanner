@@ -264,6 +264,18 @@ The SQLite database stores normalized trade records, successful source/date
 coverage, and latest-refresh state. HTTP caches remain transient files under the
 platform cache directory and can be removed without deleting parsed trades.
 
+Watchlists, alert rules, and saved feed screens use atomic JSON state files.
+If a state file cannot be decoded or parsed, startup loads defaults and preserves
+the original beside it as `<filename>.corrupt-<unique-id>`, with its location in
+the logs. Keep that copy to recover your settings. If the original is locked and
+cannot be preserved, saves fail until it can be preserved; they do not overwrite
+it with defaults.
+
+HTTP caches publish each response and its timestamp in one atomic file. Cache
+read/write failures are nonfatal, and startup removes expired entries using their
+stored lifetimes. Legacy `.txt`/`.meta` response pairs are discarded and fetched
+again because their separately written bodies cannot be verified as complete.
+
 For bounded scans, the service queries SQLite first, calculates uncovered
 intervals independently for each source, fetches only those gaps, and then
 returns the merged local result. Failed or cancelled intervals are not marked as

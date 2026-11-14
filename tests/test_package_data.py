@@ -2,7 +2,6 @@
 
 from importlib.resources import files
 
-
 PACKAGED_SEED_NAMES = (
     "congress_members.json",
     "tickers_watchlist.txt",

@@ -89,6 +89,6 @@ def fetch_url(
     # Store in cache
     if cache_dir is not None:
         key = cache_key(url)
-        set_cached(cache_dir, key, text)
+        set_cached(cache_dir, key, text, ttl=cache_ttl)
 
     return text

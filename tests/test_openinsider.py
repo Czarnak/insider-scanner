@@ -45,7 +45,7 @@ class TestParseOpeninsider:
 
     def test_trade_type_classification(self):
         trades = parse_openinsider_html(OPENINSIDER_HTML)
-        tsla = [t for t in trades if t.ticker == "TSLA"][0]
+        tsla = next(t for t in trades if t.ticker == "TSLA")
         assert tsla.trade_type == "Buy"
 
     def test_ticker_override(self):

@@ -12,12 +12,12 @@ import pytest
 from insider_scanner import cli
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.persistence.coverage import DateInterval
-from insider_scanner.services.sec_daily import SecDailyIngestionSummary
-from insider_scanner.services.sec_downloads import SecDownloadProgress
 from insider_scanner.services.sec_comparison import (
     SEC_EDGAR_SOURCE,
     SecComparisonReport,
 )
+from insider_scanner.services.sec_daily import SecDailyIngestionSummary
+from insider_scanner.services.sec_downloads import SecDownloadProgress
 
 PLACEHOLDER_USER_AGENT = "InsiderScanner/0.1 (research; contact@example.com)"
 
@@ -159,7 +159,7 @@ class TestCmdEuScan:
     def test_watchlist_empty_short_circuits(self, monkeypatch, capsys):
         monkeypatch.setattr(
             "insider_scanner.utils.config.load_eu_watchlist",
-            lambda: [],
+            list,
         )
 
         cli.cmd_eu_scan(
@@ -704,7 +704,7 @@ class TestCmdSecBackfill:
 
         class FakeService:
             def run(self, zp, *, confirm, ciks, cancelled=None, on_progress=None):
-                seen["run"] = dict(zip_path=zp, confirm=confirm, ciks=ciks)
+                seen["run"] = {"zip_path": zp, "confirm": confirm, "ciks": ciks}
                 from insider_scanner.services.sec_backfill import SecBackfillSummary
 
                 return SecBackfillSummary(10, 8, 5, 1, 2, 1, 0, 0)

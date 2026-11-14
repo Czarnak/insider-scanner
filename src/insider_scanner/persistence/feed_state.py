@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
-import os
-import tempfile
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -15,6 +12,11 @@ from insider_scanner.persistence.feed import (
     FeedMarket,
     FeedSortField,
     TransactionDirection,
+)
+from insider_scanner.persistence.json_state import (
+    atomic_write_json,
+    preserve_json_state,
+    read_json_dict,
 )
 from insider_scanner.utils.logging import get_logger
 
@@ -201,52 +203,21 @@ def state_from_dict(d: dict) -> FeedState:
 
 def load_feed_state(path: Path) -> FeedState:
     """Load FeedState from *path*; never raises — returns FeedState() on any error."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return FeedState()
-    except OSError as exc:
-        _log.warning("Could not read feed state file %s: %s", path, exc)
-        return FeedState()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        _log.warning("Feed state file %s contains invalid JSON: %s", path, exc)
-        return FeedState()
-
-    if not isinstance(data, dict):
-        _log.warning("Feed state file %s has unexpected top-level type", path)
+    data = read_json_dict(path)
+    if data is None:
         return FeedState()
 
     try:
         return state_from_dict(data)
     except Exception as exc:  # noqa: BLE001
         _log.warning("Failed to parse feed state from %s: %s", path, exc)
+        preserve_json_state(path)
         return FeedState()
 
 
 def save_feed_state(path: Path, state: FeedState) -> None:
     """Atomically write *state* to *path* as indented JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(state_to_dict(state), indent=2, ensure_ascii=False)
-    fd, tmp_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
-            tmp_file.write(payload)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path, state_to_dict(state), protect_existing=True)
 
 
 # ---------------------------------------------------------------------------

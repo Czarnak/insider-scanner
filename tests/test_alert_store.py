@@ -25,13 +25,13 @@ _WHEN = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
 
 
 def _rule(name: str = "Big buys", **kw) -> AlertRule:
-    defaults = dict(
-        name=name,
-        criteria=FeedCriteria(value_min=100_000, markets=(FeedMarket.US,)),
-        watchlist=None,
-        enabled=True,
-        last_seen_at=None,
-    )
+    defaults = {
+        "name": name,
+        "criteria": FeedCriteria(value_min=100_000, markets=(FeedMarket.US,)),
+        "watchlist": None,
+        "enabled": True,
+        "last_seen_at": None,
+    }
     defaults.update(kw)
     return AlertRule(**defaults)
 

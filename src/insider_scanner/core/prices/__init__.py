@@ -2,8 +2,8 @@
 
 from .model import PriceBar, normalize_symbol
 from .registry import get_price_source
-from .source import PriceSource, PriceSourceError, validate_price_request
 from .service import get_price_history, validate_coverage
+from .source import PriceSource, PriceSourceError, validate_price_request
 from .tiingo import TiingoSource, parse_tiingo_json
 from .yahoo import YahooSource, parse_yahoo_chart
 
