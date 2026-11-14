@@ -281,7 +281,7 @@ class TestNumericFields:
         txn = replace(
             _non_deriv(shares=None, price_per_share=None),
             transaction_total_value=total,
-            value_owned_following=Decimal("9000"),
+            value_owned_following=Decimal(9000),
         )
         trade = ownership_filing_to_trades(_filing(non_derivs=(txn,)), _INDEX_ROW)[0]
         assert trade.value == float(total)
@@ -295,7 +295,7 @@ class TestNumericFields:
     def test_derivative_underlying_value_keeps_its_unit(self) -> None:
         txn = replace(
             _deriv(underlying_security_shares=None),
-            underlying_security_value=Decimal("7000"),
+            underlying_security_value=Decimal(7000),
         )
         trade = ownership_filing_to_trades(_filing(derivs=(txn,)), _INDEX_ROW)[0]
         detail = json.loads(trade.sec_detail_json)
