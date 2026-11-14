@@ -5,8 +5,9 @@ from __future__ import annotations
 import io
 import zipfile
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 import responses
 
 from insider_scanner.core.congress_house import (
@@ -28,6 +29,17 @@ from insider_scanner.core.congress_house import (
     search_filings,
 )
 from insider_scanner.core.models import CongressTrade
+
+
+@pytest.fixture
+def fixed_today(monkeypatch):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2027, 1, 2)
+
+    monkeypatch.setattr("insider_scanner.core.congress_house.date", FixedDate)
+
 
 # -----------------------------------------------------------------------
 # Sample XML fixture (based on real 2026FD.xml structure)
@@ -199,16 +211,15 @@ class TestDetermineYears:
     def test_both_dates_span_years(self):
         assert _determine_years(date(2025, 6, 1), date(2026, 2, 1)) == [2025, 2026]
 
-    def test_from_only(self):
+    def test_from_only(self, fixed_today):
         years = _determine_years(date(2025, 6, 1), None)
-        assert 2025 in years
-        assert date.today().year in years
+        assert years == [2025, 2026, 2027]
 
     def test_to_only(self):
         assert _determine_years(None, date(2026, 3, 1)) == [2026]
 
-    def test_neither(self):
-        assert _determine_years(None, None) == [date.today().year]
+    def test_neither(self, fixed_today):
+        assert _determine_years(None, None) == [2027]
 
 
 # -----------------------------------------------------------------------
@@ -412,17 +423,14 @@ class TestEnsureHouseIndex:
         with patch(
             "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
         ):
-            try:
+            with pytest.raises(req.HTTPError):
                 ensure_house_index(2099)
-                assert False, "Should have raised"
-            except req.HTTPError:
-                pass
 
 
 class TestRefreshFunctions:
     @responses.activate
-    def test_refresh_current_year(self, tmp_path):
-        year = date.today().year
+    def test_refresh_current_year(self, tmp_path, fixed_today):
+        year = 2027
         zip_bytes = _make_sample_zip(year=year)
         responses.add(
             responses.GET,

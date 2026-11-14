@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import shutil
 import errno
+import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -108,12 +108,8 @@ class TestRuntimePaths:
             cache_dir=tmp_path / "cache",
         )
 
-        try:
+        with pytest.raises(AttributeError):
             paths.data_dir = tmp_path / "other"
-        except AttributeError:
-            pass
-        else:
-            raise AssertionError("RuntimePaths must be immutable")
 
 
 class TestPackagedSeeds:
