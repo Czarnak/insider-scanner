@@ -20,13 +20,24 @@ from insider_scanner.utils.parsing import (
         ("2024-03-05", date(2024, 3, 5)),  # ISO
         ("03/05/2024", date(2024, 3, 5)),  # MM/DD/YYYY
         ("03-05-2024", date(2024, 3, 5)),  # MM-DD-YYYY
+        (" 01/15/24 ", date(2024, 1, 15)),
+        ("01-15-24", date(2024, 1, 15)),
+        ("01/15/99", date(1999, 1, 15)),
+        ("2026-11-12 18:58:20", date(2026, 11, 12)),
+        ("2026-11-12T23:58:20-05:00", date(2026, 11, 12)),
+        ("2026-11-12T18:58:20Z", date(2026, 11, 12)),
         ("", None),
         ("-", None),
+        ("--", None),
+        ("02/30/24", None),
+        ("2026-11-12 garbage", None),
+        ("2026-11-12 99:58:20", None),
         ("not-a-date", None),
     ],
 )
 def test_parse_date(text: str, expected: date | None) -> None:
     assert parse_date(text) == expected
+    assert parse_ptr_date(text) == expected
 
 
 def test_parse_date_handles_us_slash_format_regression() -> None:
@@ -62,6 +73,13 @@ def test_parse_number(text: str, expected: float) -> None:
         ("S", "Sell"),
         ("Option Exercise", "Exercise"),
         ("M", "Exercise"),
+        ("M - OptEx", "Exercise"),
+        ("X - OptEx", "Exercise"),
+        ("x", "Exercise"),
+        ("S - Sale+OE", "Sell"),
+        ("D - Sale to issuer", "Other"),
+        ("G - Gift", "Other"),
+        ("p - mislabeled sale", "Buy"),
         ("Gift", "Other"),
         ("", "Other"),
     ],

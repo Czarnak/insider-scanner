@@ -2,9 +2,70 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 
+import pytest
+
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.core.trade_types import TransactionDirection
+
+
+@pytest.mark.parametrize(
+    "model",
+    [InsiderTrade, CongressTrade],
+)
+def test_serialization_automatically_preserves_new_declared_fields(model):
+    # A future field must survive export/import without another hand-maintained
+    # list. Cover optional dates and numeric coercion as well as plain strings.
+    @dataclass
+    class ExtendedTrade(model):
+        extra_note: str = ""
+        extra_date: date | None = None
+        extra_amount: float = 0.0
+
+    kwargs = {"ticker": "AAPL"} if model is InsiderTrade else {}
+    trade = ExtendedTrade(
+        **kwargs,
+        extra_note="new source evidence",
+        extra_date=date(2026, 11, 12),
+        extra_amount=1234.5,
+    )
+    payload = trade.to_dict()
+    assert payload["extra_note"] == "new source evidence"
+    assert payload["extra_date"] == "2026-11-12"
+    assert payload["extra_amount"] == 1234.5
+    payload["extra_amount"] = "1234.5"
+    payload["unknown_future_export_key"] = "ignored"
+    assert ExtendedTrade.from_dict(payload) == trade
+
+
+@pytest.mark.parametrize("model", [InsiderTrade, CongressTrade])
+def test_from_dict_uses_shared_dates_and_rejects_invalid_dates(model):
+    trade = model.from_dict(
+        {"filing_date": "2026-11-12 18:58:20", "trade_date": "01/15/24"}
+    )
+    assert trade.filing_date == date(2026, 11, 12)
+    assert trade.trade_date == date(2024, 1, 15)
+    with pytest.raises(ValueError, match="Invalid date for trade_date"):
+        model.from_dict({"trade_date": "2026-11-12 invalid"})
+
+
+def test_insider_legacy_defaults_and_boolean_roundtrip():
+    assert InsiderTrade.from_dict({}) == InsiderTrade(ticker="")
+    trade = InsiderTrade(
+        ticker="AAPL", is_congress=True, is_amendment=True, is_derivative=True
+    )
+    assert InsiderTrade.from_dict(trade.to_dict()) == trade
+
+
+def test_model_direction_does_not_add_export_fields():
+    insider = InsiderTrade(ticker="AAPL", trade_type="Exercise")
+    congress = CongressTrade(trade_type="Sale")
+    assert insider.direction is TransactionDirection.BUY
+    assert congress.direction is TransactionDirection.SELL
+    assert "direction" not in insider.to_dict()
+    assert "direction" not in congress.to_dict()
 
 
 class TestInsiderTradeSECFields:
@@ -289,12 +350,7 @@ class TestCongressTradeSerialisation:
             source="senate",
         )
         restored = CongressTrade.from_dict(original.to_dict())
-        assert restored.official_name == original.official_name
-        assert restored.filing_date == original.filing_date
-        assert restored.trade_date == original.trade_date
-        assert restored.ticker == original.ticker
-        assert restored.amount_low == original.amount_low
-        assert restored.amount_high == original.amount_high
+        assert restored == original
 
 
 class TestParseAmountRange:
