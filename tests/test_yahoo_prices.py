@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, date, datetime, time, timedelta
+from json import JSONDecodeError
 from typing import Any
 
 import pytest
@@ -385,14 +386,18 @@ def test_yahoo_source_sanitizes_http_errors(status_code: int) -> None:
     assert_sanitized(raised.value)
 
 
-def test_yahoo_source_sanitizes_invalid_json() -> None:
+@pytest.mark.parametrize(
+    "json_error",
+    [
+        requests.exceptions.JSONDecodeError("secret-payload", "secret-payload", 0),
+        JSONDecodeError("secret-payload", "secret-payload", 0),
+        ValueError("secret-payload"),
+    ],
+)
+def test_yahoo_source_sanitizes_invalid_json(json_error: ValueError) -> None:
     response = FakeResponse(
         content=b"secret-payload",
-        json_error=requests.exceptions.JSONDecodeError(
-            "secret-payload",
-            "secret-payload",
-            0,
-        ),
+        json_error=json_error,
     )
     source = YahooSource(session=FakeSession(response=response))
 
@@ -400,6 +405,17 @@ def test_yahoo_source_sanitizes_invalid_json() -> None:
         source.fetch_daily("AAPL", date(2026, 1, 1), date(2026, 1, 2))
 
     assert_sanitized(raised.value)
+
+
+def test_yahoo_source_does_not_mask_unexpected_json_errors() -> None:
+    sentinel = AttributeError("unexpected json response failure")
+    response = FakeResponse(json_error=sentinel)
+    source = YahooSource(session=FakeSession(response=response))
+
+    with pytest.raises(AttributeError) as raised:
+        source.fetch_daily("AAPL", date(2026, 1, 1), date(2026, 1, 2))
+
+    assert raised.value is sentinel
 
 
 def test_yahoo_source_does_not_mask_unexpected_response_errors() -> None:
