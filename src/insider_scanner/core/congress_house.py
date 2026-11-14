@@ -397,7 +397,7 @@ def _is_scanned_pdf(pdf) -> bool:
     return len(text.strip()) < 50
 
 
-def parse_ptr_pdf(pdf_bytes: bytes) -> list[dict]:
+def parse_ptr_pdf(pdf_bytes: bytes, *, strict: bool = False) -> list[dict]:
     """Extract transaction rows from an electronically-filed House PTR PDF.
 
     Returns a list of dicts with keys: owner, asset, tx_type, tx_date,
@@ -449,7 +449,9 @@ def parse_ptr_pdf(pdf_bytes: bytes) -> list[dict]:
                         if tx and tx.get("asset"):
                             transactions.append(tx)
 
-    except Exception as exc:  # noqa: BLE001 - PDF backends raise several unrelated exception types
+    except Exception as exc:
+        if strict:
+            raise ValueError("House PDF transaction extraction failed") from exc
         log.warning("PDF parse error: %s", exc)
         return []
 
@@ -605,8 +607,20 @@ def _scrape_house_trades(
             progress_callback(i, total, f"Processing {official} ({doc_id})")
 
         try:
+            was_cached = _pdf_cache_path(doc_id, year).exists()
             pdf_bytes = fetch_ptr_pdf(doc_id, year, session=session)
-            raw_transactions = parse_ptr_pdf(pdf_bytes)
+            try:
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
+            except ValueError:
+                if not was_cached:
+                    raise
+                log.warning(
+                    "Could not parse cached House PDF %s/%s; downloading once",
+                    year,
+                    doc_id,
+                )
+                pdf_bytes = fetch_ptr_pdf(doc_id, year, force=True, session=session)
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
         except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
             log.warning("Failed to process PDF %s/%s: %s", year, doc_id, exc)
             continue
