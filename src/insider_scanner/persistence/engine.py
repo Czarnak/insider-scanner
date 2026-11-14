@@ -63,7 +63,8 @@ def create_sqlite_engine(
             cursor.execute("PRAGMA foreign_keys=ON")
             # This is a local integer connection option, not SQL supplied by a
             # user. SQLite PRAGMA does not accept a bind placeholder here.
-            cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")  # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query, python.lang.security.audit.formatted-sql-query.formatted-sql-query
+            cursor.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         finally:
             cursor.close()
 

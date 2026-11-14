@@ -28,7 +28,8 @@ def load_application_fonts() -> list[str]:
 
     try:
         # The project requires Python >=3.11.5, which includes this stdlib API.
-        import importlib.resources as pkg_resources  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+        # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+        import importlib.resources as pkg_resources
 
         fonts_pkg = pkg_resources.files("insider_scanner.resources.fonts")
         # files() returns a Traversable; .iterdir() may raise if absent

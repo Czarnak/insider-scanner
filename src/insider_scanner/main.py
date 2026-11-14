@@ -34,7 +34,8 @@ def verify_gui_install() -> int:
     """Verify GUI dependencies without opening an application window."""
     try:
         # The project requires Python >=3.11.5, which includes this stdlib API.
-        from importlib.resources import files  # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+        # nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
+        from importlib.resources import files
 
         _load_gui_components()
 
