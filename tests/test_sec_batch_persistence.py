@@ -63,6 +63,22 @@ def test_batch_failed_transaction_retries_every_filing():
     assert batch.upserts.inserted == 0
 
 
+def test_bad_row_keeps_its_filing_retryable_across_flushes(persistence):
+    batch = SecTradeBatch(persistence.us_trades.upsert, max_filings=1)
+    batch.add("first", [sec_trade(sec_row_id="0", price=-1), sec_trade(sec_row_id="1")])
+    batch.add(
+        "second", [sec_trade(sec_row_id="2", price=-1), sec_trade(sec_row_id="3")]
+    )
+    outcomes = batch.take_outcomes(flush=True)
+    assert [item.accession for item in outcomes] == ["first", "second"]
+    assert all(not item.complete and item.reason for item in outcomes)
+    assert batch.upserts.inserted == 2
+    assert {trade.sec_row_id for trade in persistence.us_trades.query_latest(10)} == {
+        "1",
+        "3",
+    }
+
+
 @pytest.mark.parametrize("kind", ["daily", "backfill"])
 def test_services_commit_batches_before_progress(
     persistence, tmp_path, monkeypatch, kind

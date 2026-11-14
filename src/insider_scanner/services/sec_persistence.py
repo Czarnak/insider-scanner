@@ -62,7 +62,11 @@ class SecTradeBatch:
             for accession, _, _ in filings:
                 self._record(accession, reason)
             return
-        self.upserts += result
+        # The filing outcomes below carry failures. Retain aggregate counts
+        # here without copying all prior row-error tuples on every flush.
+        self.upserts += UpsertResult(
+            inserted=result.inserted, updated=result.updated, skipped=result.skipped
+        )
         for accession, start, end in filings:
             errors = [
                 error.message for error in result.errors if start <= error.index < end
