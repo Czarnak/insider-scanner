@@ -26,6 +26,12 @@ from xml.etree import ElementTree as ET
 from insider_scanner.core.congress_common import extract_ticker as _extract_ticker
 from insider_scanner.core.congress_common import normalize_owner as _normalize_owner
 from insider_scanner.core.congress_common import normalize_tx_type as _normalize_tx_type
+from insider_scanner.core.fetch_outcome import (
+    FetchIssue,
+    FetchResult,
+    FetchStatus,
+    as_fetch_result,
+)
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.utils.atomic_file import atomic_write_bytes
 from insider_scanner.utils.config import HOUSE_DISCLOSURES_DIR
@@ -75,7 +81,6 @@ def _index_txt_path(year: int) -> Path:
 def _pdf_cache_path(doc_id: str, year: int) -> Path:
     """Path where a cached PTR PDF lives."""
     pdf_dir = HOUSE_DISCLOSURES_DIR / str(year) / "pdfs"
-    pdf_dir.mkdir(parents=True, exist_ok=True)
     return pdf_dir / f"{doc_id}.pdf"
 
 
@@ -216,7 +221,7 @@ def refresh_current_year() -> Path | None:
 # -----------------------------------------------------------------------
 
 
-def parse_house_index(year: int) -> list[dict]:
+def parse_house_index(year: int) -> FetchResult[dict]:
     """Parse the House financial disclosure XML index for a given year.
 
     Returns a list of dicts, each with keys: prefix, last, first, suffix,
@@ -225,7 +230,9 @@ def parse_house_index(year: int) -> list[dict]:
     xml_path = _index_xml_path(year)
     if not xml_path.exists():
         log.warning("Index file not found: %s", xml_path)
-        return []
+        return FetchResult(
+            issues=[FetchIssue("index_missing", source="house", identifier=str(year))]
+        )
 
     # Handle BOM and Windows line endings
     raw = xml_path.read_bytes()
@@ -269,7 +276,7 @@ def parse_house_index(year: int) -> list[dict]:
         )
 
     log.info("Parsed %d filings from %d index", len(filings), year)
-    return filings
+    return FetchResult(filings)
 
 
 def search_filings(
@@ -279,7 +286,7 @@ def search_filings(
     filing_type: str = FILING_TYPE_PTR,
     date_from: date | None = None,
     date_to: date | None = None,
-) -> list[dict]:
+) -> FetchResult[dict]:
     """Search the House index for matching filings.
 
     Parameters
@@ -298,7 +305,7 @@ def search_filings(
     -------
     list of dicts matching the criteria.
     """
-    filings = parse_house_index(year)
+    filings = as_fetch_result(parse_house_index(year))
     results = []
 
     name_lower = name.lower().strip() if name else None
@@ -335,7 +342,11 @@ def search_filings(
 
         results.append(f)
 
-    return results
+    return FetchResult(
+        results,
+        status=None if filings.complete else filings.status,
+        issues=filings.issues,
+    )
 
 
 # -----------------------------------------------------------------------
@@ -384,7 +395,14 @@ def fetch_ptr_pdf(
 
     content = _download_bytes(url, session)
     _validate_pdf(content)
-    atomic_write_bytes(cache_path, content)
+    try:
+        atomic_write_bytes(cache_path, content)
+    except OSError as exc:
+        log.warning(
+            "House PDF cache write failed doc_id=%s reason=%s",
+            doc_id,
+            type(exc).__name__,
+        )
     return content
 
 
@@ -406,13 +424,16 @@ def _is_scanned_pdf(pdf) -> bool:
     return len(text.strip()) < 50
 
 
-def parse_ptr_pdf(pdf_bytes: bytes, *, strict: bool = False) -> list[dict]:
+def parse_ptr_pdf(
+    pdf_bytes: bytes, *, strict: bool = False, doc_id: str = ""
+) -> FetchResult[dict]:
     """Extract transaction rows from an electronically-filed House PTR PDF.
 
     Returns a list of dicts with keys: owner, asset, tx_type, tx_date,
     notification_date, amount, cap_gains_over_200.
 
-    Skips scanned PDFs (returns empty list).
+    Scanned PDFs are explicitly unsupported. A failed page retains rows from
+    the other pages and reports an incomplete result, including in strict mode.
 
     Requires pdfplumber.
     """
@@ -420,51 +441,97 @@ def parse_ptr_pdf(pdf_bytes: bytes, *, strict: bool = False) -> list[dict]:
         import pdfplumber
     except ImportError:
         log.error("pdfplumber not installed — pip install pdfplumber")
-        return []
+        return FetchResult(
+            status=FetchStatus.TRANSIENT_FAILURE,
+            issues=[
+                FetchIssue("pdf_parser_unavailable", source="house", identifier=doc_id)
+            ],
+        )
 
     transactions = []
+    issues: list[FetchIssue] = []
+    recognized_table = False
 
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            if _is_scanned_pdf(pdf):
-                log.debug("Scanned PDF detected, skipping")
-                return []
+            try:
+                scanned = _is_scanned_pdf(pdf)
+            except Exception:  # noqa: BLE001 - damaged text must not discard intact page tables
+                # A damaged text layer does not prevent extracting intact
+                # tables from other pages. Each page below owns its outcome.
+                scanned = False
+            if scanned:
+                log.info("Scanned House PDF unsupported doc_id=%s", doc_id)
+                return FetchResult(
+                    status=FetchStatus.UNSUPPORTED,
+                    issues=[
+                        FetchIssue(
+                            "scanned_pdf",
+                            source="house",
+                            identifier=doc_id,
+                            retryable=False,
+                        )
+                    ],
+                )
 
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                for table in tables:
-                    if not table:
-                        continue
-
-                    # Detect header row
-                    header_idx = _find_header_row(table)
-                    if header_idx is None:
-                        continue
-
-                    headers = [
-                        (cell or "").strip().lower() for cell in table[header_idx]
-                    ]
-                    col_map = _map_columns(headers)
-
-                    if not col_map.get("asset"):
-                        continue  # Not a transaction table
-
-                    # Parse data rows
-                    for row in table[header_idx + 1 :]:
-                        if not row or all(not (cell or "").strip() for cell in row):
+            for page_number, page in enumerate(pdf.pages, start=1):
+                try:
+                    tables = page.extract_tables()
+                    for table in tables:
+                        if not table:
                             continue
 
-                        tx = _parse_table_row(row, col_map)
-                        if tx and tx.get("asset"):
-                            transactions.append(tx)
+                        header_idx = _find_header_row(table)
+                        if header_idx is None:
+                            continue
+                        headers = [
+                            (cell or "").strip().lower() for cell in table[header_idx]
+                        ]
+                        col_map = _map_columns(headers)
+                        if not {"asset", "transaction", "date", "amount"}.issubset(
+                            col_map
+                        ):
+                            raise ValueError(
+                                "House transaction table headers are incomplete"
+                            )
+                        recognized_table = True
+                        for row in table[header_idx + 1 :]:
+                            if not row or all(not (cell or "").strip() for cell in row):
+                                continue
+                            tx = _parse_table_row(row, col_map)
+                            if tx and tx.get("asset"):
+                                transactions.append(tx)
+                except Exception as exc:  # noqa: BLE001 - keep rows from intact PDF pages
+                    log.warning(
+                        "House PDF page failed doc_id=%s page=%d reason=%s",
+                        doc_id,
+                        page_number,
+                        type(exc).__name__,
+                    )
+                    issues.append(
+                        FetchIssue(
+                            "pdf_page_parse_failed",
+                            source="house",
+                            identifier=f"{doc_id}:page:{page_number}",
+                        )
+                    )
 
     except Exception as exc:
         if strict:
             raise ValueError("House PDF transaction extraction failed") from exc
-        log.warning("PDF parse error: %s", exc)
-        return []
+        log.warning(
+            "House PDF parse failed doc_id=%s reason=%s", doc_id, type(exc).__name__
+        )
+        issues.append(FetchIssue("pdf_parse_failed", source="house", identifier=doc_id))
 
-    return transactions
+    if not recognized_table and not issues:
+        issues.append(
+            FetchIssue("transaction_table_missing", source="house", identifier=doc_id)
+        )
+    return FetchResult(
+        transactions,
+        issues=issues,
+    )
 
 
 def _find_header_row(table: list[list]) -> int | None:
@@ -543,7 +610,7 @@ def scrape_house_trades(
     date_to: date | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
     session: HttpSession | None = None,
-) -> list[CongressTrade]:
+) -> FetchResult[CongressTrade]:
     """Scrape House PTR filings and return parsed CongressTrade records.
 
     Parameters
@@ -576,32 +643,42 @@ def _scrape_house_trades(
     date_to: date | None,
     progress_callback: Callable[[int, int, str], None] | None,
     session: HttpSession,
-) -> list[CongressTrade]:
+) -> FetchResult[CongressTrade]:
     years = _determine_years(date_from, date_to)
 
     all_trades: list[CongressTrade] = []
     all_filings: list[dict] = []
+    issues: list[FetchIssue] = []
 
     # Step 1: Ensure indexes and collect matching filings
     for year in years:
         try:
             ensure_house_index(year, session=session)
+            filings = search_filings(
+                year,
+                name=official_name,
+                filing_type=FILING_TYPE_PTR,
+                date_from=date_from,
+                date_to=date_to,
+            )
         except Exception as exc:  # noqa: BLE001 - isolate a failed year from the scan
-            log.warning("Could not get index for %d: %s", year, exc)
+            log.warning(
+                "House index failed year=%d reason=%s", year, type(exc).__name__
+            )
+            issues.append(
+                FetchIssue("index_failed", source="house", identifier=str(year))
+            )
             continue
-
-        filings = search_filings(
-            year,
-            name=official_name,
-            filing_type=FILING_TYPE_PTR,
-            date_from=date_from,
-            date_to=date_to,
-        )
         all_filings.extend(filings)
+        if isinstance(filings, FetchResult):
+            issues.extend(filings.issues)
 
     if not all_filings:
         log.info("No matching House PTR filings found")
-        return []
+        return FetchResult(
+            status=FetchStatus.TRANSIENT_FAILURE if issues else None,
+            issues=issues,
+        )
 
     total = len(all_filings)
     log.info("Found %d matching PTR filings, fetching PDFs...", total)
@@ -623,7 +700,7 @@ def _scrape_house_trades(
                 else fetch_ptr_pdf(doc_id, year, force=True, session=session)
             )
             try:
-                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True, doc_id=doc_id)
             except ValueError:
                 if cached_pdf is None:
                     raise
@@ -633,10 +710,18 @@ def _scrape_house_trades(
                     doc_id,
                 )
                 pdf_bytes = fetch_ptr_pdf(doc_id, year, force=True, session=session)
-                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
+                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True, doc_id=doc_id)
         except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
-            log.warning("Failed to process PDF %s/%s: %s", year, doc_id, exc)
+            log.warning(
+                "House PDF failed year=%s doc_id=%s reason=%s",
+                year,
+                doc_id,
+                type(exc).__name__,
+            )
+            issues.append(FetchIssue("pdf_failed", source="house", identifier=doc_id))
             continue
+        if isinstance(raw_transactions, FetchResult):
+            issues.extend(raw_transactions.issues)
 
         # Convert raw transactions to CongressTrade records
         official = f"{filing.get('prefix', '')} {filing['first']} {filing['last']} {filing.get('suffix', '')}".strip()
@@ -675,7 +760,17 @@ def _scrape_house_trades(
         len(all_trades),
         total,
     )
-    return all_trades
+    return FetchResult(
+        all_trades,
+        status=(
+            FetchStatus.UNSUPPORTED
+            if issues
+            and not all_trades
+            and all(not issue.retryable for issue in issues)
+            else None
+        ),
+        issues=issues,
+    )
 
 
 def _determine_years(date_from: date | None, date_to: date | None) -> list[int]:

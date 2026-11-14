@@ -28,6 +28,7 @@ from insider_scanner.core.congress_house import (
     scrape_house_trades,
     search_filings,
 )
+from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import CongressTrade
 
 SAMPLE_PDF = (
@@ -1046,3 +1047,143 @@ def test_house_corrupt_cache_repair_does_not_download_again_on_extraction_error(
     assert parser.call_count == 1
     assert len(responses.calls) == 1
     assert cached.read_bytes() == SAMPLE_PDF
+
+
+def test_house_pdf_preserves_other_pages_when_one_page_fails():
+    from insider_scanner.core.congress_house import parse_ptr_pdf
+
+    first_page, damaged_page, last_page = MagicMock(), MagicMock(), MagicMock()
+    for page, ticker in [(first_page, "AAPL"), (last_page, "MSFT")]:
+        page.extract_text.return_value = "Electronic Periodic Transaction Report " * 3
+        page.extract_tables.return_value = [
+            [
+                ["Asset", "Transaction Type", "Date", "Amount"],
+                [f"Example ({ticker})", "P", "01/15/2026", "$1,001 - $15,000"],
+            ]
+        ]
+    damaged_page.extract_text.side_effect = ValueError("damaged text layer")
+    damaged_page.extract_tables.side_effect = ValueError("damaged table")
+    pdf = MagicMock()
+    pdf.pages = [first_page, damaged_page, last_page]
+    pdf.__enter__.return_value = pdf
+    with patch("pdfplumber.open", return_value=pdf):
+        result = parse_ptr_pdf(b"pdf", strict=True, doc_id="12345")
+
+    assert [row["asset"] for row in result] == ["Example (AAPL)", "Example (MSFT)"]
+    assert result.status == FetchStatus.PARTIAL
+    assert result.issues == (
+        FetchIssue("pdf_page_parse_failed", source="house", identifier="12345:page:2"),
+    )
+
+
+def test_house_scanned_pdf_is_explicitly_unsupported():
+    from insider_scanner.core.congress_house import parse_ptr_pdf
+
+    result = parse_ptr_pdf(SAMPLE_PDF, doc_id="20034001")
+
+    assert result == []
+    assert result.status == FetchStatus.UNSUPPORTED
+    assert not result.complete
+    assert not result.issues[0].retryable
+    assert result.issues[0].identifier == "20034001"
+
+
+def test_house_electronic_pdf_with_missing_table_is_not_empty_success():
+    from insider_scanner.core.congress_house import parse_ptr_pdf
+
+    page = MagicMock()
+    page.extract_text.return_value = "Unexpected electronic report content " * 3
+    page.extract_tables.return_value = []
+    pdf = MagicMock()
+    pdf.pages = [page]
+    pdf.__enter__.return_value = pdf
+    with patch("pdfplumber.open", return_value=pdf):
+        result = parse_ptr_pdf(b"pdf", doc_id="12345")
+
+    assert result == []
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues[0].reason == "transaction_table_missing"
+
+
+def test_house_failed_year_is_not_reported_as_empty_success(monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(
+        house, "ensure_house_index", MagicMock(side_effect=OSError("offline"))
+    )
+    result = house.scrape_house_trades(
+        date_from=date(2026, 1, 1), date_to=date(2026, 12, 31), session=MagicMock()
+    )
+
+    assert result == []
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues == (
+        FetchIssue("index_failed", source="house", identifier="2026"),
+    )
+
+
+def test_house_partial_pdf_rows_reach_scan_result(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
+    issue = FetchIssue(
+        "pdf_page_parse_failed", source="house", identifier="20034001:page:2"
+    )
+    monkeypatch.setattr(
+        house,
+        "parse_ptr_pdf",
+        MagicMock(
+            return_value=FetchResult(
+                [
+                    {
+                        "asset": "Apple (AAPL)",
+                        "tx_type": "P",
+                        "tx_date": "01/15/2026",
+                        "amount": "$1,001 - $15,000",
+                    }
+                ],
+                issues=[issue],
+            )
+        ),
+    )
+    result = house.scrape_house_trades(
+        official_name="Nancy Pelosi",
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 12, 31),
+        session=MagicMock(),
+    )
+
+    assert [trade.ticker for trade in result] == ["AAPL"]
+    assert result.status == FetchStatus.PARTIAL
+    assert result.issues == (issue,)
+
+
+@responses.activate
+def test_house_pdf_cache_write_is_best_effort(tmp_path, monkeypatch):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    monkeypatch.setattr(
+        house, "atomic_write_bytes", MagicMock(side_effect=PermissionError("blocked"))
+    )
+    responses.add(
+        responses.GET, PTR_PDF_URL.format(year=2026, doc_id="12345"), body=SAMPLE_PDF
+    )
+
+    assert house.fetch_ptr_pdf("12345", 2026) == SAMPLE_PDF
+    assert not (tmp_path / "2026" / "pdfs" / "12345.pdf").exists()
+
+
+def test_house_missing_index_retains_failure_metadata_through_search(
+    tmp_path, monkeypatch
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    result = house.search_filings(2026)
+
+    assert result == []
+    assert result.status == FetchStatus.TRANSIENT_FAILURE
+    assert result.issues[0].reason == "index_missing"
