@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from insider_scanner.core.congress_identity import MemberIdentity, name_matches
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.merger import merge_trade_pair
 from insider_scanner.core.models import CongressTrade, InsiderTrade
@@ -240,7 +241,7 @@ class CongressTradeRepository:
 
     def query(
         self,
-        official: str | None = None,
+        official: str | MemberIdentity | None = None,
         *,
         source: str | None = None,
         chamber: str | None = None,
@@ -252,8 +253,6 @@ class CongressTradeRepository:
         _validate_range(start_date, end_date)
         _validate_range(trade_start_date, trade_end_date)
         conditions = []
-        if official and official.casefold() != "all":
-            conditions.append(congress_trades.c.official_name == official)
         if source is not None:
             conditions.append(congress_trades.c.source == source)
         if chamber is not None:
@@ -268,6 +267,24 @@ class CongressTradeRepository:
             conditions.append(congress_trades.c.trade_date <= trade_end_date)
         try:
             with self._engine.begin() as connection:
+                if official and not (
+                    isinstance(official, str) and official.casefold() in {"all", "*"}
+                ):
+                    # Match distinct names within the requested source/date window,
+                    # retaining legacy rows and their original transaction keys.
+                    names = connection.execute(
+                        select(congress_trades.c.official_name)
+                        .where(*conditions)
+                        .distinct()
+                    ).scalars()
+                    matching_names = [
+                        name for name in names if name_matches(official, name)
+                    ]
+                    if not matching_names:
+                        return []
+                    conditions.append(
+                        congress_trades.c.official_name.in_(matching_names)
+                    )
                 statement = select(congress_trades)
                 if conditions:
                     statement = statement.where(and_(*conditions))

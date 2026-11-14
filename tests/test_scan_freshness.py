@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from insider_scanner.core.congress_identity import identity_for
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.services import CongressScanService, UsScanService
@@ -99,7 +100,8 @@ def test_recent_filing_dates_refresh_after_ttl_and_history_stays_covered(
         (identifier, date(2026, 5, 1), date(2026, 6, 8), True),
         (identifier, date(2026, 6, 2), date(2026, 6, 8), True),
     ]
-    assert persistence.coverage.get(domain, identifier, source) == (
+    coverage_key = identity_for(identifier).key if domain == "congress" else identifier
+    assert persistence.coverage.get(domain, coverage_key, source) == (
         DateInterval(date(2026, 5, 1), date(2026, 6, 7)),
     )
 

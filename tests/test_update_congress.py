@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import responses
 
 # Add scripts/ to path so we can import the module
@@ -152,6 +153,11 @@ class TestFetchFederalLegislators:
 
 
 class TestFetchStateLegislators:
+    @pytest.fixture(autouse=True)
+    def fast_single_jurisdiction(self, monkeypatch):
+        monkeypatch.setattr(update_congress, "OPENSTATES_JURISDICTIONS", ("ca",))
+        monkeypatch.setattr(update_congress, "STATE_REQUEST_INTERVAL", 0)
+
     @responses.activate
     def test_single_page(self):
         responses.add(
@@ -175,8 +181,8 @@ class TestFetchStateLegislators:
             update_congress.OPENSTATES_PEOPLE_URL,
             status=401,
         )
-        members = update_congress.fetch_state_legislators("bad-key")
-        assert members == []
+        with pytest.raises(update_congress.StateFetchError, match="401"):
+            update_congress.fetch_state_legislators("bad-key")
 
     @responses.activate
     def test_empty_results(self):
@@ -454,3 +460,227 @@ class TestMergeAndSave:
         assert not out.exists()
         captured = capsys.readouterr()
         assert "DRY RUN" in captured.out
+
+
+@responses.activate
+def test_malformed_yaml_rows_do_not_leak_into_json_fallback():
+    responses.add(
+        responses.GET,
+        update_congress.FEDERAL_URL,
+        body=SAMPLE_YAML + "- name: {}\n  terms: []\n",
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        update_congress.FEDERAL_FALLBACK_URL,
+        json=[
+            {
+                "id": {"bioguide": "C000003"},
+                "name": {"first": "Carol", "last": "Lee"},
+                "terms": [{"type": "sen"}],
+            }
+        ],
+        status=200,
+    )
+    members = update_congress.fetch_federal_legislators()
+    assert [m["bioguide_id"] for m in members] == ["C000003"]
+
+
+def test_failed_federal_fetch_leaves_existing_file_unchanged(tmp_path, monkeypatch):
+    output = tmp_path / "members.json"
+    output.write_text("existing user data", encoding="utf-8")
+    monkeypatch.setattr(update_congress, "fetch_federal_legislators", list)
+    assert update_congress.main(["--output", str(output)]) == 1
+    assert output.read_text(encoding="utf-8") == "existing user data"
+
+
+def test_smaller_federal_result_is_rejected(tmp_path):
+    output = tmp_path / "members.json"
+    previous = [{"name": f"Member {i}", "level": "federal"} for i in range(10)]
+    original = json.dumps(previous)
+    output.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError, match="much smaller"):
+        update_congress.merge_and_save([previous[0]], [], output)
+    assert output.read_text(encoding="utf-8") == original
+
+
+def test_federal_only_update_retains_existing_state_members(tmp_path):
+    output = tmp_path / "members.json"
+    state = {"name": "Rivera Carlos", "level": "state", "state": "CA"}
+    output.write_text(json.dumps([state]), encoding="utf-8")
+    federal = {"name": "Smith Alice", "level": "federal", "state": "CA"}
+    update_congress.merge_and_save([federal], [], output)
+    assert state in json.loads(output.read_text(encoding="utf-8"))
+
+
+def test_atomic_publish_failure_keeps_original_file(tmp_path, monkeypatch):
+    output = tmp_path / "members.json"
+    output.write_text("[]", encoding="utf-8")
+    from insider_scanner.utils import atomic_file
+
+    def fail_replace(*_args):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(atomic_file.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated"):
+        update_congress.merge_and_save(
+            [{"name": "Smith Alice", "level": "federal"}], [], output
+        )
+    assert output.read_text(encoding="utf-8") == "[]"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_output_defaults_to_runtime_and_explicit_seed(monkeypatch):
+    member = {"name": "Smith Alice", "level": "federal"}
+    monkeypatch.setattr(update_congress, "fetch_federal_legislators", lambda: [member])
+    outputs = []
+    monkeypatch.setattr(
+        update_congress, "merge_and_save", lambda f, s, path, **kw: outputs.append(path)
+    )
+    assert update_congress.main(["--no-committees"]) == 0
+    assert update_congress.main(["--no-committees", "--update-seed"]) == 0
+    assert outputs == [update_congress.CONGRESS_FILE, update_congress.SEED_OUTPUT]
+
+
+@responses.activate
+def test_state_requests_required_filters_and_fifty_row_pages(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(update_congress, "OPENSTATES_JURISDICTIONS", ("ca", "ne"))
+    monkeypatch.setattr(update_congress, "STATE_REQUEST_INTERVAL", 0)
+    params_seen = []
+
+    def callback(request):
+        params = parse_qs(urlsplit(request.url).query)
+        params_seen.append(params)
+        classification = params["org_classification"][0]
+        page = int(params["page"][0])
+        person = {
+            "id": f"{params['jurisdiction'][0]}-{classification}-{page}",
+            "name": "Display with middle names",
+            "given_name": "Mary",
+            "family_name": "Van Smith",
+            "current_role": {"org_classification": classification},
+        }
+        return (
+            200,
+            {},
+            json.dumps(
+                {
+                    "results": [person, {"current_role": None}],
+                    "pagination": {"max_page": 2},
+                }
+            ),
+        )
+
+    responses.add_callback(
+        responses.GET, update_congress.OPENSTATES_PEOPLE_URL, callback=callback
+    )
+    members = update_congress.fetch_state_legislators("test-key")
+    assert len(members) == 6
+    assert {m["last_name"] for m in members} == {"Van Smith"}
+    assert all(p["per_page"] == ["50"] for p in params_seen)
+    assert {p["jurisdiction"][0] for p in params_seen} == {"ca", "ne"}
+    assert not any(
+        p["jurisdiction"] == ["ne"] and p["org_classification"] == ["lower"]
+        for p in params_seen
+    )
+
+
+@responses.activate
+def test_failed_state_page_rejects_partial_snapshot(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    monkeypatch.setattr(update_congress, "OPENSTATES_JURISDICTIONS", ("ca",))
+    monkeypatch.setattr(update_congress, "STATE_REQUEST_INTERVAL", 0)
+
+    def callback(request):
+        params = parse_qs(urlsplit(request.url).query)
+        if params["page"] == ["2"]:
+            return 400, {}, "invalid page"
+        return (
+            200,
+            {},
+            json.dumps(
+                {
+                    "results": SAMPLE_OPENSTATES_PAGE1["results"],
+                    "pagination": {"max_page": 2},
+                }
+            ),
+        )
+
+    responses.add_callback(
+        responses.GET, update_congress.OPENSTATES_PEOPLE_URL, callback=callback
+    )
+    with pytest.raises(update_congress.StateFetchError, match="2 jurisdiction/chamber"):
+        update_congress.fetch_state_legislators("test-key")
+
+
+@responses.activate
+def test_state_rate_limit_honors_retry_after(monkeypatch):
+    from insider_scanner.utils import http
+
+    monkeypatch.setattr(update_congress, "OPENSTATES_JURISDICTIONS", ("ne",))
+    monkeypatch.setattr(update_congress, "STATE_REQUEST_INTERVAL", 0)
+    waits = []
+    original = http.HttpSession
+    monkeypatch.setattr(
+        update_congress,
+        "HttpSession",
+        lambda **kwargs: original(sleep=waits.append, **kwargs),
+    )
+    responses.add(
+        responses.GET,
+        update_congress.OPENSTATES_PEOPLE_URL,
+        status=429,
+        headers={"Retry-After": "2"},
+    )
+    responses.add(
+        responses.GET,
+        update_congress.OPENSTATES_PEOPLE_URL,
+        json=SAMPLE_OPENSTATES_PAGE1,
+        status=200,
+    )
+    assert len(update_congress.fetch_state_legislators("test-key")) == 1
+    assert waits == [2]
+
+
+@pytest.mark.parametrize("state_result", [None, []])
+def test_requested_state_failure_leaves_saved_data_unchanged(
+    tmp_path, monkeypatch, state_result
+):
+    output = tmp_path / "members.json"
+    output.write_text("saved members", encoding="utf-8")
+    monkeypatch.setenv("OPENSTATES_API_KEY", "test-key")
+    monkeypatch.setattr(
+        update_congress, "fetch_federal_legislators", lambda: [{"name": "Smith Alice"}]
+    )
+
+    def fetch(_key):
+        if state_result is None:
+            raise update_congress.StateFetchError("incomplete")
+        return state_result
+
+    monkeypatch.setattr(update_congress, "fetch_state_legislators", fetch)
+    assert (
+        update_congress.main(
+            ["--include-state", "--no-committees", "--output", str(output)]
+        )
+        == 1
+    )
+    assert output.read_text(encoding="utf-8") == "saved members"
+
+
+def test_requested_state_without_key_does_not_write(tmp_path, monkeypatch):
+    output = tmp_path / "members.json"
+    monkeypatch.delenv("OPENSTATES_API_KEY", raising=False)
+    monkeypatch.setattr(
+        update_congress, "fetch_federal_legislators", lambda: [{"name": "Smith Alice"}]
+    )
+    assert (
+        update_congress.main(
+            ["--include-state", "--no-committees", "--output", str(output)]
+        )
+        == 1
+    )
+    assert not output.exists()

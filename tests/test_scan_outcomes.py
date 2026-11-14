@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from insider_scanner.core.congress_identity import identity_for
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.persistence.coverage import DateInterval
 from insider_scanner.services import CongressScanService, UsScanService
@@ -36,7 +37,8 @@ def test_partial_data_is_persisted_but_interval_is_retried(persistence, domain):
         assert result.issues[0].source == source
         assert result.issues[0].reason == "result_limit"
     assert len(calls) == 2
-    assert persistence.coverage.get(domain, identifier, source) == ()
+    coverage_key = identity_for(identifier).key if domain == "congress" else identifier
+    assert persistence.coverage.get(domain, coverage_key, source) == ()
 
 
 @pytest.mark.parametrize("domain", ["us", "congress"])
@@ -66,8 +68,9 @@ def test_failing_source_retains_other_source_and_its_coverage(
     assert result.issues == (
         FetchIssue("TimeoutError", failed, f"{identifier} {DAY}..{DAY}"),
     )
-    assert persistence.coverage.get(domain, identifier, failed) == ()
-    assert persistence.coverage.get(domain, identifier, good) == (
+    coverage_key = identity_for(identifier).key if domain == "congress" else identifier
+    assert persistence.coverage.get(domain, coverage_key, failed) == ()
+    assert persistence.coverage.get(domain, coverage_key, good) == (
         DateInterval(DAY, DAY),
     )
 

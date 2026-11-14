@@ -1363,3 +1363,31 @@ def test_house_expired_index_refresh_failure_is_incomplete(
         FetchIssue("index_failed", source="house", identifier="2026"),
     )
     assert cached.read_text(encoding="utf-8") == SAMPLE_INDEX_XML
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("Lee", ["Lee"]),
+        ("Nancy Pelosi", ["Pelosi"]),
+        ('Eric A. "Rick" Crawford', ["Crawford"]),
+        ("", []),
+    ],
+)
+def test_house_name_filter_uses_whole_structured_names(query, expected):
+    filings = [
+        {"first": first, "last": last, "filing_type": "P"}
+        for first, last in [
+            ("", ""),
+            ("Barbara", "Lee"),
+            ("Teresa", "Leger"),
+            ("John", "Fleeson"),
+            ("Nancy", "Pelosi"),
+            ("Eric", "Crawford"),
+        ]
+    ]
+    with patch(
+        "insider_scanner.core.congress_house.parse_house_index", return_value=filings
+    ):
+        result = search_filings(2026, name=query)
+    assert [filing["last"] for filing in result] == expected

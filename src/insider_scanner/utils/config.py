@@ -175,6 +175,39 @@ def _copy_seed_if_missing(source: Traversable, target: Path) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def initialize_congress_seed(
+    target: Path | None = None, *, force: bool = False
+) -> tuple[str, Path | None]:
+    """Install the packaged member list; explicitly reset only after a backup."""
+    from insider_scanner.utils.atomic_file import atomic_write_bytes
+
+    target = target if target is not None else CONGRESS_FILE
+    source = files(SEED_PACKAGE).joinpath("congress_members.json")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        _copy_seed_if_missing(source, target)
+        return "created", None
+    if not force:
+        return "exists", None
+
+    # Read the replacement before touching either the user file or its backup.
+    replacement = source.read_bytes()
+    previous = target.read_bytes()
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=target.parent,
+        prefix=f"{target.name}.",
+        suffix=".bak",
+        delete=False,
+    ) as backup:
+        backup_path = Path(backup.name)
+        backup.write(previous)
+        backup.flush()
+        os.fsync(backup.fileno())
+    atomic_write_bytes(target, replacement)
+    return "reset", backup_path
+
+
 def ensure_dirs(paths: RuntimePaths | None = None) -> None:
     """Create runtime directories, prune HTTP caches, and copy absent seeds."""
     # caching imports DEFAULT_CACHE_TTL from this module.

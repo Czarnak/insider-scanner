@@ -23,6 +23,31 @@ from insider_scanner.services.sec_downloads import SecDownloadProgress
 PLACEHOLDER_USER_AGENT = "InsiderScanner/0.1 (research; contact@example.com)"
 
 
+def test_init_congress_reports_creation_existing_and_reset(
+    monkeypatch, tmp_path, capsys
+):
+    from insider_scanner.utils import config
+
+    target = tmp_path / "profile/congress_members.json"
+    monkeypatch.setattr(config, "CONGRESS_FILE", target)
+
+    def unexpected_startup():
+        pytest.fail("Seed initialization must run before database/seed bootstrap")
+
+    monkeypatch.setattr(cli, "ensure_dirs", unexpected_startup)
+    assert cli.run(["init-congress"], service_factory=unexpected_startup) == 0
+    assert "created at:" in capsys.readouterr().out
+    target.write_bytes(b"user members")
+    assert cli.run(["init-congress"], service_factory=unexpected_startup) == 0
+    assert "already exists" in capsys.readouterr().out
+    assert target.read_bytes() == b"user members"
+    assert (
+        cli.run(["init-congress", "--force"], service_factory=unexpected_startup) == 0
+    )
+    assert "backed up" in capsys.readouterr().out
+    assert next(target.parent.glob("*.bak")).read_bytes() == b"user members"
+
+
 def _sec_summary(**overrides: object) -> SecDailyIngestionSummary:
     base: dict[str, object] = {
         "interval": DateInterval(date(2026, 6, 15), date(2026, 6, 15)),

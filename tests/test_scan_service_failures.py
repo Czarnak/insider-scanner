@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+from insider_scanner.core.congress_identity import identity_for
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.fetch_outcome import FetchStatus
 from insider_scanner.persistence.coverage import DateInterval
@@ -32,7 +33,10 @@ def test_congress_source_error_preserves_uncovered_interval(tmp_path):
         assert result.issues[0].source == "house"
         assert result.issues[0].identifier == "Jane Doe 2026-01-01..2026-01-02"
         assert result.issues[0].reason == "ConnectionError"
-        assert context.coverage.get("congress", "Jane Doe", "house") == ()
+        assert (
+            context.coverage.get("congress", identity_for("Jane Doe").key, "house")
+            == ()
+        )
     finally:
         context.close()
 

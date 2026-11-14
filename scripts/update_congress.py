@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update data/congress_members.json with current legislators.
+"""Update the runtime Congress member list with current legislators.
 
 Federal legislators are fetched from the unitedstates/congress-legislators
 GitHub repository (public domain, maintained by civic tech community).
@@ -30,12 +30,18 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
+import yaml
 
 # Add project root to path so we can import project modules
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root / "src"))
+
+from insider_scanner.utils.atomic_file import atomic_write_bytes
+from insider_scanner.utils.config import CONGRESS_FILE
+from insider_scanner.utils.http import HttpSession
 
 FEDERAL_URL = (
     "https://raw.githubusercontent.com/unitedstates/"
@@ -55,7 +61,74 @@ MEMBERSHIP_URL = (
 )
 OPENSTATES_PEOPLE_URL = "https://v3.openstates.org/people"
 
-DEFAULT_OUTPUT = _project_root / "data" / "congress_members.json"
+DEFAULT_OUTPUT = CONGRESS_FILE
+SEED_OUTPUT = (
+    _project_root
+    / "src"
+    / "insider_scanner"
+    / "resources"
+    / "seeds"
+    / "congress_members.json"
+)
+
+
+OPENSTATES_JURISDICTIONS = (
+    "al",
+    "ak",
+    "az",
+    "ar",
+    "ca",
+    "co",
+    "ct",
+    "de",
+    "fl",
+    "ga",
+    "hi",
+    "id",
+    "il",
+    "in",
+    "ia",
+    "ks",
+    "ky",
+    "la",
+    "me",
+    "md",
+    "ma",
+    "mi",
+    "mn",
+    "ms",
+    "mo",
+    "mt",
+    "ne",
+    "nv",
+    "nh",
+    "nj",
+    "nm",
+    "ny",
+    "nc",
+    "nd",
+    "oh",
+    "ok",
+    "or",
+    "pa",
+    "ri",
+    "sc",
+    "sd",
+    "tn",
+    "tx",
+    "ut",
+    "vt",
+    "va",
+    "wa",
+    "wv",
+    "wi",
+    "wy",
+)
+STATE_REQUEST_INTERVAL = 6.1  # Open States' default tier allows 10 requests/minute.
+
+
+class StateFetchError(ValueError):
+    """An incomplete state snapshot must never replace the saved member list."""
 
 
 # -----------------------------------------------------------------------
@@ -154,8 +227,6 @@ def fetch_committees() -> dict[str, str]:
         resp = requests.get(COMMITTEES_URL, timeout=30)
         resp.raise_for_status()
 
-        import yaml
-
         raw = yaml.safe_load(resp.text)
 
         committees = {}
@@ -187,8 +258,6 @@ def fetch_committee_membership() -> dict[str, list[str]]:
         print("Fetching committee membership...")
         resp = requests.get(MEMBERSHIP_URL, timeout=30)
         resp.raise_for_status()
-
-        import yaml
 
         raw = yaml.safe_load(resp.text)
 
@@ -264,94 +333,50 @@ def enrich_with_committees(
 # -----------------------------------------------------------------------
 
 
+def _member_from_legislator(person: dict) -> dict:
+    """Build one federal member identically for both supported source formats."""
+    name = person["name"]
+    term = person["terms"][-1]
+    first, last = name["first"].strip(), name["last"].strip()
+    if not first or not last or term["type"] not in {"sen", "rep"}:
+        raise ValueError("Invalid federal member identity")
+    return {
+        "name": f"{last} {first}",
+        "first_name": first,
+        "last_name": last,
+        "official_name": name.get("official_full") or f"{first} {last}",
+        "state": term.get("state", ""),
+        "chamber": "Senate" if term["type"] == "sen" else "House",
+        "party": term.get("party", ""),
+        "level": "federal",
+        "bioguide_id": person["id"]["bioguide"],
+    }
+
+
 def fetch_federal_legislators() -> list[dict]:
-    """Fetch current federal legislators from the unitedstates project.
-
-    Returns a list of dicts with keys: name, state, chamber, party, level,
-    bioguide_id, first_name, last_name.
-    """
-    members = []
-
-    # Try YAML first (more commonly used format)
-    try:
-        print("Fetching federal legislators from GitHub (YAML)...")
-        resp = requests.get(FEDERAL_URL, timeout=30)
-        resp.raise_for_status()
-
-        import yaml
-
-        raw = yaml.safe_load(resp.text)
-
-        for person in raw:
-            latest_term = person.get("terms", [{}])[-1]
-            name = person.get("name", {})
-
-            last = name.get("last", "")
-            first = name.get("first", "")
-            official_full = name.get("official_full", f"{first} {last}")
-
-            # Use "Last First" format for matching consistency
-            display_name = f"{last} {first}"
-
-            chamber_raw = latest_term.get("type", "")
-            chamber = "Senate" if chamber_raw == "sen" else "House"
-
-            members.append(
-                {
-                    "name": display_name,
-                    "first_name": first,
-                    "last_name": last,
-                    "official_name": official_full,
-                    "state": latest_term.get("state", ""),
-                    "chamber": chamber,
-                    "party": latest_term.get("party", ""),
-                    "level": "federal",
-                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
-                }
-            )
-
-        print(f"  Found {len(members)} federal legislators")
-        return members
-
-    except Exception as exc:  # noqa: BLE001 - any YAML source failure tries the JSON fallback
-        print(f"  YAML fetch failed: {exc}")
-
-    # Fallback: try JSON format
-    try:
-        print("  Trying JSON fallback...")
-        resp = requests.get(FEDERAL_FALLBACK_URL, timeout=30)
-        resp.raise_for_status()
-
-        raw = resp.json()
-        for person in raw:
-            latest_term = person.get("terms", [{}])[-1]
-            name = person.get("name", {})
-            last = name.get("last", "")
-            first = name.get("first", "")
-            display_name = f"{last} {first}"
-            chamber_raw = latest_term.get("type", "")
-            chamber = "Senate" if chamber_raw == "sen" else "House"
-
-            members.append(
-                {
-                    "name": display_name,
-                    "first_name": first,
-                    "last_name": last,
-                    "official_name": name.get("official_full", f"{first} {last}"),
-                    "state": latest_term.get("state", ""),
-                    "chamber": chamber,
-                    "party": latest_term.get("party", ""),
-                    "level": "federal",
-                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
-                }
-            )
-
-        print(f"  Found {len(members)} federal legislators (JSON fallback)")
-        return members
-
-    except Exception as exc:  # noqa: BLE001 - isolate failure of the fallback source
-        print(f"  JSON fallback also failed: {exc}")
-        return []
+    """Return a complete validated source, or [] if neither source succeeds."""
+    for url, label in ((FEDERAL_URL, "YAML"), (FEDERAL_FALLBACK_URL, "JSON")):
+        try:
+            print(f"Fetching federal legislators from GitHub ({label})...")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            raw = yaml.safe_load(response.text) if label == "YAML" else response.json()
+            if not isinstance(raw, list) or not raw:
+                raise ValueError("Federal source is empty or is not a list")
+            # Build a fresh list so a malformed YAML row cannot leak into fallback.
+            members = [_member_from_legislator(person) for person in raw]
+            print(f"  Found {len(members)} federal legislators")
+            return members
+        except (
+            requests.RequestException,
+            yaml.YAMLError,
+            ValueError,
+            KeyError,
+            TypeError,
+            IndexError,
+        ):
+            print(f"  {label} source failed validation or could not be fetched")
+    return []
 
 
 # -----------------------------------------------------------------------
@@ -359,99 +384,101 @@ def fetch_federal_legislators() -> list[dict]:
 # -----------------------------------------------------------------------
 
 
+def _state_member(person: dict, classification: str) -> dict | None:
+    role = person.get("current_role") or {}
+    if role.get("org_classification") != classification:
+        return None
+    first = (person.get("given_name") or "").strip()
+    last = (person.get("family_name") or "").strip()
+    name = (person.get("name") or "").strip()
+    if not first or not last:
+        if ", " in name:
+            last, first = name.split(", ", 1)
+        else:
+            parts = name.rsplit(" ", 1)
+            if len(parts) != 2:
+                raise ValueError("State member lacks structured or parseable name")
+            first, last = parts
+    if not person.get("id") or not first or not last:
+        raise ValueError("State member lacks an identity")
+    return {
+        "name": f"{last} {first}",
+        "first_name": first,
+        "last_name": last,
+        "official_name": name or f"{first} {last}",
+        "state": (person.get("jurisdiction") or {}).get("name", ""),
+        "chamber": "State Senate" if classification == "upper" else "State House",
+        "party": person.get("party", ""),
+        "level": "state",
+        "openstates_id": person["id"],
+        "committees": [],
+        "sector": ["Other"],
+    }
+
+
 def fetch_state_legislators(api_key: str) -> list[dict]:
-    """Fetch state legislators from the Open States API.
+    """Fetch complete state/chamber pages with shared bounded HTTP retries.
 
-    Requires a free API key from https://v3.openstates.org.
-
-    Paginates through all results (the API returns ~100 per page).
+    The API requires jurisdiction/name/id and accepts at most 50 rows/page.
+    A failed jurisdiction is counted while others are checked; an incomplete
+    snapshot raises StateFetchError so main cannot publish its partial members.
     """
-    members = []
-    page = 1
-    max_pages = 80  # Safety limit (~7500 state legislators across US)
-
-    headers = {"X-API-KEY": api_key}
-
+    members: dict[str, dict] = {}
+    failures = []
     print("Fetching state legislators from Open States API...")
-
-    while page <= max_pages:
-        try:
-            resp = requests.get(
-                OPENSTATES_PEOPLE_URL,
-                headers=headers,
-                params={"page": page, "per_page": 100},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            results = data.get("results", [])
-            if not results:
-                break
-
-            for person in results:
-                name = person.get("name", "")
-                parts = name.split(", ") if ", " in name else name.rsplit(" ", 1)
-
-                if len(parts) == 2 and ", " in name:
-                    last, first = parts
-                elif len(parts) == 2:
-                    first, last = parts
-                else:
-                    first, last = name, ""
-
-                # Determine state from jurisdiction
-                jurisdiction = person.get("jurisdiction", {})
-                state_name = jurisdiction.get("name", "")
-
-                # Chamber from current_role
-                role = person.get("current_role", {})
-                chamber_raw = role.get("org_classification", "")
-                if "senate" in chamber_raw.lower() or "upper" in chamber_raw.lower():
-                    chamber = "State Senate"
-                else:
-                    chamber = "State House"
-
-                party = person.get("party", "")
-
-                members.append(
-                    {
-                        "name": f"{last} {first}".strip(),
-                        "first_name": first,
-                        "last_name": last,
-                        "official_name": name,
-                        "state": state_name,
-                        "chamber": chamber,
-                        "party": party,
-                        "level": "state",
-                        "openstates_id": person.get("id", ""),
-                        "committees": [],
-                        "sector": ["Other"],
-                    }
-                )
-
-            pagination = data.get("pagination", {})
-            total_pages = pagination.get("max_page", page)
-            print(f"  Page {page}/{total_pages} -- {len(results)} legislators")
-
-            if page >= total_pages:
-                break
-            page += 1
-
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 401:
-                print(
-                    "  ERROR: Invalid API key. Get a free key at https://v3.openstates.org"
-                )
-                return []
-            print(f"  HTTP error on page {page}: {exc}")
-            break
-        except Exception as exc:  # noqa: BLE001 - retain earlier pages after a source failure
-            print(f"  Error on page {page}: {exc}")
-            break
-
+    with HttpSession(min_interval_seconds=STATE_REQUEST_INTERVAL) as client:
+        for jurisdiction in OPENSTATES_JURISDICTIONS:
+            classifications = ("upper",) if jurisdiction == "ne" else ("upper", "lower")
+            for classification in classifications:
+                try:
+                    page = 1
+                    while True:
+                        params = {
+                            "jurisdiction": jurisdiction,
+                            "org_classification": classification,
+                            "page": page,
+                            "per_page": 50,
+                        }
+                        response = client.get(
+                            OPENSTATES_PEOPLE_URL + "?" + urlencode(params),
+                            headers={"X-API-KEY": api_key},
+                            timeout=30,
+                        )
+                        data = response.json()
+                        results = data["results"]
+                        max_page = int(data["pagination"]["max_page"])
+                        if not isinstance(results, list) or max_page > 80:
+                            raise ValueError("Invalid or unbounded state pagination")
+                        if not results and page < max_page:
+                            raise ValueError(
+                                "State pagination ended before its final page"
+                            )
+                        for person in results:
+                            member = _state_member(person, classification)
+                            if member is not None:
+                                members[member["openstates_id"]] = member
+                        if page >= max_page:
+                            break
+                        page += 1
+                except requests.HTTPError as exc:
+                    status = (
+                        exc.response.status_code if exc.response is not None else None
+                    )
+                    if status in {401, 403, 429}:
+                        # Invalid credentials or exhausted quota will affect every state.
+                        raise StateFetchError(
+                            f"Open States stopped with HTTP {status}; no update was saved"
+                        ) from None
+                    failures.append(f"{jurisdiction}/{classification}")
+                except (requests.RequestException, ValueError, KeyError, TypeError):
+                    failures.append(f"{jurisdiction}/{classification}")
+    if failures:
+        raise StateFetchError(
+            f"Open States failed for {len(failures)} jurisdiction/chamber requests; "
+            "no update was saved"
+        )
     print(f"  Found {len(members)} state legislators")
-    return members
+    return list(members.values())
 
 
 # -----------------------------------------------------------------------
@@ -466,7 +493,28 @@ def merge_and_save(
     dry_run: bool = False,
 ) -> None:
     """Merge federal + state lists and write to JSON."""
-    combined = federal + state
+    if not federal:
+        raise ValueError("Refusing to replace the member list without federal members")
+    previous = []
+    if output_path.exists():
+        previous = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(previous, list) or any(
+            not isinstance(m, dict) for m in previous
+        ):
+            raise ValueError(
+                "Existing member list is invalid; refusing to overwrite it"
+            )
+        old_federal = sum(m.get("level", "federal") == "federal" for m in previous)
+        if len(federal) < old_federal * 0.8:
+            raise ValueError("Federal result is much smaller than the existing list")
+        old_state = sum(m.get("level") == "state" for m in previous)
+        if state and len(state) < old_state * 0.8:
+            raise ValueError("State result is much smaller than the existing list")
+    # A federal-only refresh must retain the user's previously fetched state data.
+    retained_state = (
+        [m for m in previous if m.get("level") == "state"] if not state else []
+    )
+    combined = federal + state + retained_state
 
     # Sort by level (federal first), then state, then name
     combined.sort(
@@ -481,7 +529,12 @@ def merge_and_save(
     seen = set()
     deduped = []
     for m in combined:
-        key = (m["name"].lower(), m.get("state", "").lower())
+        key = (
+            m.get("level", "federal"),
+            m.get("bioguide_id")
+            or m.get("openstates_id")
+            or (m["name"].casefold(), m.get("state", "").casefold()),
+        )
         if key not in seen:
             seen.add(key)
             deduped.append(m)
@@ -522,8 +575,9 @@ def merge_and_save(
             print(f"  ... and {len(deduped) - 20} more")
         return
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(deduped, indent=2), encoding="utf-8")
+    atomic_write_bytes(
+        output_path, (json.dumps(deduped, indent=2) + "\n").encode("utf-8")
+    )
     print(f"Saved to: {output_path}")
 
 
@@ -532,7 +586,7 @@ def merge_and_save(
 # -----------------------------------------------------------------------
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Update congress_members.json with current legislators.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -549,7 +603,7 @@ Examples:
         "-o",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Output JSON file path (default: data/congress_members.json)",
+        help="Output JSON file path (default: application runtime member list)",
     )
     parser.add_argument(
         "--include-state",
@@ -566,40 +620,63 @@ Examples:
         action="store_true",
         help="Print results without saving to file",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--update-seed",
+        action="store_true",
+        help="Update the authoritative packaged seed instead of the runtime file",
+    )
+    args = parser.parse_args(argv)
+    if args.update_seed:
+        if args.output != DEFAULT_OUTPUT:
+            parser.error("--update-seed cannot be combined with --output")
+        args.output = SEED_OUTPUT
 
     # Fetch federal
     federal = fetch_federal_legislators()
     if not federal:
-        print(
-            "WARNING: Could not fetch federal legislators. Check internet connection."
-        )
+        print("ERROR: Could not fetch federal legislators; no file was changed.")
+        return 1
 
     # Enrich with committee data (unless skipped)
     if not args.no_committees and federal:
         committees = fetch_committees()
         membership = fetch_committee_membership()
+        if not committees or not membership:
+            print(
+                "ERROR: Committee enrichment failed; no file was changed. Use --no-committees to skip it explicitly."
+            )
+            return 1
         enrich_with_committees(federal, committees, membership)
     else:
         for m in federal:
             m.setdefault("committees", [])
             m.setdefault("sector", ["Other"])
 
-    # Fetch state (optional)
+    # Requested state data is required for this snapshot, never silently skipped.
     state = []
     if args.include_state:
-        api_key = os.environ.get("OPENSTATES_API_KEY", "")
+        api_key = os.environ.get("OPENSTATES_API_KEY", "").strip()
         if not api_key:
             print(
-                "\nWARNING: OPENSTATES_API_KEY not set. Skipping state legislators.\n"
-                "Get a free key at: https://v3.openstates.org\n"
-                "Then run: OPENSTATES_API_KEY=your_key python scripts/update_congress.py --include-state"
+                "ERROR: OPENSTATES_API_KEY is required for --include-state; no file was changed."
             )
-        else:
+            return 1
+        try:
             state = fetch_state_legislators(api_key)
+        except StateFetchError as exc:
+            print(f"ERROR: {exc}")
+            return 1
+        if not state:
+            print("ERROR: Open States returned no legislators; no file was changed.")
+            return 1
 
-    merge_and_save(federal, state, args.output, dry_run=args.dry_run)
+    try:
+        merge_and_save(federal, state, args.output, dry_run=args.dry_run)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: Member update was not saved: {exc}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

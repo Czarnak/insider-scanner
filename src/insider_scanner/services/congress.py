@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
+from insider_scanner.core.congress_identity import MemberIdentity, identity_for
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, as_fetch_result
 from insider_scanner.core.models import CongressTrade
 from insider_scanner.services.adapters import default_congress_adapters
@@ -36,6 +37,7 @@ class CongressScanService:
         cache_ttl: timedelta = DEFAULT_CACHE_TTL,
     ) -> None:
         self._persistence = persistence
+        self._uses_default_adapters = adapters is None
         self._adapters = dict(
             default_congress_adapters() if adapters is None else adapters
         )
@@ -48,7 +50,7 @@ class CongressScanService:
 
     def scan(
         self,
-        official: str,
+        official: str | MemberIdentity,
         *,
         sources: Sequence[str],
         start_date: date | None,
@@ -56,8 +58,23 @@ class CongressScanService:
         use_cache: bool = True,
         cancelled: Callable[[], bool] = not_cancelled,
     ) -> FetchResult[CongressTrade]:
-        normalized = normalize_identifier(official, "official")
-        identifier = "*" if normalized.casefold() in {"*", "all"} else normalized
+        normalized = (
+            official
+            if isinstance(official, MemberIdentity)
+            else normalize_identifier(official, "official")
+        )
+        member = (
+            None
+            if isinstance(normalized, str) and normalized.casefold() in {"*", "all"}
+            else identity_for(normalized)
+        )
+        identifier = "*" if member is None else member.key
+        display_name = "*" if member is None else member.official_name
+        adapters = (
+            default_congress_adapters(member=member)
+            if self._uses_default_adapters
+            else self._adapters
+        )
         now = self._clock()
         if start_date is None and end_date is None:
             end_date = now.date()
@@ -81,15 +98,13 @@ class CongressScanService:
             )
             for gap in gaps:
                 if cancelled():
-                    issues.append(FetchIssue("cancelled", source, identifier))
-                    return scan_result(
-                        self._query(identifier, selected, requested), issues
-                    )
-                context = f"{identifier} {gap.start}..{gap.end}"
+                    issues.append(FetchIssue("cancelled", source, display_name))
+                    return scan_result(self._query(member, selected, requested), issues)
+                context = f"{display_name} {gap.start}..{gap.end}"
                 try:
                     fetched = as_fetch_result(
-                        self._adapters[source](
-                            None if identifier == "*" else identifier,
+                        adapters[source](
+                            None if member is None else member.official_name,
                             gap.start,
                             gap.end,
                             use_cache,
@@ -100,9 +115,7 @@ class CongressScanService:
                     continue
                 if cancelled():
                     issues.append(FetchIssue("cancelled", source, context))
-                    return scan_result(
-                        self._query(identifier, selected, requested), issues
-                    )
+                    return scan_result(self._query(member, selected, requested), issues)
                 issues.extend(source_issues(fetched, source=source, identifier=context))
                 self._persistence.congress_trades.upsert(
                     [replace(trade, source=source) for trade in fetched]
@@ -117,15 +130,14 @@ class CongressScanService:
                         gap,
                         now=now,
                     )
-        return scan_result(self._query(identifier, selected, requested), issues)
+        return scan_result(self._query(member, selected, requested), issues)
 
-    def _query(self, identifier, sources, requested) -> list[CongressTrade]:
-        official = None if identifier == "*" else identifier
+    def _query(self, member, sources, requested) -> list[CongressTrade]:
         trades: list[CongressTrade] = []
         for source in sources:
             trades.extend(
                 self._persistence.congress_trades.query(
-                    official,
+                    member,
                     source=source,
                     start_date=requested.start,
                     end_date=requested.end,

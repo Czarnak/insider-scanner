@@ -18,10 +18,47 @@ import pytest
 from insider_scanner.utils.config import (
     RuntimePaths,
     ensure_dirs,
+    initialize_congress_seed,
     load_eu_watchlist,
     load_watchlist,
     resolve_runtime_paths,
 )
+
+
+def test_congress_seed_reset_preserves_each_previous_file(tmp_path):
+    target = tmp_path / "congress_members.json"
+    assert initialize_congress_seed(target) == ("created", None)
+    expected = target.read_bytes()
+    target.write_bytes(b"custom member data")
+    assert initialize_congress_seed(target) == ("exists", None)
+    assert target.read_bytes() == b"custom member data"
+
+    status, first_backup = initialize_congress_seed(target, force=True)
+    assert status == "reset"
+    assert first_backup.read_bytes() == b"custom member data"
+    assert target.read_bytes() == expected
+
+    target.write_bytes(b"second custom list")
+    _, second_backup = initialize_congress_seed(target, force=True)
+    assert second_backup != first_backup
+    assert second_backup.read_bytes() == b"second custom list"
+    assert first_backup.read_bytes() == b"custom member data"
+
+
+def test_congress_seed_reset_failure_retains_user_file(monkeypatch, tmp_path):
+    from insider_scanner.utils import atomic_file
+
+    target = tmp_path / "congress_members.json"
+    target.write_bytes(b"previous user data")
+
+    def fail_replace(*args):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(atomic_file.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        initialize_congress_seed(target, force=True)
+    assert target.read_bytes() == b"previous user data"
+    assert next(tmp_path.glob("*.bak")).read_bytes() == b"previous user data"
 
 
 def test_startup_prunes_unrequested_http_cache_entries(tmp_path):
