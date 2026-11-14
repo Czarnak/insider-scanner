@@ -682,20 +682,23 @@ def test_sustained_blocking_stops_other_clients_until_one_cooldown_probe(
     assert second_transport.get.call_count == 1
 
 
-@pytest.mark.parametrize(
-    "retry_after",
-    ["1200", format_datetime(datetime.now(UTC) + timedelta(seconds=1200))],
-)
+@pytest.mark.parametrize("use_http_date", [False, True])
 def test_sec_block_retry_after_is_honored_without_short_backoff_cap(
-    retry_after,
+    use_http_date,
 ) -> None:
+    now = datetime(2026, 11, 14, 12, tzinfo=UTC)
+    retry_after = (
+        format_datetime(now + timedelta(seconds=1200)) if use_http_date else "1200"
+    )
     response = StubResponse(status_code=429, headers={"Retry-After": retry_after})
     transport = configured_transport(response)
     client, sleeps = recording_client(transport)
 
-    with pytest.raises(SecBlockedError) as blocked:
-        fetch_bytes(client)
+    with patch("insider_scanner.core.sec_client.datetime") as wall_clock:
+        wall_clock.now.return_value = now
+        with pytest.raises(SecBlockedError) as blocked:
+            fetch_bytes(client)
 
-    assert 1100.0 < blocked.value.retry_after_seconds <= 1200.0
+    assert blocked.value.retry_after_seconds == 1200.0
     assert transport.get.call_count == response.close_calls == 1
     assert sleeps == []
