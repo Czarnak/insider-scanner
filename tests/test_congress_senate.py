@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs
 
 import pytest
 import requests
@@ -476,6 +477,19 @@ class TestEFDSession:
         session = EFDSession()
         with pytest.raises(ConnectionError, match="not authenticated"):
             session.search(last_name="test")
+
+    @responses.activate
+    def test_search_submits_inclusive_filing_date_bounds(self, register_efd_auth):
+        register_efd_auth()
+        responses.add(responses.POST, REPORT_DATA, json=SEARCH_RESPONSE_JSON)
+
+        with EFDSession() as session:
+            session.authenticate()
+            session.search(date_from=date(2026, 11, 13), date_to=date(2026, 11, 14))
+
+        submitted = parse_qs(responses.calls[-1].request.body)
+        assert submitted["submitted_start_date"] == ["11/13/2026 00:00:00"]
+        assert submitted["submitted_end_date"] == ["11/14/2026 23:59:59"]
 
     @responses.activate
     def test_fetch_page(self, register_efd_auth):

@@ -239,7 +239,8 @@ class EFDSession:
                 date_from.strftime("%m/%d/%Y") + " 00:00:00"
             )
         if date_to:
-            form_data["submitted_end_date"] = date_to.strftime("%m/%d/%Y") + " 00:00:00"
+            # The service contract includes the entire final filing date.
+            form_data["submitted_end_date"] = date_to.strftime("%m/%d/%Y") + " 23:59:59"
 
         self.rate_limiter.acquire()
         log.info(
