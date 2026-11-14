@@ -247,7 +247,7 @@ def test_bootstrap_sets_schema_version_to_one(engine):
             select(schema_version.c.version).order_by(schema_version.c.version)
         ).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5, 6]
+        assert list(versions) == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_bootstrap_is_idempotent(engine):
@@ -257,7 +257,7 @@ def test_bootstrap_is_idempotent(engine):
     with engine.connect() as connection:
         versions = connection.execute(select(schema_version.c.version)).scalars()
 
-        assert list(versions) == [1, 2, 3, 4, 5, 6]
+        assert list(versions) == [1, 2, 3, 4, 5, 6, 7]
     assert set(inspect(engine).get_table_names()) == EXPECTED_TABLES
 
 
@@ -467,7 +467,7 @@ def test_bootstrap_v3_adds_sec_columns_and_indexes(engine):
 
 
 def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
-    # Bootstrap only to version 2, insert a legacy row, then upgrade to v3.
+    # Bootstrap only to version 2, insert a legacy row, then upgrade fully.
     database_file = tmp_path / "v2-to-v3.sqlite3"
     engine = create_sqlite_engine(database_file)
     try:
@@ -496,7 +496,7 @@ def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
                 )
             )
 
-        # Now apply v3
+        # Apply all pending migrations, including the new raw identity.
         bootstrap_database(engine)
 
         with engine.connect() as connection:
@@ -506,20 +506,22 @@ def test_v2_to_v3_upgrade_preserves_legacy_row(tmp_path):
                     select(schema_version.c.version).order_by(schema_version.c.version)
                 ).scalars()
             )
-            assert versions == [1, 2, 3, 4, 5, 6]
+            assert versions == [1, 2, 3, 4, 5, 6, 7]
 
             # Legacy row preserved with v3 column defaults
             row = (
-                connection.execute(
-                    select(us_trades).where(
-                        us_trades.c.canonical_key == "legacy-row-key"
-                    )
-                )
+                connection.execute(select(us_trades).where(us_trades.c.id == 1))
                 .mappings()
                 .one()
             )
 
             assert row["ticker"] == "AAPL"
+            from insider_scanner.persistence.mappings import (
+                us_canonical_key,
+                us_from_row,
+            )
+
+            assert row["canonical_key"] == us_canonical_key(us_from_row(row))
             assert row["accession_number"] == ""
             assert row["sec_row_id"] == ""
             assert row["form_type"] == ""

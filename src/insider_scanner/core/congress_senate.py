@@ -409,7 +409,8 @@ def parse_ptr_page(html: str) -> FetchResult[dict]:
     #, Transaction Date, Owner, Ticker, Asset Name, Asset Type,
     Type, Amount, Comment
 
-    Returns a list of dicts with these fields normalized.
+    Returns a list of dicts with these fields normalized, including source_row_id
+    from the # column or the physical table-row position when it is absent.
     """
     soup = BeautifulSoup(html, "html.parser")
     transactions = []
@@ -443,13 +444,15 @@ def parse_ptr_page(html: str) -> FetchResult[dict]:
     # Parse data rows
     issues: list[FetchIssue] = []
     tbody = table.find("tbody") or table
-    for tr in tbody.find_all("tr"):
+    for row_number, tr in enumerate(tbody.find_all("tr"), start=1):
         cells = tr.find_all("td")
         if not cells:
             continue
 
         tx = _parse_senate_row(cells, col_map)
         if tx:
+            if not tx["source_row_id"]:
+                tx["source_row_id"] = f"row:{row_number}"
             transactions.append(tx)
         elif any(cell.get_text(strip=True) for cell in cells):
             issues.append(FetchIssue("ptr_row", source="senate"))
@@ -517,6 +520,7 @@ def _parse_senate_row(cells: list, col_map: dict[str, int]) -> dict | None:
         return None
 
     return {
+        "source_row_id": _cell("id"),
         "tx_date": _cell("tx_date"),
         "owner": _cell("owner"),
         "ticker": _cell("ticker"),
@@ -780,6 +784,7 @@ def scrape_senate_trades(
                     amount_high=amount_high,
                     comment=tx.get("comment", ""),
                     source="senate",
+                    source_row_id=tx.get("source_row_id", ""),
                 )
                 all_trades.append(trade)
 

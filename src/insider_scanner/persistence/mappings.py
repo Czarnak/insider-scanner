@@ -9,6 +9,7 @@ from typing import Any
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.core.trade_identity import us_trade_identity
 
 _US_FIELDS = tuple(InsiderTrade.__dataclass_fields__)
 _CONGRESS_FIELDS = tuple(CongressTrade.__dataclass_fields__)
@@ -39,22 +40,6 @@ def _is_populated(value: Any) -> bool:
     return True
 
 
-def _deterministic_value(left: Any, right: Any) -> Any:
-    left_populated = _is_populated(left)
-    right_populated = _is_populated(right)
-    if left_populated != right_populated:
-        return left if left_populated else right
-    return max(
-        (left, right),
-        key=lambda value: json.dumps(
-            value,
-            default=str,
-            ensure_ascii=True,
-            sort_keys=True,
-        ),
-    )
-
-
 def _digest(parts: tuple[Any, ...]) -> str:
     payload = json.dumps(parts, default=str, ensure_ascii=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -65,30 +50,21 @@ def _normalized(value: str) -> str:
 
 
 def us_canonical_key(trade: InsiderTrade) -> str:
-    """Return the deduplication identity for a US insider trade.
-
-    When both ``accession_number`` and ``sec_row_id`` are present the key is a
-    deterministic SEC identity derived from those two fields.  Otherwise the
-    established fuzzy key (ticker + normalised name + trade date + share bucket)
-    is used so that existing third-party rows are unaffected.
-    """
-    accession = (trade.accession_number or "").strip()
-    sec_row = (trade.sec_row_id or "").strip()
-    if accession and sec_row:
-        return _digest(("sec", accession, sec_row))
-    shares_bucket = round(trade.shares / 10) * 10 if trade.shares else 0
-    return _digest(
-        (
-            trade.ticker.strip().upper(),
-            _normalized(trade.insider_name),
-            trade.trade_date,
-            shares_bucket,
-        )
-    )
+    """Hash the shared raw identity, retaining SEC/scraper separation."""
+    return _digest(us_trade_identity(trade))
 
 
 def congress_canonical_key(trade: CongressTrade) -> str:
     """Identify one filing transaction independently of descriptive URLs."""
+    if trade.doc_id.strip() and trade.source_row_id.strip():
+        return _digest(
+            (
+                "congress-row",
+                _normalized(trade.source),
+                trade.doc_id.strip(),
+                trade.source_row_id.strip(),
+            )
+        )
     return _digest(
         (
             _normalized(trade.official_name),
@@ -197,14 +173,13 @@ def coalesce_congress_trades(
     left: CongressTrade,
     right: CongressTrade,
 ) -> CongressTrade:
-    """Merge duplicate disclosures without allowing empty values to erase data."""
+    """Apply populated incoming corrections; empty fields retain stored data."""
     return replace(
         left,
         **{
-            field: _deterministic_value(
-                getattr(left, field),
-                getattr(right, field),
-            )
+            field: getattr(right, field)
+            if _is_populated(getattr(right, field))
+            else getattr(left, field)
             for field in _CONGRESS_FIELDS
         },
     )

@@ -117,7 +117,7 @@ def test_value_alert_criteria_do_not_treat_unknown_as_zero(engine):
 )
 @pytest.mark.parametrize("reverse", [False, True])
 def test_merge_prefers_known_zero_to_missing_zero(missing_field, reverse):
-    known_zero = _trades()[1]
+    known_zero = replace(_trades()[1], accession_number="", sec_row_id="")
     unknown_zero = replace(known_zero, **{missing_field: True})
     pair = (unknown_zero, known_zero) if reverse else (known_zero, unknown_zero)
 
@@ -127,9 +127,11 @@ def test_merge_prefers_known_zero_to_missing_zero(missing_field, reverse):
     assert getattr(unknown_zero, missing_field) is True
 
 
-def test_merge_availability_tie_break_keeps_primary_numbers_and_flags_together():
+def test_scraper_coalescing_keeps_each_number_with_its_availability_flag():
     first = replace(
         _trades()[1],
+        accession_number="",
+        sec_row_id="",
         shares=10,
         price_missing=True,
         value_missing=True,
@@ -147,8 +149,8 @@ def test_merge_availability_tie_break_keeps_primary_numbers_and_flags_together()
 
     for pair in ((first, more_reported), (more_reported, first)):
         merged = merge_trade_pair(*pair)
-        assert merged == more_reported
-        assert merged.shares == 0
-        assert merged.shares_missing is True
+        assert merged == replace(more_reported, shares=10, shares_missing=False)
+        assert merged.shares == 10
+        assert merged.shares_missing is False
         assert merged.price == 20
         assert merged.price_missing is False

@@ -16,7 +16,7 @@ from insider_scanner.persistence.mappings import (
 )
 
 
-def test_us_key_normalizes_identity_and_uses_share_bucket():
+def test_us_key_normalizes_identity_and_uses_exact_shares():
     left = InsiderTrade(
         ticker=" aapl ",
         insider_name=" Tim Cook ",
@@ -27,7 +27,7 @@ def test_us_key_normalizes_identity_and_uses_share_bucket():
         ticker="AAPL",
         insider_name="tim cook",
         trade_date=date(2026, 1, 1),
-        shares=104,
+        shares=101,
         source="other",
     )
 
@@ -115,8 +115,8 @@ def _sec_trade(**overrides) -> InsiderTrade:
     return InsiderTrade(**values)
 
 
-def test_sec_identity_key_is_deterministic_regardless_of_fuzzy_fields():
-    """Same accession+row_id → same key even when fuzzy fields differ."""
+def test_sec_identity_key_is_deterministic_regardless_of_transaction_fields():
+    """Same accession+row_id → same key even when transaction fields differ."""
     trade_a = _sec_trade(
         ticker="AAPL",
         insider_name="Tim Cook",
@@ -161,8 +161,8 @@ def test_sec_identity_strips_whitespace_from_accession_and_row_id():
     assert us_canonical_key(trade_clean) == us_canonical_key(trade_padded)
 
 
-def test_fuzzy_fallback_when_sec_fields_absent():
-    """Trades without accession+row_id still collide on fuzzy identity."""
+def test_exact_fallback_when_sec_fields_absent():
+    """Trades without accession+row_id match on exact observation identity."""
     left = InsiderTrade(
         ticker=" aapl ",
         insider_name=" Tim Cook ",
@@ -175,7 +175,7 @@ def test_fuzzy_fallback_when_sec_fields_absent():
         ticker="AAPL",
         insider_name="tim cook",
         trade_date=date(2026, 1, 1),
-        shares=104,
+        shares=101,
         source="other",
         accession_number="",
         sec_row_id="",
@@ -184,7 +184,7 @@ def test_fuzzy_fallback_when_sec_fields_absent():
     assert us_canonical_key(left) == us_canonical_key(right)
 
 
-def test_fuzzy_fallback_when_only_one_sec_field_set():
+def test_exact_fallback_when_only_one_sec_field_set():
     """Partial SEC identity (only one field) must NOT trigger the SEC branch."""
     only_accession = InsiderTrade(
         ticker="AAPL",
@@ -209,7 +209,7 @@ def test_fuzzy_fallback_when_only_one_sec_field_set():
         shares=100.0,
     )
 
-    # All three should collide via the fuzzy key
+    # All three should collide via the exact observation key.
     assert us_canonical_key(only_accession) == us_canonical_key(no_sec)
     assert us_canonical_key(only_row_id) == us_canonical_key(no_sec)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 
 from sqlalchemy import and_, select
@@ -213,6 +213,23 @@ class CongressTradeRepository:
                         .mappings()
                         .one_or_none()
                     )
+                    if existing_row is None and trade.source_row_id and trade.doc_id:
+                        # Promote the one retained legacy observation when its
+                        # filing row is recovered. Later identical lots have
+                        # distinct native keys and are inserted independently.
+                        legacy_key = congress_canonical_key(
+                            replace(trade, source_row_id="")
+                        )
+                        existing_row = (
+                            connection.execute(
+                                select(congress_trades).where(
+                                    congress_trades.c.canonical_key == legacy_key,
+                                    congress_trades.c.source_row_id == "",
+                                )
+                            )
+                            .mappings()
+                            .one_or_none()
+                        )
                     if existing_row is None:
                         connection.execute(
                             insert(congress_trades).values(congress_to_values(trade))
@@ -231,7 +248,7 @@ class CongressTradeRepository:
                     values["updated_at"] = datetime.now(UTC)
                     connection.execute(
                         congress_trades.update()
-                        .where(congress_trades.c.canonical_key == key)
+                        .where(congress_trades.c.id == existing_row["id"])
                         .values(**values)
                     )
                     result += UpsertResult(updated=1)

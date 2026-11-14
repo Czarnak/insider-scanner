@@ -380,7 +380,8 @@ def parse_ptr_pdf(
     """Extract transaction rows from an electronically-filed House PTR PDF.
 
     Returns a list of dicts with keys: owner, asset, tx_type, tx_date,
-    notification_date, amount, cap_gains_over_200.
+    notification_date, amount, cap_gains_over_200, source_row_id. Source row IDs
+    use the filing's ID column or a stable page/table/row position when absent.
 
     Scanned PDFs are explicitly unsupported. A failed page retains rows from
     the other pages and reports an incomplete result, including in strict mode.
@@ -427,7 +428,7 @@ def parse_ptr_pdf(
             for page_number, page in enumerate(pdf.pages, start=1):
                 try:
                     tables = page.extract_tables()
-                    for table in tables:
+                    for table_number, table in enumerate(tables, start=1):
                         if not table:
                             continue
 
@@ -445,11 +446,18 @@ def parse_ptr_pdf(
                                 "House transaction table headers are incomplete"
                             )
                         recognized_table = True
-                        for row in table[header_idx + 1 :]:
+                        for row_number, row in enumerate(
+                            table[header_idx + 1 :], start=header_idx + 2
+                        ):
                             if not row or all(not (cell or "").strip() for cell in row):
                                 continue
                             tx = _parse_table_row(row, col_map)
                             if tx and tx.get("asset"):
+                                if not tx["source_row_id"]:
+                                    tx["source_row_id"] = (
+                                        f"page:{page_number}:table:{table_number}"
+                                        f":row:{row_number}"
+                                    )
                                 transactions.append(tx)
                 except Exception as exc:  # noqa: BLE001 - keep rows from intact PDF pages
                     log.warning(
@@ -501,7 +509,9 @@ def _map_columns(headers: list[str]) -> dict[str, int]:
     for i, h in enumerate(headers):
         h_lower = h.lower()
 
-        if "owner" in h_lower:
+        if h_lower.strip() in {"id", "#"}:
+            col_map["id"] = i
+        elif "owner" in h_lower:
             col_map["owner"] = i
         elif "asset" in h_lower and "asset" not in col_map:
             col_map["asset"] = i
@@ -538,6 +548,7 @@ def _parse_table_row(row: list, col_map: dict[str, int]) -> dict | None:
         return None
 
     return {
+        "source_row_id": _cell("id"),
         "owner": _cell("owner"),
         "asset": asset,
         "tx_type": _cell("transaction"),
@@ -739,6 +750,7 @@ def _scrape_house_trades(
                 amount_high=amount_high,
                 comment=tx.get("cap_gains_over_200", ""),
                 source="house",
+                source_row_id=tx.get("source_row_id", ""),
             )
             all_trades.append(trade)
 

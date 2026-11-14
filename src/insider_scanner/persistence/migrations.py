@@ -7,10 +7,17 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, literal, select
 from sqlalchemy.engine import Connection
 
 from insider_scanner.core.congress_common import parse_amount_range
+from insider_scanner.core.merger import merge_trade_pair
+from insider_scanner.persistence.mappings import (
+    us_canonical_key,
+    us_from_row,
+    us_provenance,
+    us_to_values,
+)
 from insider_scanner.persistence.schema import (
     congress_trades,
     refresh_state,
@@ -196,6 +203,65 @@ def _preserve_sec_financial_meaning(connection: Connection) -> None:
             )
 
 
+def _unify_transaction_identity(connection: Connection) -> None:
+    """Rekey stored observations and allow lossy legacy scans to be repaired.
+
+    Historical Congress ordinals and transactions already collapsed by the old
+    share bucket cannot be reconstructed. Retain every surviving observation,
+    then let a source refresh recover the missing lots. SEC raw keys and SEC
+    ingestion progress remain intact.
+    """
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN source_row_id VARCHAR(128) NOT NULL DEFAULT ''"
+    )
+    # Move old keys into a disjoint namespace before assigning new hashes;
+    # otherwise a new identity can collide with a not-yet-rekeyed old row.
+    connection.execute(
+        us_trades.update().values(
+            canonical_key=literal("pr11:") + us_trades.c.canonical_key
+        )
+    )
+    rows = connection.execute(select(us_trades).order_by(us_trades.c.id)).mappings()
+    for row in rows:
+        trade = us_from_row(row)
+        key = us_canonical_key(trade)
+        existing_row = (
+            connection.execute(
+                select(us_trades).where(us_trades.c.canonical_key == key)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if existing_row is None:
+            connection.execute(
+                us_trades.update()
+                .where(us_trades.c.id == row["id"])
+                .values(canonical_key=key)
+            )
+            continue
+        existing = us_from_row(existing_row)
+        merged = merge_trade_pair(existing, trade)
+        values = us_to_values(
+            merged, set(us_provenance(existing_row) | us_provenance(row))
+        )
+        values["created_at"] = min(existing_row["created_at"], row["created_at"])
+        values["updated_at"] = max(existing_row["updated_at"], row["updated_at"])
+        connection.execute(
+            us_trades.update()
+            .where(us_trades.c.id == existing_row["id"])
+            .values(**values)
+        )
+        connection.execute(delete(us_trades).where(us_trades.c.id == row["id"]))
+
+    for table in (scan_coverage, refresh_state):
+        connection.execute(
+            delete(table).where(
+                (table.c.domain == "congress")
+                | ((table.c.domain == "us") & (table.c.source != "sec_edgar"))
+            )
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -226,5 +292,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=6,
         name="preserve_sec_financial_meaning",
         upgrade=_preserve_sec_financial_meaning,
+    ),
+    Migration(
+        version=7,
+        name="unify_transaction_identity",
+        upgrade=_unify_transaction_identity,
     ),
 )
