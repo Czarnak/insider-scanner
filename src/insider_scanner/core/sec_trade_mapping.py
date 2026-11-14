@@ -22,6 +22,8 @@ Field mapping rules
 from __future__ import annotations
 
 import json
+import math
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -34,6 +36,7 @@ from insider_scanner.core.sec_ownership_parser import (
     NonDerivativeTransaction,
     OwnershipFiling,
 )
+from insider_scanner.utils.logging import get_logger
 
 # ---------------------------------------------------------------------------
 # Public exception
@@ -99,74 +102,48 @@ def _footnote_index(footnotes: tuple[Footnote, ...]) -> dict[str, str]:
 
 
 def _decimal_or_null(value: Decimal | None) -> str | None:
-    return str(value) if value is not None else None
+    if value is not None:
+        _finite_float(value)
+        return str(value)
+    return None
 
 
 def _date_or_null(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-# ---------------------------------------------------------------------------
-# Validation (A4)
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class _MappingContext:
+    filing: OwnershipFiling
+    index_row: SecMasterIndexRow
+    ticker: str
+    company: str
+    insider_name: str
+    insider_title: str
+    edgar_url: str
+    cik_issuer: str
+    cik_insider: str
+    footnotes: dict[str, str]
+    warnings: tuple[str, ...]
 
 
-def _validate_non_derivative(
-    txn: NonDerivativeTransaction,
-    filing: OwnershipFiling,
-    index_row: SecMasterIndexRow,
-) -> None:
-    """Raise ``SecTradeMappingError`` for malformed non-derivative transaction."""
-    if not txn.row_id or not txn.row_id.strip():
+_log = get_logger("sec_trade_mapping")
+
+
+def _finite_float(value: Decimal | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        if not value.is_finite():
+            raise ValueError("non-finite decimal")
+        converted = float(value)
+        if not math.isfinite(converted):
+            raise ValueError("float overflow")
+        return converted
+    except (ArithmeticError, ValueError) as exc:
         raise SecTradeMappingError(
-            f"Non-derivative transaction has empty row_id "
-            f"(accession={filing.accession_number!r})"
-        )
-    _validate_common_dates(filing, index_row)
-
-
-def _validate_derivative(
-    txn: DerivativeTransaction,
-    filing: OwnershipFiling,
-    index_row: SecMasterIndexRow,
-) -> None:
-    """Raise ``SecTradeMappingError`` for malformed derivative transaction."""
-    if not txn.row_id or not txn.row_id.strip():
-        raise SecTradeMappingError(
-            f"Derivative transaction has empty row_id "
-            f"(accession={filing.accession_number!r})"
-        )
-    if (
-        txn.exercise_date is not None
-        and txn.expiration_date is not None
-        and txn.exercise_date > txn.expiration_date
-    ):
-        raise SecTradeMappingError(
-            f"Derivative transaction row_id={txn.row_id!r} has exercise_date "
-            f"({txn.exercise_date}) after expiration_date ({txn.expiration_date})"
-        )
-    _validate_common_dates(filing, index_row)
-
-
-def _validate_common_dates(
-    filing: OwnershipFiling,
-    index_row: SecMasterIndexRow,
-) -> None:
-    """Raise ``SecTradeMappingError`` when period_of_report is after filing_date."""
-    if (
-        filing.period_of_report is not None
-        and filing.period_of_report > index_row.filing_date
-    ):
-        raise SecTradeMappingError(
-            f"period_of_report ({filing.period_of_report}) is after "
-            f"filing_date ({index_row.filing_date}) for "
-            f"accession={filing.accession_number!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# sec_detail_json builders
-# ---------------------------------------------------------------------------
+            "SEC numeric value is not finite or representable"
+        ) from exc
 
 
 def _amends_key(
@@ -180,173 +157,84 @@ def _amends_key(
     return f"{cik_issuer}|{cik_insider}|{period_str}|{title_str}"
 
 
-def _build_non_derivative_detail(
-    txn: NonDerivativeTransaction,
-    filing: OwnershipFiling,
-    fn_index: dict[str, str],
-    cik_issuer: str,
-    cik_insider: str,
+def _build_detail(
+    txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> str:
-    # Cap the number of embedded footnotes; determinism preserved by keeping
-    # the original document order and applying a fixed slice limit.
     capped_ids = txn.footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
     detail: dict[str, object] = {
         "footnote_ids": list(capped_ids),
-        "footnotes": {fid: fn_index.get(fid, "") for fid in capped_ids},
+        "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},
         "security_title": txn.security_title,
     }
-    if filing.is_amendment:
+    warnings = [*ctx.warnings, *txn.warnings]
+    if isinstance(txn, DerivativeTransaction):
+        detail.update(
+            {
+                "conversion_or_exercise_price": _decimal_or_null(
+                    txn.conversion_or_exercise_price
+                ),
+                "exercise_date": _date_or_null(txn.exercise_date),
+                "expiration_date": _date_or_null(txn.expiration_date),
+                "underlying_security_shares": _decimal_or_null(
+                    txn.underlying_security_shares
+                ),
+                "underlying_security_title": txn.underlying_security_title,
+            }
+        )
+        if (
+            txn.exercise_date is not None
+            and txn.expiration_date is not None
+            and txn.exercise_date > txn.expiration_date
+        ):
+            warnings.append("exercise_date_after_expiration_date")
+            _log.warning(
+                "SEC data-quality warning reason=exercise_date_after_expiration_date"
+            )
+    if warnings:
+        detail["warnings"] = warnings
+    if ctx.filing.is_amendment:
         detail["amends"] = _amends_key(
-            cik_issuer, cik_insider, filing.period_of_report, txn.security_title
+            ctx.cik_issuer,
+            ctx.cik_insider,
+            ctx.filing.period_of_report,
+            txn.security_title,
         )
     return json.dumps(detail, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
 
-def _build_derivative_detail(
-    txn: DerivativeTransaction,
-    filing: OwnershipFiling,
-    fn_index: dict[str, str],
-    cik_issuer: str,
-    cik_insider: str,
-) -> str:
-    # Cap the number of embedded footnotes; determinism preserved by keeping
-    # the original document order and applying a fixed slice limit.
-    capped_ids = txn.footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
-    detail: dict[str, object] = {
-        "conversion_or_exercise_price": _decimal_or_null(
-            txn.conversion_or_exercise_price
-        ),
-        "exercise_date": _date_or_null(txn.exercise_date),
-        "expiration_date": _date_or_null(txn.expiration_date),
-        "footnote_ids": list(capped_ids),
-        "footnotes": {fid: fn_index.get(fid, "") for fid in capped_ids},
-        "security_title": txn.security_title,
-        "underlying_security_shares": _decimal_or_null(txn.underlying_security_shares),
-        "underlying_security_title": txn.underlying_security_title,
-    }
-    if filing.is_amendment:
-        detail["amends"] = _amends_key(
-            cik_issuer, cik_insider, filing.period_of_report, txn.security_title
-        )
-    return json.dumps(detail, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-
-
-# ---------------------------------------------------------------------------
-# Per-transaction trade builders
-# ---------------------------------------------------------------------------
-
-
-def _build_non_derivative_trade(
-    txn: NonDerivativeTransaction,
-    filing: OwnershipFiling,
-    index_row: SecMasterIndexRow,
-    ticker: str,
-    company: str,
-    insider_name: str,
-    insider_title: str,
-    edgar_url: str,
-    cik_issuer: str,
-    cik_insider: str,
-    fn_index: dict[str, str],
+def _build_trade(
+    txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> InsiderTrade:
-    shares_val = float(txn.shares) if txn.shares is not None else 0.0
-    price_val = float(txn.price_per_share) if txn.price_per_share is not None else 0.0
-    value_val = (
-        float(txn.shares * txn.price_per_share)
-        if txn.shares is not None and txn.price_per_share is not None
-        else 0.0
-    )
-    owned_after = (
-        float(txn.shares_owned_following)
-        if txn.shares_owned_following is not None
-        else 0.0
-    )
+    filing = ctx.filing
     return InsiderTrade(
-        ticker=ticker,
-        company=company,
-        insider_name=insider_name,
-        insider_title=insider_title,
+        ticker=ctx.ticker,
+        company=ctx.company,
+        insider_name=ctx.insider_name,
+        insider_title=ctx.insider_title,
         trade_type=_trade_type(txn.category),  # type: ignore[arg-type]
         trade_date=txn.transaction_date,
-        filing_date=index_row.filing_date,
-        shares=shares_val,
-        price=price_val,
-        value=value_val,
-        shares_owned_after=owned_after,
+        filing_date=ctx.index_row.filing_date,
+        shares=_finite_float(txn.shares),
+        price=_finite_float(txn.price_per_share),
+        value=_finite_float(txn.shares * txn.price_per_share)
+        if txn.shares is not None and txn.price_per_share is not None
+        else 0.0,
+        shares_owned_after=_finite_float(txn.shares_owned_following),
         source="sec_edgar",
-        edgar_url=edgar_url,
+        edgar_url=ctx.edgar_url,
         accession_number=filing.accession_number or "",
         sec_row_id=txn.row_id,
         form_type=filing.document_type,
-        cik_issuer=cik_issuer,
-        cik_insider=cik_insider,
+        cik_issuer=ctx.cik_issuer,
+        cik_insider=ctx.cik_insider,
         period_of_report=filing.period_of_report,
         is_amendment=filing.is_amendment,
-        is_derivative=False,
+        is_derivative=isinstance(txn, DerivativeTransaction),
         document_sha256=filing.document_sha256,
         transaction_code=txn.transaction_code or "",
         acquired_disposed=txn.acquired_disposed or "",
         direct_or_indirect=txn.direct_or_indirect or "",
-        sec_detail_json=_build_non_derivative_detail(
-            txn, filing, fn_index, cik_issuer, cik_insider
-        ),
-    )
-
-
-def _build_derivative_trade(
-    txn: DerivativeTransaction,
-    filing: OwnershipFiling,
-    index_row: SecMasterIndexRow,
-    ticker: str,
-    company: str,
-    insider_name: str,
-    insider_title: str,
-    edgar_url: str,
-    cik_issuer: str,
-    cik_insider: str,
-    fn_index: dict[str, str],
-) -> InsiderTrade:
-    shares_val = float(txn.shares) if txn.shares is not None else 0.0
-    price_val = float(txn.price_per_share) if txn.price_per_share is not None else 0.0
-    value_val = (
-        float(txn.shares * txn.price_per_share)
-        if txn.shares is not None and txn.price_per_share is not None
-        else 0.0
-    )
-    owned_after = (
-        float(txn.shares_owned_following)
-        if txn.shares_owned_following is not None
-        else 0.0
-    )
-    return InsiderTrade(
-        ticker=ticker,
-        company=company,
-        insider_name=insider_name,
-        insider_title=insider_title,
-        trade_type=_trade_type(txn.category),  # type: ignore[arg-type]
-        trade_date=txn.transaction_date,
-        filing_date=index_row.filing_date,
-        shares=shares_val,
-        price=price_val,
-        value=value_val,
-        shares_owned_after=owned_after,
-        source="sec_edgar",
-        edgar_url=edgar_url,
-        accession_number=filing.accession_number or "",
-        sec_row_id=txn.row_id,
-        form_type=filing.document_type,
-        cik_issuer=cik_issuer,
-        cik_insider=cik_insider,
-        period_of_report=filing.period_of_report,
-        is_amendment=filing.is_amendment,
-        is_derivative=True,
-        document_sha256=filing.document_sha256,
-        transaction_code=txn.transaction_code or "",
-        acquired_disposed=txn.acquired_disposed or "",
-        direct_or_indirect=txn.direct_or_indirect or "",
-        sec_detail_json=_build_derivative_detail(
-            txn, filing, fn_index, cik_issuer, cik_insider
-        ),
+        sec_detail_json=_build_detail(txn, ctx),
     )
 
 
@@ -363,7 +251,8 @@ def ownership_filing_to_trades(
 
     Non-derivative transactions are emitted first (in their original order),
     followed by derivative transactions.  Raises ``SecTradeMappingError`` for
-    malformed transactions before any ``InsiderTrade`` is constructed.
+    unrepresentable numeric values. Date-quality anomalies retain rows with
+    payload-free warnings in ``sec_detail_json``.
 
     Parameters
     ----------
@@ -379,58 +268,39 @@ def ownership_filing_to_trades(
         One ``InsiderTrade`` per transaction; empty tuple when the filing has no
         transactions.
     """
-    # Shared derived values (computed once per filing)
-    ticker = filing.issuer.trading_symbol or ""
-    company = filing.issuer.name or index_row.company_name
-    insider_name = filing.reporting_owner.name or ""
-    insider_title = _insider_title(
-        filing.reporting_owner.officer_title,
-        filing.reporting_owner.is_director,
-        filing.reporting_owner.is_officer,
-        filing.reporting_owner.is_ten_percent_owner,
-        filing.reporting_owner.is_other,
+    warnings = list(filing.warnings)
+    if (
+        filing.period_of_report is not None
+        and filing.period_of_report > index_row.filing_date
+    ):
+        warnings.append("period_of_report_after_filing_date")
+        _log.warning(
+            "SEC data-quality warning reason=period_of_report_after_filing_date"
+        )
+    ctx = _MappingContext(
+        filing=filing,
+        index_row=index_row,
+        ticker=filing.issuer.trading_symbol or "",
+        company=filing.issuer.name or index_row.company_name,
+        insider_name=filing.reporting_owner.name or "",
+        insider_title=_insider_title(
+            filing.reporting_owner.officer_title,
+            filing.reporting_owner.is_director,
+            filing.reporting_owner.is_officer,
+            filing.reporting_owner.is_ten_percent_owner,
+            filing.reporting_owner.is_other,
+        ),
+        edgar_url=edgar.build_filing_archive_url(index_row.archive_path),
+        cik_issuer=filing.issuer.cik or "",
+        cik_insider=filing.reporting_owner.cik or "",
+        footnotes=_footnote_index(filing.footnotes),
+        warnings=tuple(warnings),
     )
-    edgar_url = edgar.build_filing_archive_url(index_row.archive_path)
-    cik_issuer = filing.issuer.cik or ""
-    cik_insider = filing.reporting_owner.cik or ""
-    fn_index = _footnote_index(filing.footnotes)
-
-    trades: list[InsiderTrade] = []
-
-    for nd_txn in filing.non_derivative_transactions:
-        _validate_non_derivative(nd_txn, filing, index_row)
-        trades.append(
-            _build_non_derivative_trade(
-                nd_txn,
-                filing,
-                index_row,
-                ticker,
-                company,
-                insider_name,
-                insider_title,
-                edgar_url,
-                cik_issuer,
-                cik_insider,
-                fn_index,
-            )
-        )
-
-    for d_txn in filing.derivative_transactions:
-        _validate_derivative(d_txn, filing, index_row)
-        trades.append(
-            _build_derivative_trade(
-                d_txn,
-                filing,
-                index_row,
-                ticker,
-                company,
-                insider_name,
-                insider_title,
-                edgar_url,
-                cik_issuer,
-                cik_insider,
-                fn_index,
-            )
-        )
-
-    return tuple(trades)
+    transactions: tuple[NonDerivativeTransaction | DerivativeTransaction, ...] = (
+        *filing.non_derivative_transactions,
+        *filing.derivative_transactions,
+    )
+    try:
+        return tuple(_build_trade(txn, ctx) for txn in transactions)
+    except (ArithmeticError, ValueError) as exc:
+        raise SecTradeMappingError("SEC numeric conversion failed") from exc

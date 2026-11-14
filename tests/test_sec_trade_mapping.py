@@ -630,28 +630,19 @@ class TestDeterminism:
 
 
 class TestA4Validation:
-    def test_empty_row_id_non_deriv_raises(self) -> None:
-        nd = _non_deriv(row_id="")
-        with pytest.raises(SecTradeMappingError, match="empty row_id"):
-            ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
-
-    def test_whitespace_row_id_non_deriv_raises(self) -> None:
-        nd = _non_deriv(row_id="   ")
-        with pytest.raises(SecTradeMappingError, match="empty row_id"):
-            ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
-
-    def test_empty_row_id_deriv_raises(self) -> None:
-        d = _deriv(row_id="")
-        with pytest.raises(SecTradeMappingError, match="empty row_id"):
-            ownership_filing_to_trades(_filing(derivs=(d,)), _INDEX_ROW)
-
-    def test_inverted_exercise_expiration_dates_raises(self) -> None:
+    def test_inverted_exercise_expiration_dates_warns_and_retains_rows(self) -> None:
         d = _deriv(
             exercise_date=date(2031, 1, 1),
             expiration_date=date(2030, 1, 1),
         )
-        with pytest.raises(SecTradeMappingError, match="exercise_date"):
-            ownership_filing_to_trades(_filing(derivs=(d,)), _INDEX_ROW)
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(_non_deriv(),), derivs=(d,)), _INDEX_ROW
+        )
+        assert len(trades) == 2
+        assert "warnings" not in json.loads(trades[0].sec_detail_json)
+        assert json.loads(trades[1].sec_detail_json)["warnings"] == [
+            "exercise_date_after_expiration_date"
+        ]
 
     def test_same_exercise_expiration_date_does_not_raise(self) -> None:
         same = date(2025, 6, 1)
@@ -659,13 +650,23 @@ class TestA4Validation:
         trades = ownership_filing_to_trades(_filing(derivs=(d,)), _INDEX_ROW)
         assert len(trades) == 1
 
-    def test_period_of_report_after_filing_date_raises(self) -> None:
+    def test_period_of_report_after_filing_date_warns_once_and_retains_rows(
+        self,
+        caplog,
+    ) -> None:
         nd = _non_deriv()
         future_period = date(2025, 1, 1)  # after _FILING_DATE 2024-03-15
-        with pytest.raises(SecTradeMappingError, match="period_of_report"):
-            ownership_filing_to_trades(
-                _filing(non_derivs=(nd,), period_of_report=future_period), _INDEX_ROW
-            )
+        trades = ownership_filing_to_trades(
+            _filing(
+                non_derivs=(nd,), derivs=(_deriv(),), period_of_report=future_period
+            ),
+            _INDEX_ROW,
+        )
+        assert json.loads(trades[0].sec_detail_json)["warnings"] == [
+            "period_of_report_after_filing_date"
+        ]
+        assert len(trades) == 2
+        assert caplog.text.count("reason=period_of_report_after_filing_date") == 1
 
     def test_period_of_report_equal_to_filing_date_does_not_raise(self) -> None:
         nd = _non_deriv()
@@ -763,3 +764,19 @@ class TestFootnoteCaps:
         trades1 = ownership_filing_to_trades(filing, _INDEX_ROW)
         trades2 = ownership_filing_to_trades(filing, _INDEX_ROW)
         assert trades1[0].sec_detail_json == trades2[0].sec_detail_json
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "Infinity", "1E+99999"])
+@pytest.mark.parametrize(
+    "field", ["shares", "price_per_share", "shares_owned_following"]
+)
+def test_manual_numeric_values_cannot_escape_mapping_error(value, field):
+    txn = _non_deriv(**{field: Decimal(value)})
+    with pytest.raises(SecTradeMappingError):
+        ownership_filing_to_trades(_filing(non_derivs=(txn,)), _INDEX_ROW)
+
+
+def test_finite_operands_with_overflowing_product_raise_mapping_error():
+    txn = _non_deriv(shares=Decimal("1E308"), price_per_share=Decimal("1E308"))
+    with pytest.raises(SecTradeMappingError):
+        ownership_filing_to_trades(_filing(non_derivs=(txn,)), _INDEX_ROW)

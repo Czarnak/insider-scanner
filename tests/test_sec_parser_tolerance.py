@@ -1,11 +1,13 @@
 """Required fields stay strict; optional data-quality problems retain rows."""
 
+import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from insider_scanner.core.sec_index import SecMasterIndexRow
 from insider_scanner.core.sec_ownership_document import extract_ownership_document
 from insider_scanner.core.sec_ownership_parser import (
     SecOwnershipParseError,
@@ -99,3 +101,33 @@ def test_foreign_namespace_identity_cannot_produce_blank_success():
     text = XML.replace("<issuer>", '<issuer xmlns="urn:foreign">')
     with pytest.raises(SecOwnershipParseError):
         _parse(text)
+
+
+def test_optional_diagnostics_reach_trade_details_without_losing_valid_rows():
+    from insider_scanner.core.sec_trade_mapping import ownership_filing_to_trades
+
+    filing = _parse(
+        XML.replace("2036-06-12", "private-invalid-date").replace(
+            "<periodOfReport>2026-06-12</periodOfReport>",
+            "<periodOfReport>private-invalid-period</periodOfReport>",
+        )
+    )
+    row = SecMasterIndexRow(
+        "0000320193",
+        "Apple Inc.",
+        "4",
+        date(2026, 6, 15),
+        "edgar/data/320193/0000320193-26-000001.txt",
+    )
+    trades = ownership_filing_to_trades(filing, row)
+    assert len(trades) == 2
+    assert json.loads(trades[0].sec_detail_json)["warnings"] == [
+        "invalid_date:periodOfReport"
+    ]
+    derivative_detail = json.loads(trades[1].sec_detail_json)
+    assert derivative_detail["expiration_date"] is None
+    assert derivative_detail["warnings"] == [
+        "invalid_date:periodOfReport",
+        "invalid_date:expirationDate",
+    ]
+    assert "private-invalid" not in trades[1].sec_detail_json
