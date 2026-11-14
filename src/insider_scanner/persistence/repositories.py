@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
+from itertools import islice
+from math import isnan
+from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import String, Table, and_, bindparam, func, or_, select, tuple_
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError, StatementError
 
 from insider_scanner.core.congress_identity import MemberIdentity, name_matches
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
@@ -23,11 +26,9 @@ from insider_scanner.persistence.mappings import (
     congress_canonical_key,
     congress_from_row,
     congress_to_values,
-    european_canonical_key,
     european_from_row,
     european_provenance,
     european_to_values,
-    us_canonical_key,
     us_from_row,
     us_provenance,
     us_to_values,
@@ -40,7 +41,10 @@ from insider_scanner.persistence.schema import (
 
 
 def _wrap(operation: str, error: SQLAlchemyError) -> PersistenceError:
-    return PersistenceError(f"{operation} failed")
+    cause = getattr(error, "orig", error)
+    message = f"{type(cause).__name__}: {cause}"
+    retryable = getattr(cause, "sqlite_errorcode", 0) & 255 in {5, 6}
+    return PersistenceError(f"{operation} failed: {message}", retryable=retryable)
 
 
 def _validate_range(start_date: date | None, end_date: date | None) -> None:
@@ -49,12 +53,26 @@ def _validate_range(start_date: date | None, end_date: date | None) -> None:
 
 
 @dataclass(frozen=True)
+class UpsertRowError:
+    """A rejected input row; ``index`` refers to the original zero-based input."""
+
+    index: int
+    message: str
+    retryable: bool = False
+
+
+@dataclass(frozen=True)
 class UpsertResult:
-    """Counts describing the effect of one repository upsert."""
+    """Committed row outcomes, including isolated invalid input rows."""
 
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
+    errors: tuple[UpsertRowError, ...] = ()
+
+    @property
+    def failed(self) -> int:
+        return len(self.errors)
 
     def __add__(self, other: UpsertResult) -> UpsertResult:
         if not isinstance(other, UpsertResult):
@@ -63,7 +81,239 @@ class UpsertResult:
             inserted=self.inserted + other.inserted,
             updated=self.updated + other.updated,
             skipped=self.skipped + other.skipped,
+            errors=self.errors + other.errors,
         )
+
+
+# Stay below SQLite's historical 999-variable limit, including Congress doc pairs.
+UPSERT_BATCH_SIZE = 300
+
+
+@dataclass(frozen=True)
+class _BatchPolicy:
+    table: Table
+    to_values: Callable[..., dict]
+    from_row: Callable[..., Any]
+    merge: Callable[..., Any]
+    provenance: Callable[..., frozenset[str]] | None = None
+
+
+@dataclass
+class _StoredTrade:
+    values: dict
+    original_key: str | None
+
+
+def _row_error(error: Exception) -> bool:
+    if isinstance(error, (IntegrityError, DataError)):
+        return True
+    cause = error.orig if isinstance(error, StatementError) else error
+    return isinstance(cause, (TypeError, ValueError, AttributeError, OverflowError))
+
+
+def _validate_values(
+    policy: _BatchPolicy, values: dict, connection: Connection
+) -> None:
+    """Reject invalid inputs before a later same-key row can conceal them."""
+    for name, value in values.items():
+        column = policy.table.c[name]
+        if value is None and not column.nullable:
+            raise ValueError(f"NOT NULL constraint failed: {policy.table.name}.{name}")
+        if (
+            value is not None
+            and isinstance(column.type, String)
+            and not isinstance(value, str)
+        ):
+            raise TypeError(f"Invalid text {policy.table.name}.{name}")
+        processor = column.type.bind_processor(connection.dialect)
+        if processor is not None:
+            processor(value)
+    if policy.table is us_trades:
+        choices = {"trade_type": {"Buy", "Sell", "Exercise", "Other"}}
+        nonnegative = ("shares", "price", "value")
+    elif policy.table is congress_trades:
+        choices = {
+            "trade_type": {"Purchase", "Sale", "Exchange", "Other"},
+            "chamber": {"", "House", "Senate"},
+            "source": {"", "house", "senate"},
+        }
+        nonnegative = ("amount_low", "amount_high")
+        if values["amount_high"] < values["amount_low"]:
+            raise ValueError("CHECK constraint failed: ck_congress_trades_amount_range")
+    else:
+        choices = {
+            "trade_type": {"Buy", "Sell", "Other"},
+            "country": {"", "UK", "DE", "FR", "NL"},
+        }
+        nonnegative = ("volume", "price", "total_value")
+    for name, allowed in choices.items():
+        if values[name] not in allowed:
+            raise ValueError(f"Invalid {policy.table.name}.{name}")
+    for name in nonnegative:
+        value = values[name]
+        if value is not None and (value < 0 or isnan(value)):
+            raise ValueError(f"Invalid nonnegative {policy.table.name}.{name}")
+
+
+def _write_batch(
+    connection: Connection,
+    policy: _BatchPolicy,
+    indexed_trades: list[tuple[int, Any]],
+) -> UpsertResult:
+    """Plan merges in input order, then write each changed stored row once."""
+    prepared = [(trade, policy.to_values(trade)) for _, trade in indexed_trades]
+    for _, values in prepared:
+        _validate_values(policy, values, connection)
+    keys = [values["canonical_key"] for _, values in prepared]
+    condition = policy.table.c.canonical_key.in_(keys)
+    if policy.table is congress_trades:
+        documents = {
+            (trade.doc_id.strip(), trade.source)
+            for trade, _ in prepared
+            if trade.doc_id.strip()
+        }
+        if documents:
+            # Load native and legacy observations together so promotion and old
+            # exports keep their sequential semantics without per-row queries.
+            condition = or_(
+                condition,
+                tuple_(
+                    func.trim(congress_trades.c.doc_id), congress_trades.c.source
+                ).in_(documents),
+            )
+    rows = connection.execute(select(policy.table).where(condition)).mappings()
+    stored = {
+        row["canonical_key"]: _StoredTrade(dict(row), row["canonical_key"])
+        for row in rows
+    }
+    changed: dict[int, _StoredTrade] = {}
+    result = UpsertResult()
+    for trade, incoming_values in prepared:
+        key = incoming_values["canonical_key"]
+        current = stored.get(key)
+        if policy.table is congress_trades and current is None:
+            if trade.source_row_id and trade.doc_id:
+                legacy_key = congress_canonical_key(replace(trade, source_row_id=""))
+                legacy = stored.get(legacy_key)
+                if legacy is not None and not legacy.values["source_row_id"]:
+                    current = legacy
+                    del stored[legacy_key]
+            elif trade.doc_id and any(
+                candidate.values["source_row_id"]
+                and candidate.values["source"] == trade.source
+                and candidate.values["doc_id"].strip() == trade.doc_id.strip()
+                and congress_canonical_key(
+                    replace(policy.from_row(candidate.values), source_row_id="")
+                )
+                == key
+                for candidate in stored.values()
+            ):
+                result += UpsertResult(skipped=1)
+                continue
+        if current is None:
+            incoming_values["updated_at"] = datetime.now(UTC)
+            current = _StoredTrade(incoming_values, None)
+            stored[key] = current
+            changed[id(current)] = current
+            result += UpsertResult(inserted=1)
+            continue
+        existing = policy.from_row(current.values)
+        merged = policy.merge(existing, trade)
+        if policy.provenance is not None:
+            old_sources = set(policy.provenance(current.values))
+            sources = old_sources | {trade.source}
+            unchanged = merged == existing and sources == old_sources
+        else:
+            unchanged = merged == existing
+        if unchanged:
+            result += UpsertResult(skipped=1)
+            continue
+        values = (
+            policy.to_values(merged, sources)
+            if policy.provenance is not None
+            else policy.to_values(merged)
+        )
+        values["updated_at"] = datetime.now(UTC)
+        current.values = values
+        stored[key] = current
+        changed[id(current)] = current
+        result += UpsertResult(updated=1)
+    inserts = [
+        record.values for record in changed.values() if record.original_key is None
+    ]
+    updates = [
+        {**record.values, "_lookup_key": record.original_key}
+        for record in changed.values()
+        if record.original_key is not None
+    ]
+    if inserts:
+        connection.execute(insert(policy.table), inserts)
+    if updates:
+        statement = (
+            policy.table.update()
+            .where(policy.table.c.canonical_key == bindparam("_lookup_key"))
+            .values(
+                {name: bindparam(name) for name in updates[0] if name != "_lookup_key"}
+            )
+        )
+        connection.execute(statement, updates)
+    return result
+
+
+def _upsert_batches(
+    engine: Engine, trades: Iterable[Any], policy: _BatchPolicy, operation: str
+) -> UpsertResult:
+    """Use one serialized transaction; only invalid rows use slow isolation.
+
+    A failed executemany can have written a prefix. Roll back its savepoint
+    before replaying individual rows, so counters and merge state stay accurate.
+    Operational failures escape and roll back the entire outer transaction.
+    """
+    inputs = enumerate(trades)
+    result = UpsertResult()
+    try:
+        with immediate_transaction(engine) as connection:
+            while batch := list(islice(inputs, UPSERT_BATCH_SIZE)):
+                try:
+                    with connection.begin_nested():
+                        batch_result = _write_batch(connection, policy, batch)
+                except (
+                    SQLAlchemyError,
+                    TypeError,
+                    ValueError,
+                    AttributeError,
+                    OverflowError,
+                ) as error:
+                    if not _row_error(error):
+                        raise
+                    batch_result = UpsertResult()
+                    for item in batch:
+                        try:
+                            with connection.begin_nested():
+                                row_result = _write_batch(connection, policy, [item])
+                        except (
+                            SQLAlchemyError,
+                            TypeError,
+                            ValueError,
+                            AttributeError,
+                            OverflowError,
+                        ) as row_error:
+                            if not _row_error(row_error):
+                                raise
+                            cause = getattr(row_error, "orig", row_error)
+                            row_result = UpsertResult(
+                                errors=(
+                                    UpsertRowError(
+                                        index=item[0],
+                                        message=f"{type(cause).__name__}: {cause}",
+                                    ),
+                                )
+                            )
+                        batch_result += row_result
+                result += batch_result
+    except SQLAlchemyError as error:
+        raise _wrap(operation, error) from error
+    return result
 
 
 class UsTradeRepository:
@@ -71,42 +321,14 @@ class UsTradeRepository:
         self._engine = engine
 
     def upsert(self, trades: Iterable[InsiderTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = us_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(us_trades).where(us_trades.c.canonical_key == key)
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None:
-                        connection.execute(
-                            insert(us_trades).values(us_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = us_from_row(existing_row)
-                    existing_provenance = set(us_provenance(existing_row))
-                    merged = merge_trade_pair(existing, trade)
-                    provenance = existing_provenance | {trade.source}
-                    if merged == existing and provenance == existing_provenance:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = us_to_values(merged, provenance)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        us_trades.update()
-                        .where(us_trades.c.canonical_key == key)
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("US trade upsert", error) from error
-        return result
+        return _upsert_batches(
+            self._engine,
+            trades,
+            _BatchPolicy(
+                us_trades, us_to_values, us_from_row, merge_trade_pair, us_provenance
+            ),
+            "US trade upsert",
+        )
 
     def query(
         self,
@@ -194,96 +416,22 @@ class UsTradeRepository:
             raise _wrap("latest US trade query", error) from error
 
 
-def _has_native_congress_observation(
-    connection: Connection, trade: CongressTrade
-) -> bool:
-    """An old export cannot add a lot already represented by known filing rows.
-
-    Matching more than one native lot is expected. Without a source row ID the
-    old observation cannot identify which one to update, so retain those rows.
-    """
-    key = congress_canonical_key(trade)
-    candidates = connection.execute(
-        select(congress_trades).where(
-            func.trim(congress_trades.c.doc_id) == trade.doc_id.strip(),
-            congress_trades.c.source == trade.source,
-            congress_trades.c.source_row_id != "",
-        )
-    ).mappings()
-    return any(
-        congress_canonical_key(replace(congress_from_row(row), source_row_id="")) == key
-        for row in candidates
-    )
-
-
 class CongressTradeRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
     def upsert(self, trades: Iterable[CongressTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = congress_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(congress_trades).where(
-                                congress_trades.c.canonical_key == key
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None and trade.source_row_id and trade.doc_id:
-                        # Promote the one retained legacy observation when its
-                        # filing row is recovered. Later identical lots have
-                        # distinct native keys and are inserted independently.
-                        legacy_key = congress_canonical_key(
-                            replace(trade, source_row_id="")
-                        )
-                        existing_row = (
-                            connection.execute(
-                                select(congress_trades).where(
-                                    congress_trades.c.canonical_key == legacy_key,
-                                    congress_trades.c.source_row_id == "",
-                                )
-                            )
-                            .mappings()
-                            .one_or_none()
-                        )
-                    if existing_row is None:
-                        if (
-                            not trade.source_row_id
-                            and trade.doc_id
-                            and _has_native_congress_observation(connection, trade)
-                        ):
-                            result += UpsertResult(skipped=1)
-                            continue
-                        connection.execute(
-                            insert(congress_trades).values(congress_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = congress_from_row(existing_row)
-                    merged = coalesce_congress_trades(
-                        existing,
-                        trade,
-                    )
-                    if merged == existing:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = congress_to_values(merged)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        congress_trades.update()
-                        .where(congress_trades.c.id == existing_row["id"])
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("Congress trade upsert", error) from error
-        return result
+        return _upsert_batches(
+            self._engine,
+            trades,
+            _BatchPolicy(
+                congress_trades,
+                congress_to_values,
+                congress_from_row,
+                coalesce_congress_trades,
+            ),
+            "Congress trade upsert",
+        )
 
     def query(
         self,
@@ -351,44 +499,18 @@ class EuropeanTradeRepository:
         self._engine = engine
 
     def upsert(self, trades: Iterable[EuropeanInsiderTrade]) -> UpsertResult:
-        result = UpsertResult()
-        try:
-            with immediate_transaction(self._engine) as connection:
-                for trade in trades:
-                    key = european_canonical_key(trade)
-                    existing_row = (
-                        connection.execute(
-                            select(european_trades).where(
-                                european_trades.c.canonical_key == key
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if existing_row is None:
-                        connection.execute(
-                            insert(european_trades).values(european_to_values(trade))
-                        )
-                        result += UpsertResult(inserted=1)
-                        continue
-                    existing = european_from_row(existing_row)
-                    existing_provenance = set(european_provenance(existing_row))
-                    merged = coalesce_european_trades(existing, trade)
-                    provenance = existing_provenance | {trade.source}
-                    if merged == existing and provenance == existing_provenance:
-                        result += UpsertResult(skipped=1)
-                        continue
-                    values = european_to_values(merged, provenance)
-                    values["updated_at"] = datetime.now(UTC)
-                    connection.execute(
-                        european_trades.update()
-                        .where(european_trades.c.canonical_key == key)
-                        .values(**values)
-                    )
-                    result += UpsertResult(updated=1)
-        except SQLAlchemyError as error:
-            raise _wrap("European trade upsert", error) from error
-        return result
+        return _upsert_batches(
+            self._engine,
+            trades,
+            _BatchPolicy(
+                european_trades,
+                european_to_values,
+                european_from_row,
+                coalesce_european_trades,
+                european_provenance,
+            ),
+            "European trade upsert",
+        )
 
     def query(
         self,
