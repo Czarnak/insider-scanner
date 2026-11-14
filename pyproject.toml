@@ -61,7 +61,7 @@ dev = [
     "pytest-timeout>=2.3,<3",
     "responses>=0.24",
     "ruff>=0.15.0",
-    "mypy>=1.10,<2",
+    "mypy>=1.10,<3",
     "build>=1.2",
     "wheel",
     "setuptools>=68.0",
