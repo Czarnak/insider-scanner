@@ -672,7 +672,7 @@ def scrape_senate_trades(
 
         if not filings:
             log.info("No Senate PTR filings found")
-            status = (
+            status: FetchStatus | None = (
                 FetchStatus.UNSUPPORTED
                 if issues and all(not issue.retryable for issue in issues)
                 else filings.status
