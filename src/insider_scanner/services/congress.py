@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from calendar import monthrange
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date
@@ -16,6 +15,7 @@ from insider_scanner.services.common import (
     not_cancelled,
     scan_result,
     source_issues,
+    subtract_months,
     validate_range,
     validate_sources,
 )
@@ -50,15 +50,20 @@ class CongressScanService:
         identifier = "*" if normalized.casefold() in {"*", "all"} else normalized
         if start_date is None and end_date is None:
             end_date = self._today()
-            start_date = _subtract_months(end_date, 6)
+            start_date = subtract_months(end_date, 6)
         requested = validate_range(start_date, end_date)
         selected = validate_sources(sources, self._adapters)
         issues: list[FetchIssue] = []
 
         for source in selected:
-            for gap in self._persistence.coverage.gaps(
-                "congress", identifier, source, requested
-            ):
+            gaps = (
+                self._persistence.coverage.gaps(
+                    "congress", identifier, source, requested
+                )
+                if use_cache
+                else (requested,)
+            )
+            for gap in gaps:
                 if cancelled():
                     issues.append(FetchIssue("cancelled", source, identifier))
                     return scan_result(
@@ -111,11 +116,3 @@ class CongressScanService:
             reverse=True,
         )
         return trades
-
-
-def _subtract_months(value: date, months: int) -> date:
-    month_index = value.year * 12 + value.month - 1 - months
-    year, zero_based_month = divmod(month_index, 12)
-    month = zero_based_month + 1
-    day = min(value.day, monthrange(year, month)[1])
-    return date(year, month, day)

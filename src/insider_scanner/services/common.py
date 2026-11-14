@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import date, timedelta
@@ -87,13 +88,18 @@ def validate_range(
     start_date: date | None,
     end_date: date | None,
 ) -> DateInterval:
-    if (start_date is None) != (end_date is None):
-        raise ValueError("start_date and end_date must both be present")
     if start_date is None or end_date is None:
         raise ValueError("start_date and end_date must both be present")
     if start_date > end_date:
         raise ValueError("start_date must not be after end_date")
     return DateInterval(start_date, end_date)
+
+
+def subtract_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 - months
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    return date(year, month, min(value.day, monthrange(year, month)[1]))
 
 
 def validate_sources(

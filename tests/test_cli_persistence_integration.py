@@ -200,21 +200,21 @@ def test_eu_scan_uses_service_for_each_watchlist_identifier(monkeypatch, capsys)
 def test_cli_default_us_scan_works_without_dates(tmp_path, capsys):
     persistence = open_persistence(tmp_path / "us-default.sqlite3")
 
-    def latest(_count, _use_cache, _start, _end):
+    def fetch(ticker, start, end, use_cache):
         return [
             InsiderTrade(
-                ticker="AAPL",
+                ticker=ticker,
                 insider_name="Jane",
                 trade_type="Buy",
-                filing_date=date(2025, 1, 3),
+                filing_date=start,
                 source="openinsider",
             )
         ]
 
     service = UsScanService(
         persistence,
-        adapters={"secform4": lambda *_: [], "openinsider": lambda *_: []},
-        latest_adapters={"openinsider": latest},
+        adapters={"secform4": lambda *_: [], "openinsider": fetch},
+        latest_adapters={},
     )
     try:
         cli.cmd_scan(
