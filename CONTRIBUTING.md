@@ -37,6 +37,7 @@ uv run --locked --extra dev --extra gui pytest --cov=insider_scanner --cov-repor
 # Static checks
 uv run --locked --extra dev --extra gui ruff check .
 uv run --locked --extra dev --extra gui ruff format --check .
+uv run --locked --extra dev --extra gui mypy src/insider_scanner
 
 # Verify the lock file
 uv lock --check
@@ -52,6 +53,12 @@ cross-platform thread method, which terminates a stalled pytest process and
 prints its thread stacks. A deliberately slow test can use
 `@pytest.mark.timeout(seconds)` with a reason for the override. GUI tests use
 `QT_QPA_PLATFORM=offscreen` in CI; set it locally for headless runs too.
+
+Mypy checks the full source tree, including untyped function bodies, against
+Python 3.11. `mypy.ini` baselines existing errors by module and error category;
+its `debt:` comment records the limitation that another error of a suppressed
+category in the same module is hidden too. Remove each suppression as its owning
+PR fixes that module. New modules receive the normal checks.
 
 ### Test modules
 
