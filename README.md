@@ -264,6 +264,20 @@ The SQLite database stores normalized trade records, successful source/date
 coverage, and latest-refresh state. HTTP caches remain transient files under the
 platform cache directory and can be removed without deleting parsed trades.
 
+Source dates accept ISO timestamps and US dates with two- or four-digit years.
+OpenInsider sale quantities and values are stored as positive magnitudes; the
+transaction type carries direction. Tables, charts, feed filters, and summaries
+share Buy/Sell/Other classification: Buy, Purchase, and Exercise are acquisitions;
+Sell and Sale are disposals; gifts, exchanges, and unknown types are neutral.
+The original transaction labels and Congress amount-range text remain available.
+
+Migration 4 retains existing trade IDs and keys. It restores missing Congress
+amount bounds from the reported range and clears OpenInsider coverage and refresh
+state for tickers with missing filing dates. Run the affected ticker's bounded
+scan again to recover dates from the source; dates cannot be reconstructed from
+the stored rows alone. Earlier House partial sales stored as Other lack their
+original transaction code, so the migration preserves them for source verification.
+
 Watchlists, alert rules, and saved feed screens use atomic JSON state files.
 If a state file cannot be decoded or parsed, startup loads defaults and preserves
 the original beside it as `<filename>.corrupt-<unique-id>`, with its location in
