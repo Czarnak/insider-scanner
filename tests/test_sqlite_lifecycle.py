@@ -8,6 +8,7 @@ from time import monotonic
 
 import pytest
 from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import QueuePool
 
 from insider_scanner.persistence.bootstrap import bootstrap_database
@@ -78,6 +79,25 @@ def test_initial_wal_nonbusy_failure_does_not_spend_the_retry_budget(tmp_path):
             engine.connect()
         assert monotonic() - started < 1
         assert not is_access_denied(exc.value)
+    finally:
+        engine.dispose()
+
+
+def test_database_error_keeps_its_cause_without_printing_bound_user_values(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "diagnostics.sqlite3")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE probe (detail TEXT, quantity INTEGER CHECK(quantity > 0))"
+            )
+        with pytest.raises(IntegrityError) as exc, engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO probe (detail, quantity) VALUES (?, ?)",
+                ("private-value-for-test", -1),
+            )
+        assert "CHECK constraint failed" in str(exc.value)
+        assert "private-value-for-test" not in str(exc.value)
+        assert "parameters hidden" in str(exc.value)
     finally:
         engine.dispose()
 

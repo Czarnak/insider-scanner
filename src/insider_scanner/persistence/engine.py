@@ -54,6 +54,7 @@ def create_sqlite_engine(
         engine = create_engine(
             URL.create("sqlite", database=str(resolved_file)),
             echo=echo,
+            hide_parameters=True,
             connect_args={
                 "timeout": busy_timeout_ms / 1_000,
                 "check_same_thread": False,
