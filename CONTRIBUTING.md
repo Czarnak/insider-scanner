@@ -7,7 +7,7 @@ First off, thank you for considering contributing to Insider Scanner! It's peopl
 ```bash
 git clone <repo-url>
 cd insider-scanner
-pip install -e ".[dev]"
+uv sync --locked --extra dev --extra gui
 ```
 
 ## Adding Sources
@@ -23,20 +23,20 @@ To add a new scraping source:
 
 ```bash
 # Run all offline tests (default)
-python -m pytest -m "not live" -v
+uv run --locked --extra dev --extra gui pytest
 
 # Run only live integration tests (requires internet)
-python -m pytest -m live -v
+uv run --locked --extra dev --extra gui pytest -m live
 
 # Run everything
-python -m pytest -v
+uv run --locked --extra dev --extra gui pytest -m ""
 
 # With coverage
-python -m pytest -m "not live" --cov=insider_scanner --cov-report=term-missing -v
+uv run --locked --extra dev --extra gui pytest --cov=insider_scanner --cov-report=term-missing --cov-fail-under=80
 
 # Static checks
-python -m ruff check src tests
-python -m ruff format --check src tests
+uv run --locked --extra dev --extra gui ruff check .
+uv run --locked --extra dev --extra gui ruff format --check .
 
 # Verify the lock file
 uv lock --check
@@ -44,35 +44,41 @@ uv lock --check
 
 Tests are split into two categories:
 
-- **Offline (mocked)**: Use the `responses` library to mock HTTP calls. No internet needed. Run by default in CI.
+- **Offline (mocked)**: Use the `responses` library to mock HTTP calls. No internet needed. Run by default locally and in CI.
 - **Live integration**: Hit real websites. Marked with `@pytest.mark.live`. Excluded from CI. Run manually with `-m live`.
+
+Unknown markers fail collection. Each test has a 60-second timeout using the
+cross-platform thread method, which terminates a stalled pytest process and
+prints its thread stacks. A deliberately slow test can use
+`@pytest.mark.timeout(seconds)` with a reason for the override. GUI tests use
+`QT_QPA_PLATFORM=offscreen` in CI; set it locally for headless runs too.
 
 ### Test modules
 
-| Module | Tests | Description |
-|--------|------:|-------------|
-| `test_models.py` | 16 | InsiderTrade + CongressTrade dataclasses, amount range parsing |
-| `test_secform4.py` | 19 | secform4.com compound-column HTML parser |
-| `test_openinsider.py` | 13 | openinsider.com scraper |
-| `test_edgar.py` | 14 | CIK resolution (JSON + HTML fallback), EDGAR URL builder |
-| `test_senate.py` | 14 | Congress member flagging |
-| `test_merger.py` | 19 | Deduplication, filtering, export |
-| `test_caching.py` | 10 | File cache with TTL |
-| `test_config.py` | 9 | Config paths, watchlist loading |
-| `test_update_congress.py` | 34 | Committee enrichment, sector mapping |
-| `test_congress_house.py` | 52 | House ZIP index, XML parsing, PDF extraction pipeline |
-| `test_congress_senate.py` | 36 | Senate EFD session, search, PTR page parsing |
-| `test_congress_tab.py` | 23 | Congress tab functions: filter, sector, save, dataframe |
-| `test_integration.py` | 22 | End-to-end pipeline: scrapers → filter → save → reload |
-| `test_eu_models.py` | 5 | EuropeanInsiderTrade dataclass, normalize_position |
-| `test_eu_merger.py` | 4 | EU deduplication, filtering, dataframe export |
-| `test_eu_sources.py` | 24 | AFM/AMF/BaFin/RNS parsing helpers and dispatcher |
-| `test_european.py` | 8 | European tab GUI, scan dispatch, filter/save workflow |
-| `test_gui.py` | 30 | Widget creation, controls, interactions (requires display) |
-| `test_cli.py` | 6 | CLI entry point commands |
-| `test_threading.py` | 2 | Worker/Signal threading helpers |
-| `test_main_entrypoint.py` | 1 | GUI entry point smoke test |
-| `test_live.py` | 6 | Live website tests (deselected in CI) |
+| Module                    | Tests | Description                                                    |
+| ------------------------- | ----: | -------------------------------------------------------------- |
+| `test_models.py`          |    16 | InsiderTrade + CongressTrade dataclasses, amount range parsing |
+| `test_secform4.py`        |    19 | secform4.com compound-column HTML parser                       |
+| `test_openinsider.py`     |    13 | openinsider.com scraper                                        |
+| `test_edgar.py`           |    14 | CIK resolution (JSON + HTML fallback), EDGAR URL builder       |
+| `test_senate.py`          |    14 | Congress member flagging                                       |
+| `test_merger.py`          |    19 | Deduplication, filtering, export                               |
+| `test_caching.py`         |    10 | File cache with TTL                                            |
+| `test_config.py`          |     9 | Config paths, watchlist loading                                |
+| `test_update_congress.py` |    34 | Committee enrichment, sector mapping                           |
+| `test_congress_house.py`  |    52 | House ZIP index, XML parsing, PDF extraction pipeline          |
+| `test_congress_senate.py` |    36 | Senate EFD session, search, PTR page parsing                   |
+| `test_congress_tab.py`    |    23 | Congress tab functions: filter, sector, save, dataframe        |
+| `test_integration.py`     |    22 | End-to-end pipeline: scrapers → filter → save → reload         |
+| `test_eu_models.py`       |     5 | EuropeanInsiderTrade dataclass, normalize_position             |
+| `test_eu_merger.py`       |     4 | EU deduplication, filtering, dataframe export                  |
+| `test_eu_sources.py`      |    24 | AFM/AMF/BaFin/RNS parsing helpers and dispatcher               |
+| `test_european.py`        |     8 | European tab GUI, scan dispatch, filter/save workflow          |
+| `test_gui.py`             |    30 | Widget creation, controls, interactions (requires display)     |
+| `test_cli.py`             |     6 | CLI entry point commands                                       |
+| `test_threading.py`       |     2 | Worker/Signal threading helpers                                |
+| `test_main_entrypoint.py` |     1 | GUI entry point smoke test                                     |
+| `test_live.py`            |     6 | Live website tests (deselected in CI)                          |
 
 ## CI/CD
 
