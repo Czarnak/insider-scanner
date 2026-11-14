@@ -1127,7 +1127,8 @@ def test_house_partial_pdf_rows_reach_scan_result(tmp_path, monkeypatch):
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
     (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
-    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
+    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=None))
+    monkeypatch.setattr(house, "fetch_ptr_pdf", MagicMock(return_value=SAMPLE_PDF))
     issue = FetchIssue(
         "pdf_page_parse_failed", source="house", identifier="20034001:page:2"
     )
@@ -1187,3 +1188,119 @@ def test_house_missing_index_retains_failure_metadata_through_search(
     assert result == []
     assert result.status == FetchStatus.TRANSIENT_FAILURE
     assert result.issues[0].reason == "index_missing"
+
+
+@pytest.mark.parametrize(
+    "reason", ["pdf_page_parse_failed", "transaction_table_missing"]
+)
+def test_house_repairs_cached_pdf_once_for_retryable_parse_outcome(
+    tmp_path, monkeypatch, reason
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
+    fetch = MagicMock(return_value=SAMPLE_PDF)
+    monkeypatch.setattr(house, "fetch_ptr_pdf", fetch)
+    transaction = {
+        "asset": "Apple (AAPL)",
+        "tx_type": "P",
+        "tx_date": "01/15/2026",
+        "amount": "$1,001 - $15,000",
+    }
+    parser = MagicMock(
+        side_effect=[
+            FetchResult(
+                issues=[FetchIssue(reason, source="house", identifier="20034001")]
+            ),
+            FetchResult([transaction]),
+        ]
+    )
+    monkeypatch.setattr(house, "parse_ptr_pdf", parser)
+
+    result = house.scrape_house_trades(
+        official_name="Nancy Pelosi",
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 12, 31),
+        session=MagicMock(),
+    )
+
+    assert [trade.ticker for trade in result] == ["AAPL"]
+    assert result.complete
+    assert result.issues == ()
+    assert parser.call_count == 2
+    fetch.assert_called_once()
+
+
+@pytest.mark.parametrize("repair_stage", ["download", "parse"])
+def test_house_failed_cache_repair_retains_partial_transactions(
+    tmp_path, monkeypatch, repair_stage
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
+    fetch = MagicMock(return_value=SAMPLE_PDF)
+    if repair_stage == "download":
+        fetch.side_effect = OSError("offline")
+    monkeypatch.setattr(house, "fetch_ptr_pdf", fetch)
+    issue = FetchIssue(
+        "pdf_page_parse_failed", source="house", identifier="20034001:page:2"
+    )
+    parser = MagicMock(
+        return_value=FetchResult(
+            [
+                {
+                    "asset": "Apple (AAPL)",
+                    "tx_type": "P",
+                    "tx_date": "01/15/2026",
+                    "amount": "$1,001 - $15,000",
+                }
+            ],
+            issues=[issue],
+        )
+    )
+    if repair_stage == "parse":
+        parser.side_effect = [parser.return_value, ValueError("invalid replacement")]
+    monkeypatch.setattr(house, "parse_ptr_pdf", parser)
+
+    result = house.scrape_house_trades(
+        official_name="Nancy Pelosi",
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 12, 31),
+        session=MagicMock(),
+    )
+
+    assert [trade.ticker for trade in result] == ["AAPL"]
+    assert result.status == FetchStatus.PARTIAL
+    assert result.issues == (
+        issue,
+        FetchIssue("pdf_repair_failed", source="house", identifier="20034001"),
+    )
+    assert parser.call_count == (1 if repair_stage == "download" else 2)
+    fetch.assert_called_once()
+
+
+def test_house_does_not_repair_deterministically_unsupported_cached_pdf(
+    tmp_path, monkeypatch
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
+    fetch = MagicMock()
+    monkeypatch.setattr(house, "fetch_ptr_pdf", fetch)
+
+    result = house.scrape_house_trades(
+        official_name="Nancy Pelosi",
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 12, 31),
+        session=MagicMock(),
+    )
+
+    assert result.status == FetchStatus.UNSUPPORTED
+    assert result.issues[0].reason == "scanned_pdf"
+    fetch.assert_not_called()

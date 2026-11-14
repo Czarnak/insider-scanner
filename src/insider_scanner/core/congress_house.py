@@ -704,13 +704,45 @@ def _scrape_house_trades(
             except ValueError:
                 if cached_pdf is None:
                     raise
+                raw_transactions = FetchResult(
+                    issues=[
+                        FetchIssue(
+                            "pdf_parse_failed", source="house", identifier=doc_id
+                        )
+                    ]
+                )
+            if (
+                cached_pdf is not None
+                and isinstance(raw_transactions, FetchResult)
+                and any(issue.retryable for issue in raw_transactions.issues)
+            ):
                 log.warning(
                     "Could not parse cached House PDF %s/%s; downloading once",
                     year,
                     doc_id,
                 )
-                pdf_bytes = fetch_ptr_pdf(doc_id, year, force=True, session=session)
-                raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True, doc_id=doc_id)
+                cached_transactions = raw_transactions
+                try:
+                    pdf_bytes = fetch_ptr_pdf(doc_id, year, force=True, session=session)
+                    raw_transactions = parse_ptr_pdf(
+                        pdf_bytes, strict=True, doc_id=doc_id
+                    )
+                except Exception as exc:  # noqa: BLE001 - a failed repair must retain cached partial rows
+                    log.warning(
+                        "House PDF repair failed year=%s doc_id=%s reason=%s",
+                        year,
+                        doc_id,
+                        type(exc).__name__,
+                    )
+                    raw_transactions = FetchResult(
+                        cached_transactions,
+                        issues=[
+                            *cached_transactions.issues,
+                            FetchIssue(
+                                "pdf_repair_failed", source="house", identifier=doc_id
+                            ),
+                        ],
+                    )
         except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
             log.warning(
                 "House PDF failed year=%s doc_id=%s reason=%s",
