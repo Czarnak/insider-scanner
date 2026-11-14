@@ -6,14 +6,16 @@ Pure module — no database access, no network I/O.  Call
 
 Field mapping rules
 -------------------
-* ``trade_type`` derives from the parser ``category`` field:
-  purchase→Buy, sale→Sell, exercise→Exercise, everything else→Other.
+* Stock ``trade_type`` derives from ``category``: purchase→Buy, sale→Sell,
+  exercise→Exercise. Derivatives remain neutral ``Other`` with their original
+  category and amounts retained in detail, so an exercise's option leg is not
+  counted as another stock acquisition.
 * ``ticker`` = ``filing.issuer.trading_symbol`` when truthy, else ``""``.
 * The index company name is a fallback only for the issuer's own index row.
 * The primary owner's columns remain stable; all reporting owners and roles
   are retained in ``sec_detail_json`` without duplicating transactions.
-* ``value`` = ``float(shares * price_per_share)`` when BOTH numeric fields are
-  present, else ``0.0``.
+* Value uses shares times price, or the separately reported transaction total.
+  Missing numeric fields carry explicit flags; their legacy floats remain zero.
 * ``sec_detail_json`` is serialized with ``sort_keys=True`` so repeated calls
   on identical input yield byte-identical output (idempotent re-ingest).
 """
@@ -181,11 +183,21 @@ def _amends_key(
 def _build_detail(
     txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> str:
-    capped_ids = txn.footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
+    price_ids = txn.price_footnote_ids[:_MAX_EMBEDDED_FOOTNOTES]
+    capped_ids = tuple(dict.fromkeys((*price_ids, *txn.footnote_ids)))[
+        :_MAX_EMBEDDED_FOOTNOTES
+    ]
     detail: dict[str, object] = {
         "footnote_ids": list(capped_ids),
         "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},
         "security_title": txn.security_title,
+        "category": txn.category,
+        "transaction_shares": _decimal_or_null(txn.shares),
+        "transaction_price_per_share": _decimal_or_null(txn.price_per_share),
+        "shares_owned_following": _decimal_or_null(txn.shares_owned_following),
+        "transaction_total_value": _decimal_or_null(txn.transaction_total_value),
+        "value_owned_following": _decimal_or_null(txn.value_owned_following),
+        "price_footnote_ids": list(price_ids),
         "reporting_owners": [
             _owner_detail(owner)
             for owner in (ctx.filing.reporting_owners or (ctx.filing.reporting_owner,))
@@ -204,6 +216,9 @@ def _build_detail(
                     txn.underlying_security_shares
                 ),
                 "underlying_security_title": txn.underlying_security_title,
+                "underlying_security_value": _decimal_or_null(
+                    txn.underlying_security_value
+                ),
             }
         )
         if (
@@ -231,20 +246,29 @@ def _build_trade(
     txn: NonDerivativeTransaction | DerivativeTransaction, ctx: _MappingContext
 ) -> InsiderTrade:
     filing = ctx.filing
+    value = (
+        txn.shares * txn.price_per_share
+        if txn.shares is not None and txn.price_per_share is not None
+        else txn.transaction_total_value
+    )
     return InsiderTrade(
         ticker=ctx.ticker,
         company=ctx.company,
         insider_name=ctx.insider_name,
         insider_title=ctx.insider_title,
-        trade_type=_trade_type(txn.category),  # type: ignore[arg-type]
+        trade_type="Other"
+        if isinstance(txn, DerivativeTransaction)
+        else _trade_type(txn.category),  # type: ignore[arg-type]
         trade_date=txn.transaction_date,
         filing_date=ctx.index_row.filing_date,
         shares=_finite_float(txn.shares),
         price=_finite_float(txn.price_per_share),
-        value=_finite_float(txn.shares * txn.price_per_share)
-        if txn.shares is not None and txn.price_per_share is not None
-        else 0.0,
+        value=_finite_float(value),
         shares_owned_after=_finite_float(txn.shares_owned_following),
+        shares_missing=txn.shares is None,
+        price_missing=txn.price_per_share is None,
+        value_missing=value is None,
+        shares_owned_after_missing=txn.shares_owned_following is None,
         source="sec_edgar",
         edgar_url=ctx.edgar_url,
         accession_number=filing.accession_number or "",

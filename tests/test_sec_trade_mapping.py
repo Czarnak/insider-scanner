@@ -235,9 +235,9 @@ class TestCategoryToTradeType:
     @pytest.mark.parametrize(
         "category, expected",
         [
-            ("purchase", "Buy"),
-            ("sale", "Sell"),
-            ("exercise", "Exercise"),
+            ("purchase", "Other"),
+            ("sale", "Other"),
+            ("exercise", "Other"),
             ("award", "Other"),
             ("other", "Other"),
         ],
@@ -254,6 +254,77 @@ class TestCategoryToTradeType:
 
 
 class TestNumericFields:
+    def test_missing_fields_differ_from_reported_zero(self) -> None:
+        missing = _non_deriv(
+            shares=None, price_per_share=None, shares_owned_following=None
+        )
+        zero = _non_deriv(
+            shares=Decimal(0),
+            price_per_share=Decimal(0),
+            shares_owned_following=Decimal(0),
+        )
+        trades = ownership_filing_to_trades(
+            _filing(non_derivs=(missing, zero)), _INDEX_ROW
+        )
+        for flag in (
+            "shares_missing",
+            "price_missing",
+            "value_missing",
+            "shares_owned_after_missing",
+        ):
+            assert getattr(trades[0], flag) is True
+            assert getattr(trades[1], flag) is False
+        assert trades[0].value == trades[1].value == 0
+
+    @pytest.mark.parametrize("total", [Decimal("1234.50"), Decimal(0)])
+    def test_reported_total_value_is_not_a_share_quantity(self, total) -> None:
+        txn = replace(
+            _non_deriv(shares=None, price_per_share=None),
+            transaction_total_value=total,
+            value_owned_following=Decimal("9000"),
+        )
+        trade = ownership_filing_to_trades(_filing(non_derivs=(txn,)), _INDEX_ROW)[0]
+        assert trade.value == float(total)
+        assert trade.value_missing is False
+        assert trade.shares_missing is True
+        assert trade.price_missing is True
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["transaction_total_value"] == str(total)
+        assert detail["value_owned_following"] == "9000"
+
+    def test_derivative_underlying_value_keeps_its_unit(self) -> None:
+        txn = replace(
+            _deriv(underlying_security_shares=None),
+            underlying_security_value=Decimal("7000"),
+        )
+        trade = ownership_filing_to_trades(_filing(derivs=(txn,)), _INDEX_ROW)[0]
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["underlying_security_shares"] is None
+        assert detail["underlying_security_value"] == "7000"
+        assert detail["category"] == "exercise"
+        assert trade.direction.value == "Other"
+
+    def test_price_footnote_remains_identifiable_and_resolvable(self) -> None:
+        txn = replace(
+            _non_deriv(price_per_share=None, footnote_ids=("F1", "F2")),
+            price_footnote_ids=("F2",),
+        )
+        trade = ownership_filing_to_trades(
+            _filing(
+                non_derivs=(txn,),
+                footnotes=(
+                    Footnote("F1", "Ownership"),
+                    Footnote("F2", "Weighted average"),
+                ),
+            ),
+            _INDEX_ROW,
+        )[0]
+        detail = json.loads(trade.sec_detail_json)
+        assert detail["price_footnote_ids"] == ["F2"]
+        assert detail["footnotes"]["F2"] == "Weighted average"
+        assert detail["transaction_price_per_share"] is None
+        assert trade.price_missing and trade.value_missing
+
     def test_value_equals_shares_times_price(self) -> None:
         nd = _non_deriv(shares=Decimal(100), price_per_share=Decimal(50))
         trades = ownership_filing_to_trades(_filing(non_derivs=(nd,)), _INDEX_ROW)
