@@ -343,6 +343,22 @@ def search_filings(
 # -----------------------------------------------------------------------
 
 
+def _read_cached_pdf(cache_path: Path) -> bytes | None:
+    """Return validated cached bytes, preserving their provenance for repairs."""
+    try:
+        content = cache_path.read_bytes()
+        _validate_pdf(content)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.warning(
+            "Invalid cached House PDF %s: %s; downloading again", cache_path, exc
+        )
+        return None
+    log.debug("PDF cache hit: %s", cache_path)
+    return content
+
+
 def fetch_ptr_pdf(
     doc_id: str, year: int, *, force: bool = False, session: HttpSession | None = None
 ) -> bytes:
@@ -358,16 +374,9 @@ def fetch_ptr_pdf(
     """
     cache_path = _pdf_cache_path(doc_id, year)
 
-    if cache_path.exists() and not force:
-        try:
-            content = cache_path.read_bytes()
-            _validate_pdf(content)
-        except (OSError, ValueError) as exc:
-            log.warning(
-                "Invalid cached House PDF %s: %s; downloading again", cache_path, exc
-            )
-        else:
-            log.debug("PDF cache hit: %s", cache_path)
+    if not force:
+        content = _read_cached_pdf(cache_path)
+        if content is not None:
             return content
 
     url = PTR_PDF_URL.format(year=year, doc_id=doc_id)
@@ -607,12 +616,16 @@ def _scrape_house_trades(
             progress_callback(i, total, f"Processing {official} ({doc_id})")
 
         try:
-            was_cached = _pdf_cache_path(doc_id, year).exists()
-            pdf_bytes = fetch_ptr_pdf(doc_id, year, session=session)
+            cached_pdf = _read_cached_pdf(_pdf_cache_path(doc_id, year))
+            pdf_bytes = (
+                cached_pdf
+                if cached_pdf is not None
+                else fetch_ptr_pdf(doc_id, year, force=True, session=session)
+            )
             try:
                 raw_transactions = parse_ptr_pdf(pdf_bytes, strict=True)
             except ValueError:
-                if not was_cached:
+                if cached_pdf is None:
                     raise
                 log.warning(
                     "Could not parse cached House PDF %s/%s; downloading once",

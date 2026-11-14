@@ -1015,3 +1015,34 @@ def test_pdf_extraction_error_can_be_distinguished_from_empty_result():
     with pytest.raises(ValueError, match="transaction extraction failed"):
         parse_ptr_pdf(b"not a PDF", strict=True)
     assert parse_ptr_pdf(SAMPLE_PDF, strict=True) == []
+
+
+@pytest.mark.parametrize("cached_bytes", [b"not a PDF", b"%PDF-1.4 truncated"])
+@responses.activate
+def test_house_corrupt_cache_repair_does_not_download_again_on_extraction_error(
+    tmp_path, monkeypatch, cached_bytes
+):
+    from insider_scanner.core import congress_house as house
+
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    cached = tmp_path / "2026" / "pdfs" / "20034001.pdf"
+    cached.parent.mkdir(parents=True)
+    cached.write_bytes(cached_bytes)
+    responses.add(
+        responses.GET, PTR_PDF_URL.format(year=2026, doc_id="20034001"), body=SAMPLE_PDF
+    )
+    with patch.object(
+        house, "parse_ptr_pdf", side_effect=ValueError("bad stream")
+    ) as parser:
+        assert (
+            house.scrape_house_trades(
+                official_name="Nancy Pelosi",
+                date_from=date(2026, 1, 1),
+                date_to=date(2026, 12, 31),
+            )
+            == []
+        )
+    assert parser.call_count == 1
+    assert len(responses.calls) == 1
+    assert cached.read_bytes() == SAMPLE_PDF
