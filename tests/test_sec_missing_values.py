@@ -89,3 +89,66 @@ def test_version_five_upgrade_preserves_numbers_keys_and_unknown_legacy_zeros(tm
         assert all(row[flag] is False for row in rows for flag in _MISSING_FLAGS)
     finally:
         engine.dispose()
+
+
+def test_version_five_upgrade_repairs_sec_semantics_without_changing_identity(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "legacy-sec-semantics.sqlite3")
+    try:
+        bootstrap_database(engine, migrations=MIGRATIONS[:5])
+        records = [
+            ("option-exercise", "sec_edgar", "Exercise", 1, " 320193 ", "123"),
+            ("option-purchase", "sec_edgar", "Buy", 1, "0000320193", "0000000123"),
+            ("stock-exercise", "sec_edgar", "Exercise", 0, "320193", "123"),
+            ("scraper", "openinsider", "Buy", 1, "320193", "123"),
+            ("invalid-cik", "sec_edgar", "Sell", 0, "bad123", "12345678901"),
+            ("unicode-cik", "sec_edgar", "Other", 0, "１２３", "  "),
+        ]
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO us_trades (canonical_key, ticker, source, trade_type, "
+                "is_derivative, cik_issuer, cik_insider, accession_number, sec_row_id, "
+                "shares, price, value) VALUES (?, 'TEST', ?, ?, ?, ?, ?, "
+                "'0000320193-26-000001', ?, 10, 2, 20)",
+                [(*record, f"row:{index}") for index, record in enumerate(records)],
+            )
+
+        bootstrap_database(engine)
+        with engine.connect() as connection:
+            rows = (
+                connection.execute(select(us_trades).order_by(us_trades.c.id))
+                .mappings()
+                .all()
+            )
+
+        assert [row["trade_type"] for row in rows] == [
+            "Other",
+            "Other",
+            "Exercise",
+            "Buy",
+            "Sell",
+            "Other",
+        ]
+        assert [(row["cik_issuer"], row["cik_insider"]) for row in rows] == [
+            ("0000320193", "0000000123"),
+            ("0000320193", "0000000123"),
+            ("0000320193", "0000000123"),
+            ("320193", "123"),
+            ("bad123", "12345678901"),
+            ("１２３", "  "),
+        ]
+        assert [row["id"] for row in rows] == [1, 2, 3, 4, 5, 6]
+        assert [row["canonical_key"] for row in rows] == [
+            "option-exercise",
+            "option-purchase",
+            "stock-exercise",
+            "scraper",
+            "invalid-cik",
+            "unicode-cik",
+        ]
+        assert [row["sec_row_id"] for row in rows] == [f"row:{i}" for i in range(6)]
+        assert all(row["accession_number"] == "0000320193-26-000001" for row in rows)
+        assert all(
+            (row["shares"], row["price"], row["value"]) == (10, 2, 20) for row in rows
+        )
+    finally:
+        engine.dispose()

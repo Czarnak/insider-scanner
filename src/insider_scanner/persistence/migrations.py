@@ -149,8 +149,8 @@ def _repair_unfinished_scan_coverage(connection: Connection) -> None:
     )
 
 
-def _add_sec_numeric_availability(connection: Connection) -> None:
-    """Preserve numbers while allowing new parses to distinguish missing values.
+def _preserve_sec_financial_meaning(connection: Connection) -> None:
+    """Add availability flags and repair SEC meaning supported by stored evidence.
 
     Old rows did not retain the raw numeric XML. Their zero values cannot be
     classified safely; retain the legacy meaning until the filing is reparsed.
@@ -167,6 +167,33 @@ def _add_sec_numeric_availability(connection: Connection) -> None:
     connection.exec_driver_sql(
         "ALTER TABLE us_trades ADD COLUMN shares_owned_after_missing BOOLEAN NOT NULL DEFAULT 0"
     )
+    connection.execute(
+        us_trades.update()
+        .where(us_trades.c.source == "sec_edgar", us_trades.c.is_derivative.is_(True))
+        .values(trade_type="Other")
+    )
+    rows = connection.execute(
+        select(us_trades.c.id, us_trades.c.cik_issuer, us_trades.c.cik_insider).where(
+            us_trades.c.source == "sec_edgar"
+        )
+    )
+    for row in rows:
+        repaired: dict[str, str] = {}
+        for field in ("cik_issuer", "cik_insider"):
+            original = row._mapping[field]
+            candidate = original.strip()
+            if (
+                1 <= len(candidate) <= 10
+                and candidate.isascii()
+                and candidate.isdigit()
+            ):
+                normalized = candidate.zfill(10)
+                if normalized != original:
+                    repaired[field] = normalized
+        if repaired:
+            connection.execute(
+                us_trades.update().where(us_trades.c.id == row.id).values(**repaired)
+            )
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -197,7 +224,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration(
         version=6,
-        name="add_sec_numeric_availability",
-        upgrade=_add_sec_numeric_availability,
+        name="preserve_sec_financial_meaning",
+        upgrade=_preserve_sec_financial_meaning,
     ),
 )
