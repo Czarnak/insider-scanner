@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
 import responses
 
 # Add scripts/ to path so we can import the module
@@ -454,3 +455,83 @@ class TestMergeAndSave:
         assert not out.exists()
         captured = capsys.readouterr()
         assert "DRY RUN" in captured.out
+
+
+@responses.activate
+def test_malformed_yaml_rows_do_not_leak_into_json_fallback():
+    responses.add(
+        responses.GET,
+        update_congress.FEDERAL_URL,
+        body=SAMPLE_YAML + "- name: {}\n  terms: []\n",
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        update_congress.FEDERAL_FALLBACK_URL,
+        json=[
+            {
+                "id": {"bioguide": "C000003"},
+                "name": {"first": "Carol", "last": "Lee"},
+                "terms": [{"type": "sen"}],
+            }
+        ],
+        status=200,
+    )
+    members = update_congress.fetch_federal_legislators()
+    assert [m["bioguide_id"] for m in members] == ["C000003"]
+
+
+def test_failed_federal_fetch_leaves_existing_file_unchanged(tmp_path, monkeypatch):
+    output = tmp_path / "members.json"
+    output.write_text("existing user data", encoding="utf-8")
+    monkeypatch.setattr(update_congress, "fetch_federal_legislators", list)
+    assert update_congress.main(["--output", str(output)]) == 1
+    assert output.read_text(encoding="utf-8") == "existing user data"
+
+
+def test_smaller_federal_result_is_rejected(tmp_path):
+    output = tmp_path / "members.json"
+    previous = [{"name": f"Member {i}", "level": "federal"} for i in range(10)]
+    original = json.dumps(previous)
+    output.write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError, match="much smaller"):
+        update_congress.merge_and_save([previous[0]], [], output)
+    assert output.read_text(encoding="utf-8") == original
+
+
+def test_federal_only_update_retains_existing_state_members(tmp_path):
+    output = tmp_path / "members.json"
+    state = {"name": "Rivera Carlos", "level": "state", "state": "CA"}
+    output.write_text(json.dumps([state]), encoding="utf-8")
+    federal = {"name": "Smith Alice", "level": "federal", "state": "CA"}
+    update_congress.merge_and_save([federal], [], output)
+    assert state in json.loads(output.read_text(encoding="utf-8"))
+
+
+def test_atomic_publish_failure_keeps_original_file(tmp_path, monkeypatch):
+    output = tmp_path / "members.json"
+    output.write_text("[]", encoding="utf-8")
+    from insider_scanner.utils import atomic_file
+
+    def fail_replace(*_args):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(atomic_file.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated"):
+        update_congress.merge_and_save(
+            [{"name": "Smith Alice", "level": "federal"}], [], output
+        )
+    assert output.read_text(encoding="utf-8") == "[]"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+def test_output_defaults_to_runtime_and_explicit_seed(monkeypatch):
+    member = {"name": "Smith Alice", "level": "federal"}
+    monkeypatch.setattr(update_congress, "fetch_federal_legislators", lambda: [member])
+    outputs = []
+    monkeypatch.setattr(
+        update_congress, "merge_and_save", lambda f, s, path, **kw: outputs.append(path)
+    )
+    assert update_congress.main(["--no-committees"]) == 0
+    assert update_congress.main(["--no-committees", "--update-seed"]) == 0
+    assert outputs == [update_congress.CONGRESS_FILE, update_congress.SEED_OUTPUT]

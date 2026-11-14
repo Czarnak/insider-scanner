@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update data/congress_members.json with current legislators.
+"""Update the runtime Congress member list with current legislators.
 
 Federal legislators are fetched from the unitedstates/congress-legislators
 GitHub repository (public domain, maintained by civic tech community).
@@ -32,10 +32,14 @@ import sys
 from pathlib import Path
 
 import requests
+import yaml
 
 # Add project root to path so we can import project modules
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root / "src"))
+
+from insider_scanner.utils.atomic_file import atomic_write_bytes
+from insider_scanner.utils.config import CONGRESS_FILE
 
 FEDERAL_URL = (
     "https://raw.githubusercontent.com/unitedstates/"
@@ -55,7 +59,15 @@ MEMBERSHIP_URL = (
 )
 OPENSTATES_PEOPLE_URL = "https://v3.openstates.org/people"
 
-DEFAULT_OUTPUT = _project_root / "data" / "congress_members.json"
+DEFAULT_OUTPUT = CONGRESS_FILE
+SEED_OUTPUT = (
+    _project_root
+    / "src"
+    / "insider_scanner"
+    / "resources"
+    / "seeds"
+    / "congress_members.json"
+)
 
 
 # -----------------------------------------------------------------------
@@ -154,8 +166,6 @@ def fetch_committees() -> dict[str, str]:
         resp = requests.get(COMMITTEES_URL, timeout=30)
         resp.raise_for_status()
 
-        import yaml
-
         raw = yaml.safe_load(resp.text)
 
         committees = {}
@@ -187,8 +197,6 @@ def fetch_committee_membership() -> dict[str, list[str]]:
         print("Fetching committee membership...")
         resp = requests.get(MEMBERSHIP_URL, timeout=30)
         resp.raise_for_status()
-
-        import yaml
 
         raw = yaml.safe_load(resp.text)
 
@@ -264,94 +272,50 @@ def enrich_with_committees(
 # -----------------------------------------------------------------------
 
 
+def _member_from_legislator(person: dict) -> dict:
+    """Build one federal member identically for both supported source formats."""
+    name = person["name"]
+    term = person["terms"][-1]
+    first, last = name["first"].strip(), name["last"].strip()
+    if not first or not last or term["type"] not in {"sen", "rep"}:
+        raise ValueError("Invalid federal member identity")
+    return {
+        "name": f"{last} {first}",
+        "first_name": first,
+        "last_name": last,
+        "official_name": name.get("official_full") or f"{first} {last}",
+        "state": term.get("state", ""),
+        "chamber": "Senate" if term["type"] == "sen" else "House",
+        "party": term.get("party", ""),
+        "level": "federal",
+        "bioguide_id": person["id"]["bioguide"],
+    }
+
+
 def fetch_federal_legislators() -> list[dict]:
-    """Fetch current federal legislators from the unitedstates project.
-
-    Returns a list of dicts with keys: name, state, chamber, party, level,
-    bioguide_id, first_name, last_name.
-    """
-    members = []
-
-    # Try YAML first (more commonly used format)
-    try:
-        print("Fetching federal legislators from GitHub (YAML)...")
-        resp = requests.get(FEDERAL_URL, timeout=30)
-        resp.raise_for_status()
-
-        import yaml
-
-        raw = yaml.safe_load(resp.text)
-
-        for person in raw:
-            latest_term = person.get("terms", [{}])[-1]
-            name = person.get("name", {})
-
-            last = name.get("last", "")
-            first = name.get("first", "")
-            official_full = name.get("official_full", f"{first} {last}")
-
-            # Use "Last First" format for matching consistency
-            display_name = f"{last} {first}"
-
-            chamber_raw = latest_term.get("type", "")
-            chamber = "Senate" if chamber_raw == "sen" else "House"
-
-            members.append(
-                {
-                    "name": display_name,
-                    "first_name": first,
-                    "last_name": last,
-                    "official_name": official_full,
-                    "state": latest_term.get("state", ""),
-                    "chamber": chamber,
-                    "party": latest_term.get("party", ""),
-                    "level": "federal",
-                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
-                }
-            )
-
-        print(f"  Found {len(members)} federal legislators")
-        return members
-
-    except Exception as exc:  # noqa: BLE001 - any YAML source failure tries the JSON fallback
-        print(f"  YAML fetch failed: {exc}")
-
-    # Fallback: try JSON format
-    try:
-        print("  Trying JSON fallback...")
-        resp = requests.get(FEDERAL_FALLBACK_URL, timeout=30)
-        resp.raise_for_status()
-
-        raw = resp.json()
-        for person in raw:
-            latest_term = person.get("terms", [{}])[-1]
-            name = person.get("name", {})
-            last = name.get("last", "")
-            first = name.get("first", "")
-            display_name = f"{last} {first}"
-            chamber_raw = latest_term.get("type", "")
-            chamber = "Senate" if chamber_raw == "sen" else "House"
-
-            members.append(
-                {
-                    "name": display_name,
-                    "first_name": first,
-                    "last_name": last,
-                    "official_name": name.get("official_full", f"{first} {last}"),
-                    "state": latest_term.get("state", ""),
-                    "chamber": chamber,
-                    "party": latest_term.get("party", ""),
-                    "level": "federal",
-                    "bioguide_id": person.get("id", {}).get("bioguide", ""),
-                }
-            )
-
-        print(f"  Found {len(members)} federal legislators (JSON fallback)")
-        return members
-
-    except Exception as exc:  # noqa: BLE001 - isolate failure of the fallback source
-        print(f"  JSON fallback also failed: {exc}")
-        return []
+    """Return a complete validated source, or [] if neither source succeeds."""
+    for url, label in ((FEDERAL_URL, "YAML"), (FEDERAL_FALLBACK_URL, "JSON")):
+        try:
+            print(f"Fetching federal legislators from GitHub ({label})...")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            raw = yaml.safe_load(response.text) if label == "YAML" else response.json()
+            if not isinstance(raw, list) or not raw:
+                raise ValueError("Federal source is empty or is not a list")
+            # Build a fresh list so a malformed YAML row cannot leak into fallback.
+            members = [_member_from_legislator(person) for person in raw]
+            print(f"  Found {len(members)} federal legislators")
+            return members
+        except (
+            requests.RequestException,
+            yaml.YAMLError,
+            ValueError,
+            KeyError,
+            TypeError,
+            IndexError,
+        ):
+            print(f"  {label} source failed validation or could not be fetched")
+    return []
 
 
 # -----------------------------------------------------------------------
@@ -466,7 +430,25 @@ def merge_and_save(
     dry_run: bool = False,
 ) -> None:
     """Merge federal + state lists and write to JSON."""
-    combined = federal + state
+    if not federal:
+        raise ValueError("Refusing to replace the member list without federal members")
+    previous = []
+    if output_path.exists():
+        previous = json.loads(output_path.read_text(encoding="utf-8"))
+        if not isinstance(previous, list) or any(
+            not isinstance(m, dict) for m in previous
+        ):
+            raise ValueError(
+                "Existing member list is invalid; refusing to overwrite it"
+            )
+        old_federal = sum(m.get("level", "federal") == "federal" for m in previous)
+        if len(federal) < old_federal * 0.8:
+            raise ValueError("Federal result is much smaller than the existing list")
+    # A federal-only refresh must retain the user's previously fetched state data.
+    retained_state = (
+        [m for m in previous if m.get("level") == "state"] if not state else []
+    )
+    combined = federal + state + retained_state
 
     # Sort by level (federal first), then state, then name
     combined.sort(
@@ -522,8 +504,9 @@ def merge_and_save(
             print(f"  ... and {len(deduped) - 20} more")
         return
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(deduped, indent=2), encoding="utf-8")
+    atomic_write_bytes(
+        output_path, (json.dumps(deduped, indent=2) + "\n").encode("utf-8")
+    )
     print(f"Saved to: {output_path}")
 
 
@@ -532,7 +515,7 @@ def merge_and_save(
 # -----------------------------------------------------------------------
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Update congress_members.json with current legislators.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -549,7 +532,7 @@ Examples:
         "-o",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Output JSON file path (default: data/congress_members.json)",
+        help="Output JSON file path (default: application runtime member list)",
     )
     parser.add_argument(
         "--include-state",
@@ -566,14 +549,22 @@ Examples:
         action="store_true",
         help="Print results without saving to file",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--update-seed",
+        action="store_true",
+        help="Update the authoritative packaged seed instead of the runtime file",
+    )
+    args = parser.parse_args(argv)
+    if args.update_seed:
+        if args.output != DEFAULT_OUTPUT:
+            parser.error("--update-seed cannot be combined with --output")
+        args.output = SEED_OUTPUT
 
     # Fetch federal
     federal = fetch_federal_legislators()
     if not federal:
-        print(
-            "WARNING: Could not fetch federal legislators. Check internet connection."
-        )
+        print("ERROR: Could not fetch federal legislators; no file was changed.")
+        return 1
 
     # Enrich with committee data (unless skipped)
     if not args.no_committees and federal:
@@ -598,8 +589,13 @@ Examples:
         else:
             state = fetch_state_legislators(api_key)
 
-    merge_and_save(federal, state, args.output, dry_run=args.dry_run)
+    try:
+        merge_and_save(federal, state, args.output, dry_run=args.dry_run)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: Member update was not saved: {exc}")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
