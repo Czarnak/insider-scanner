@@ -44,7 +44,7 @@ def test_check_cli_validates_help_output(monkeypatch: pytest.MonkeyPatch) -> Non
     assert calls == [
         (
             [cli_path, "--help"],
-            {"capture_output": True, "text": True},
+            {"check": False, "capture_output": True, "text": True},
         )
     ]
 
