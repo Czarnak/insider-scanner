@@ -53,41 +53,32 @@ from insider_scanner.gui.theme.tokens import (
 )
 
 __all__ = [
-    # Core types
-    "ThemeMode",
-    "ThemePalette",
-    # Palette instances
-    "LIGHT",
+    "CONTROL_MIN_HEIGHT",
     "DARK",
-    # Token metadata
-    "REQUIRED_TOKEN_GROUPS",
-    # Stylesheet
-    "build_stylesheet",
-    # Manager
-    "ThemeManager",
-    "get_theme_manager",
-    "reset_theme_manager",
-    # Font stacks
-    "SANS_STACK",
-    "MONO_STACK",
-    # Type scale
-    "FONT_SIZE_SM",
     "FONT_SIZE_BASE",
     "FONT_SIZE_LG",
+    "FONT_SIZE_SM",
     "FONT_SIZE_XL",
-    # Spacing / radii / layout
-    "SPACING",
+    "IDENTIFIER_COLS",
+    "LIGHT",
+    "MONO_STACK",
+    "NUMERIC_COLS",
     "RADIUS_INPUT",
     "RADIUS_PANEL",
     "RADIUS_PILL",
+    "REQUIRED_TOKEN_GROUPS",
     "ROW_HEIGHT",
-    "CONTROL_MIN_HEIGHT",
+    "SANS_STACK",
+    "SPACING",
     "TARGET_HEIGHT",
-    # Table/cell helpers
-    "NUMERIC_COLS",
-    "IDENTIFIER_COLS",
     "TEXT_COLS",
+    "ThemeManager",
+    "ThemeMode",
+    "ThemePalette",
+    "build_stylesheet",
+    "cell_foreground",
     "column_alignment",
     "column_is_monospace",
-    "cell_foreground",
+    "get_theme_manager",
+    "reset_theme_manager",
 ]

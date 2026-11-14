@@ -312,10 +312,13 @@ class TestPackagedSeeds:
                         observed_partial_files.append(target)
                 time.sleep(0.001)
 
-        with patch(
-            "insider_scanner.utils.config.shutil.copyfileobj",
-            side_effect=slow_copy,
-        ), ThreadPoolExecutor(max_workers=9) as executor:
+        with (
+            patch(
+                "insider_scanner.utils.config.shutil.copyfileobj",
+                side_effect=slow_copy,
+            ),
+            ThreadPoolExecutor(max_workers=9) as executor,
+        ):
             writers = [executor.submit(ensure_dirs, paths) for _ in range(8)]
             assert copy_started.wait(timeout=5)
             observer = executor.submit(observe_published_files)

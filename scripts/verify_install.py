@@ -39,6 +39,7 @@ def check_cli() -> None:
         raise RuntimeError("insider-scanner-cli is not installed beside this Python")
     result = subprocess.run(
         [cli_path, "--help"],
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -81,17 +82,19 @@ def check_resources() -> None:
         [
             sys.executable,
             "-c",
-            "from importlib.resources import files\n"
-            "seeds = files('insider_scanner.resources.seeds')\n"
-            "names = (\n"
-            "    'congress_members.json',\n"
-            "    'tickers_watchlist.txt',\n"
-            "    'eu_watchlist.txt',\n"
-            ")\n"
-            "missing = [name for name in names if not (seeds / name).is_file()]\n"
-            "if missing:\n"
-            "    raise SystemExit(f'missing packaged seeds: {missing}')\n"
-            "print('seeds ok')\n",
+            (
+                "from importlib.resources import files\n"
+                "seeds = files('insider_scanner.resources.seeds')\n"
+                "names = (\n"
+                "    'congress_members.json',\n"
+                "    'tickers_watchlist.txt',\n"
+                "    'eu_watchlist.txt',\n"
+                ")\n"
+                "missing = [name for name in names if not (seeds / name).is_file()]\n"
+                "if missing:\n"
+                "    raise SystemExit(f'missing packaged seeds: {missing}')\n"
+                "print('seeds ok')\n"
+            ),
         ],
         check=True,
     )
@@ -103,16 +106,18 @@ def check_fonts() -> None:
         [
             sys.executable,
             "-c",
-            "from importlib.resources import files\n"
-            "fonts = files('insider_scanner.resources.fonts')\n"
-            "names = (\n"
-            "    'Inter-Regular.ttf',\n"
-            "    'JetBrainsMono-Regular.ttf',\n"
-            ")\n"
-            "missing = [name for name in names if not (fonts / name).is_file()]\n"
-            "if missing:\n"
-            "    raise SystemExit(f'missing packaged fonts: {missing}')\n"
-            "print('fonts ok')\n",
+            (
+                "from importlib.resources import files\n"
+                "fonts = files('insider_scanner.resources.fonts')\n"
+                "names = (\n"
+                "    'Inter-Regular.ttf',\n"
+                "    'JetBrainsMono-Regular.ttf',\n"
+                ")\n"
+                "missing = [name for name in names if not (fonts / name).is_file()]\n"
+                "if missing:\n"
+                "    raise SystemExit(f'missing packaged fonts: {missing}')\n"
+                "print('fonts ok')\n"
+            ),
         ],
         check=True,
     )

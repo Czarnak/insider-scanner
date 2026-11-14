@@ -44,8 +44,7 @@ def load_application_fonts() -> list[str]:
             data = entry.read_bytes()
             font_id = QFontDatabase.addApplicationFontFromData(data)
             if font_id >= 0:
-                for family in QFontDatabase.applicationFontFamilies(font_id):
-                    families.append(family)
+                families.extend(QFontDatabase.applicationFontFamilies(font_id))
             else:
                 _log.warning("Qt rejected font file: %s", name)
         except Exception as exc:  # noqa: BLE001

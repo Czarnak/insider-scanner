@@ -339,7 +339,7 @@ def _import_file(
             errors += 1
             messages.append(f"record {index}: invalid_record")
             continue
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - isolate failures from persistence adapters per record
             _log_import_error(
                 "Legacy record persistence failed",
                 error,

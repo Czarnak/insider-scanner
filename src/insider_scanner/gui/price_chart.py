@@ -13,6 +13,9 @@ from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
+from insider_scanner.utils.logging import get_logger
+
+_log = get_logger("gui.price_chart")
 
 
 @dataclass(frozen=True)
@@ -132,7 +135,7 @@ class PriceChartWidget(QWidget):
                 if axis is not None:
                     axis.setPen(pg.mkPen(colors.axis))
             except Exception:  # noqa: BLE001 — cosmetic only
-                pass
+                _log.debug("Could not style chart axis %s", axis_name, exc_info=True)
 
     def _apply_palette(self, palette: ThemePalette) -> None:
         """Recompute colors and re-pen all themed chart elements."""

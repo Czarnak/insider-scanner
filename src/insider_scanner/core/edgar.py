@@ -110,7 +110,7 @@ def resolve_cik_from_json(ticker: str, use_cache: bool = True) -> str | None:
             use_sec_agent=True,
         )
         data = json.loads(text)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - retain the resolver fallback across fetch and cache failures
         log.warning("company_tickers.json fetch failed: %s", exc)
         return None
 
@@ -161,7 +161,7 @@ def _resolve_cik_html(ticker: str, use_cache: bool = True) -> str | None:
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=86400, use_sec_agent=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - retain the optional HTML resolver fallback
         log.warning("CIK HTML lookup failed for %s: %s", ticker, exc)
         return None
 
@@ -236,7 +236,7 @@ def fetch_company_info(cik: str, use_cache: bool = True) -> dict:
     try:
         text = fetch_url(url, cache_dir=cache_dir, cache_ttl=86400, use_sec_agent=True)
         return json.loads(text)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - retain the optional company-info fallback
         log.warning("Company info fetch failed for CIK %s: %s", cik, exc)
         return {}
 

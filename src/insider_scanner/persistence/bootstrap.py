@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from itertools import pairwise
 
 from sqlalchemy import insert, select
 from sqlalchemy.engine import Engine
@@ -22,7 +23,7 @@ def _validate_migrations(migrations: Sequence[Migration]) -> None:
             raise PersistenceError(f"Migrations contain duplicate version {version}")
         seen.add(version)
 
-    if any(current < previous for previous, current in zip(versions, versions[1:])):
+    if any(current < previous for previous, current in pairwise(versions)):
         raise PersistenceError(
             f"Migration versions must be strictly increasing; got {versions}"
         )

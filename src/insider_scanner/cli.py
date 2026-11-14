@@ -808,7 +808,7 @@ def run(
     if services is not None:
         try:
             services.close()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - report shutdown failure without losing command status
             log.error(
                 "CLI service shutdown failed: exception=%s",
                 type(error).__name__,

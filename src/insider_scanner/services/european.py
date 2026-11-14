@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from typing import AbstractSet
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.persistence.mappings import european_canonical_key

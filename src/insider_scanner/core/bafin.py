@@ -248,7 +248,7 @@ def _fetch_csv_export(
         text = resp.content.decode("utf-8-sig", errors="replace")
         reader = csv.DictReader(io.StringIO(text), delimiter=";")
         return [row for row in reader]
-    except Exception as exc:
+    except csv.Error as exc:
         logger.warning("BaFin CSV parse error: %s", exc)
         return []
 
@@ -356,9 +356,9 @@ def _map_csv_rows(csv_rows: list[dict], isin: str) -> list[dict]:
             if k in row:
                 return row[k].strip()
             # Case-insensitive fallback
-            for rk in row:
+            for rk, value in row.items():
                 if rk.strip().lower() == k.lower():
-                    return row[rk].strip()
+                    return value.strip()
         return default
 
     mapped = []

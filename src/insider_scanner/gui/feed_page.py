@@ -80,10 +80,10 @@ class FeedTableModel(QAbstractTableModel):
         self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
         get_theme_manager().paletteChanged.connect(self._on_palette_changed)
 
-    def rowCount(self, parent=QModelIndex()) -> int:
+    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: B008 - Qt uses an immutable invalid index
         return 0 if parent.isValid() else len(self._records)
 
-    def columnCount(self, parent=QModelIndex()) -> int:
+    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: B008 - Qt uses an immutable invalid index
         return 0 if parent.isValid() else len(_COLUMNS)
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
@@ -413,7 +413,7 @@ class FeedPageWidget(QWidget):
             self.table.horizontalHeader().restoreState(
                 QByteArray(decode_column_layout(text))
             )
-        except Exception:
+        except (ValueError, TypeError, RuntimeError):
             log.warning("Could not restore column layout: corrupt or invalid blob")
 
     # ------------------------------------------------------------------

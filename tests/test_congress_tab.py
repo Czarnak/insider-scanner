@@ -24,23 +24,23 @@ from insider_scanner.gui.congress_tab import (
 
 def _make_trade(**overrides) -> CongressTrade:
     """Create a CongressTrade with sensible defaults, accepting overrides."""
-    defaults = dict(
-        official_name="Pelosi Nancy",
-        chamber="House",
-        filing_date=date(2025, 3, 15),
-        doc_id="doc123",
-        source_url="https://example.com/ptr/123",
-        trade_date=date(2025, 3, 10),
-        asset_description="Apple Inc - Common Stock (AAPL)",
-        ticker="AAPL",
-        trade_type="Purchase",
-        owner="Spouse",
-        amount_range="$15,001 - $50,000",
-        amount_low=15001.0,
-        amount_high=50000.0,
-        comment="",
-        source="house",
-    )
+    defaults = {
+        "official_name": "Pelosi Nancy",
+        "chamber": "House",
+        "filing_date": date(2025, 3, 15),
+        "doc_id": "doc123",
+        "source_url": "https://example.com/ptr/123",
+        "trade_date": date(2025, 3, 10),
+        "asset_description": "Apple Inc - Common Stock (AAPL)",
+        "ticker": "AAPL",
+        "trade_type": "Purchase",
+        "owner": "Spouse",
+        "amount_range": "$15,001 - $50,000",
+        "amount_low": 15001.0,
+        "amount_high": 50000.0,
+        "comment": "",
+        "source": "house",
+    }
     defaults.update(overrides)
     return CongressTrade(**defaults)
 

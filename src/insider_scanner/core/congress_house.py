@@ -141,7 +141,7 @@ def ensure_house_index(year: int, *, force: bool = False) -> Path:
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         for name in zf.namelist():
             # Extract only the FD files (XML + TXT)
-            if name.endswith("FD.xml") or name.endswith("FD.txt"):
+            if name.endswith(("FD.xml", "FD.txt")):
                 zf.extract(name, HOUSE_DISCLOSURES_DIR)
                 log.info("Extracted %s", name)
 
@@ -172,7 +172,7 @@ def refresh_all_indexes(*, years: list[int] | None = None) -> dict[int, Path]:
         try:
             path = ensure_house_index(year, force=True)
             results[year] = path
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate a failed year from the refresh batch
             log.warning("Failed to refresh index for %d: %s", year, exc)
 
     return results
@@ -183,7 +183,7 @@ def refresh_current_year() -> Path | None:
     year = date.today().year
     try:
         return ensure_house_index(year, force=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - an optional refresh must retain the existing index
         log.warning("Failed to refresh current year index: %s", exc)
         return None
 
@@ -440,7 +440,7 @@ def parse_ptr_pdf(pdf_bytes: bytes) -> list[dict]:
                         if tx and tx.get("asset"):
                             transactions.append(tx)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - PDF backends raise several unrelated exception types
         log.warning("PDF parse error: %s", exc)
         return []
 
@@ -548,7 +548,7 @@ def scrape_house_trades(
     for year in years:
         try:
             ensure_house_index(year)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate a failed year from the scan
             log.warning("Could not get index for %d: %s", year, exc)
             continue
 
@@ -580,7 +580,7 @@ def scrape_house_trades(
         try:
             pdf_bytes = fetch_ptr_pdf(doc_id, year)
             raw_transactions = parse_ptr_pdf(pdf_bytes)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate a failed filing from the scan
             log.warning("Failed to process PDF %s/%s: %s", year, doc_id, exc)
             continue
 

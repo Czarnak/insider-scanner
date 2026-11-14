@@ -19,9 +19,12 @@ SQLITE_IMMEDIATE_OPTION = "sqlite_begin_immediate"
 @contextmanager
 def immediate_transaction(engine: Engine) -> Iterator[Connection]:
     """Serialize a SQLite read-modify-write transaction before its first read."""
-    with engine.connect().execution_options(
-        **{SQLITE_IMMEDIATE_OPTION: True}
-    ) as connection, connection.begin():
+    with (
+        engine.connect().execution_options(
+            **{SQLITE_IMMEDIATE_OPTION: True}
+        ) as connection,
+        connection.begin(),
+    ):
         yield connection
 
 

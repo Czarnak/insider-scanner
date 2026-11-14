@@ -66,7 +66,7 @@ def scrape_ticker(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=3600)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
         log.warning("Failed to fetch %s: %s", url, exc)
         return []
 
@@ -113,7 +113,7 @@ def scrape_latest(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=1800)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
         log.warning("Failed to fetch latest: %s", exc)
         return []
 
@@ -188,7 +188,7 @@ def parse_openinsider_html(html: str, ticker: str = "") -> list[InsiderTrade]:
         if len(cells) < 4:
             continue
 
-        def cell_text(key: str) -> str:
+        def cell_text(key: str, cells=cells) -> str:
             idx = col_map.get(key)
             if idx is not None and idx < len(cells):
                 return cells[idx].get_text(strip=True)

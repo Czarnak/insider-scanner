@@ -309,7 +309,7 @@ def _item_to_trade(
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - PDF backends raise several unrelated exception types
         logger.error("PDF parse error for %s: %s", doc_id, exc)
         return None
 

@@ -347,7 +347,7 @@ class TestCacheReuseAcrossPipeline:
 
     def test_second_call_returns_from_cache(self, tmp_path: Path) -> None:
         row = _make_apple_row()
-        client, transport = _make_stub_client(_fixture_bytes())
+        client, _transport = _make_stub_client(_fixture_bytes())
 
         # First call — cache miss.
         first, _ = _fetch_parse_promote(row, client=client, cache_root=tmp_path)
@@ -373,7 +373,7 @@ class TestCacheReuseAcrossPipeline:
         filing_first = _run_full_chain(row, client, tmp_path)
 
         # Re-use the same client — transport is only hit once (already cached).
-        client2, transport2 = _make_stub_client(_fixture_bytes())
+        client2, _transport2 = _make_stub_client(_fixture_bytes())
         # Pre-seed: first download to populate cache.
         _fetch_parse_promote(row, client=client2, cache_root=tmp_path)
         # Now second call is a true cache hit.

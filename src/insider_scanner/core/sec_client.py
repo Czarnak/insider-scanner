@@ -367,7 +367,7 @@ def _parse_retry_after(value: str | None) -> float | None:
 def _close_response(response: _SecResponse, url: str) -> None:
     try:
         response.close()
-    except Exception:
+    except Exception:  # noqa: BLE001 - closing must not mask the validated outcome
         _LOGGER.warning(
             "SEC diagnostic stage=response_close reason=close_failed url=%s",
             _safe_url_label(url),

@@ -45,7 +45,7 @@ def test_set_price_data_draws_one_line(chart):
     chart.set_price_data(bars)
     # exactly one price curve is present after setting data
     assert chart.price_curve is not None
-    xs, ys = chart.price_curve.getData()
+    _xs, ys = chart.price_curve.getData()
     assert list(ys) == [1.5, 1.8]
 
 

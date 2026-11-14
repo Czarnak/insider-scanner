@@ -137,7 +137,11 @@ class SecBackfillService:
 
                 reached_sink = [False]
 
-                def _sink(r: SecMasterIndexRow, filing: OwnershipFiling) -> None:
+                def _sink(
+                    r: SecMasterIndexRow,
+                    filing: OwnershipFiling,
+                    reached_sink: list[bool] = reached_sink,
+                ) -> None:
                     nonlocal upserts, mapping_failures
                     reached_sink[0] = True
                     try:

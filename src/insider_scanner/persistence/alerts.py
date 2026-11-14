@@ -11,7 +11,7 @@ All public store operations return **new** immutable ``AlertStore`` values.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -41,7 +41,7 @@ class AlertRule:
     """A named alert: a feed predicate plus an acknowledgement watermark."""
 
     name: str
-    criteria: FeedCriteria = FeedCriteria()
+    criteria: FeedCriteria = field(default_factory=FeedCriteria)
     watchlist: str | None = None
     enabled: bool = True
     last_seen_at: datetime | None = None

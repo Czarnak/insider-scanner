@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -100,7 +100,7 @@ class SecDailyIngestionSummary:
 class _RunState:
     """Mutable accumulators for one ingest run (never escapes the call)."""
 
-    upserts: UpsertResult = UpsertResult()
+    upserts: UpsertResult = field(default_factory=UpsertResult)
     mapping_failures: int = 0
 
 

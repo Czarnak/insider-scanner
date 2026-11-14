@@ -42,6 +42,7 @@ def test_typing_baseline_checks_new_modules_and_untyped_bodies(tmp_path):
             "--no-incremental",
             str(package),
         ],
+        check=False,
         cwd=tmp_path,
         capture_output=True,
         text=True,

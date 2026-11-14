@@ -30,6 +30,7 @@ def _run_pytest(tmp_path, source, *args):
             str(test_file),
             *args,
         ],
+        check=False,
         cwd=tmp_path,
         env=env,
         capture_output=True,

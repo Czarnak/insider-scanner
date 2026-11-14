@@ -132,7 +132,7 @@ def _freeze_media_types(media_types: object) -> frozenset[str]:
 
 def _collect_strings(values: object, label: str) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
-        raise ValueError(f"{label} must be a nonempty collection")
+        raise ValueError(f"{label} must be a nonempty collection")  # noqa: TRY004 - policy validation consistently raises ValueError
     collected = tuple(values)
     if not collected or any(not isinstance(value, str) for value in collected):
         raise ValueError(f"{label} must contain only strings")
@@ -195,7 +195,7 @@ def _freeze_resource_limits(
     limits: object,
 ) -> Mapping[SecResourceProfile, SecResourceLimits]:
     if not isinstance(limits, Mapping):
-        raise ValueError("resource profile limits must be a mapping")
+        raise ValueError("resource profile limits must be a mapping")  # noqa: TRY004 - policy validation consistently raises ValueError
     copied = dict(limits)
     if set(copied) != set(SecResourceProfile) or any(
         not isinstance(value, SecResourceLimits) for value in copied.values()

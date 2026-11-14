@@ -704,7 +704,7 @@ class TestCmdSecBackfill:
 
         class FakeService:
             def run(self, zp, *, confirm, ciks, cancelled=None, on_progress=None):
-                seen["run"] = dict(zip_path=zp, confirm=confirm, ciks=ciks)
+                seen["run"] = {"zip_path": zp, "confirm": confirm, "ciks": ciks}
                 from insider_scanner.services.sec_backfill import SecBackfillSummary
 
                 return SecBackfillSummary(10, 8, 5, 1, 2, 1, 0, 0)

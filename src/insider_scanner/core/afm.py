@@ -213,7 +213,7 @@ def scrape_afm_trades(
             resp = session.get(_API_URL, params=params, timeout=20)
             resp.raise_for_status()
             data = resp.json()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate a failed API page from the scan
             log.warning("AFM API request failed for %s (page %d): %s", isin, page, exc)
             break
 
@@ -246,7 +246,7 @@ def scrape_afm_trades(
             trade = _parse_record(record, isin)
             if trade:
                 trades.append(trade)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - isolate malformed source records
             log.debug("Failed to parse AFM record: %s — %s", record, exc)
 
     log.info("Extracted %d trades for ISIN %s from AFM", len(trades), isin)

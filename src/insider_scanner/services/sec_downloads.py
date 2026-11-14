@@ -226,9 +226,7 @@ def _process_date(
         )
         if not ok:
             any_sink_failure = True
-    if any_sink_failure:
-        return False
-    return True
+    return not any_sink_failure
 
 
 def process_filing_row(

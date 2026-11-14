@@ -64,7 +64,7 @@ def scrape_ticker(
 
     try:
         html = fetch_url(url, cache_dir=cache_dir, cache_ttl=3600)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - preserve the scraper's fetch fallback
         log.warning("Failed to fetch %s: %s", url, exc)
         return []
 
@@ -159,7 +159,7 @@ def parse_secform4_html(html: str, ticker: str = "") -> list[InsiderTrade]:
         if len(cells) < 5:
             continue
 
-        def _cell(key: str):
+        def _cell(key: str, cells=cells):
             """Return the <td> element for *key*, or None."""
             idx = col.get(key)
             if idx is not None and idx < len(cells):

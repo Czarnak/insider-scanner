@@ -81,10 +81,10 @@ class PandasTableModel(QAbstractTableModel):
         """Backward-compatible alias used by older tabs."""
         self.set_dataframe(df)
 
-    def rowCount(self, parent=QModelIndex()):
+    def rowCount(self, parent=QModelIndex()):  # noqa: B008 - Qt uses an immutable invalid index
         return len(self._df)
 
-    def columnCount(self, parent=QModelIndex()):
+    def columnCount(self, parent=QModelIndex()):  # noqa: B008 - Qt uses an immutable invalid index
         return len(self._df.columns)
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):

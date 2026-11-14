@@ -420,9 +420,12 @@ class TestEnsureHouseIndex:
 
         import requests as req
 
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ), pytest.raises(req.HTTPError):
+        with (
+            patch(
+                "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
+            ),
+            pytest.raises(req.HTTPError),
+        ):
             ensure_house_index(2099)
 
 
