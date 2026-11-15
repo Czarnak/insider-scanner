@@ -128,6 +128,7 @@ class SecBackfillService:
         outcomes: list[SecFilingOutcome] = []
         failed_accessions: set[str | None] = set()
         attempted: set[str] = set()
+        seen: set[str] = set()
         interrupted = False
         completed_members: list[int] = []
         retry_members: set[int] = set()
@@ -205,12 +206,15 @@ class SecBackfillService:
                     break
                 discovered_rows += 1
                 accession = meta.accession_number
-                if accession in attempted:
+                if accession in seen:
                     duplicates += 1
+                else:
+                    seen.add(accession)
+                    discovered += 1
+                if accession in attempted:
                     continue
-                attempted.add(accession)
-                discovered += 1
                 if ledger.is_terminal(accession):
+                    attempted.add(accession)
                     skipped_resume += 1
                     continue
                 try:
@@ -218,6 +222,7 @@ class SecBackfillService:
                 except SecBulkError:
                     skipped_metadata += 1
                     continue
+                attempted.add(accession)
                 if meta.member_index is not None:
                     accession_members[accession] = meta.member_index
                 try:
