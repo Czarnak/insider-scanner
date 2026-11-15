@@ -145,3 +145,80 @@ def test_feed_watch_cap_does_not_claim_success(qtbot, monkeypatch, tmp_path, war
     )
     assert warnings
     assert "added to watchlist" not in win.status_bar.currentMessage().lower()
+
+
+def test_rename_recovers_alert_reference_after_interrupted_save(
+    qtbot, monkeypatch, tmp_path
+):
+    import os
+    from pathlib import Path
+
+    from insider_scanner.persistence.alerts import save_alerts
+    from insider_scanner.persistence.watchlists import save_watchlists
+
+    save_watchlists(tmp_path / "watchlists.json", WatchlistStore().with_list("Tech"))
+    save_alerts(
+        tmp_path / "alerts.json",
+        AlertStore(rules=(AlertRule("Watching tech", watchlist="Tech"),)),
+    )
+    win = main_window.MainWindow(state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(win)
+    replace_file = os.replace
+
+    def fail_alert_save(source, target):
+        if Path(target).name == "alerts.json":
+            raise PermissionError("temporarily locked")
+        return replace_file(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", fail_alert_save)
+        patch.setattr(
+            "PySide6.QtWidgets.QInputDialog.getText",
+            lambda *a, **kw: ("Technology", True),
+        )
+        win.watchlist_page._rename_watchlist()
+    restarted = main_window.MainWindow(state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(restarted)
+    assert restarted.watchlist_page.store().names() == ("Technology",)
+    assert restarted.alerts_page.store().get("Watching tech").watchlist == "Technology"
+
+
+def test_failed_rename_journal_keeps_original_configuration(
+    qtbot, monkeypatch, tmp_path, warnings
+):
+    import os
+    from pathlib import Path
+
+    from insider_scanner.persistence.watchlists import save_watchlists
+
+    original = WatchlistStore().with_list("Tech")
+    save_watchlists(tmp_path / "watchlists.json", original)
+    win = main_window.MainWindow(state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(win)
+    replace_file = os.replace
+
+    def fail_journal_save(source, target):
+        if Path(target).name == "watchlist_rename.json":
+            raise PermissionError("cannot save journal")
+        return replace_file(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_journal_save)
+    monkeypatch.setattr(
+        "PySide6.QtWidgets.QInputDialog.getText", lambda *a, **kw: ("Technology", True)
+    )
+    win.watchlist_page._rename_watchlist()
+    assert win.watchlist_page.store() == original
+    assert win.watchlist_page.list_widget.currentItem().text() == "Tech"
+    assert warnings
+
+
+def test_unrecoverable_rename_blocks_startup_before_loading_partial_state(
+    qtbot, monkeypatch, tmp_path
+):
+    def fail_recovery(_data_dir):
+        raise PermissionError("locked rename files")
+
+    monkeypatch.setattr(main_window, "recover_watchlist_rename", fail_recovery)
+    with pytest.raises(main_window.MainWindowInitializationError, match="rename"):
+        win = main_window.MainWindow(state_path=tmp_path / "feed_state.json")
+        qtbot.addWidget(win)

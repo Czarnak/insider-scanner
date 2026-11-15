@@ -11,6 +11,8 @@ persist it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -51,10 +53,15 @@ class WatchlistPage(QWidget):
     feedSearchRequested = Signal(object)  # (text)
 
     def __init__(
-        self, store: WatchlistStore | None = None, parent: QWidget | None = None
+        self,
+        store: WatchlistStore | None = None,
+        parent: QWidget | None = None,
+        *,
+        rename_handler: Callable[[WatchlistStore, str, str], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._store: WatchlistStore = store or WatchlistStore()
+        self._rename_handler = rename_handler
         self._current_name: str | None = None
         self._current_entries: tuple[WatchEntry, ...] = ()
         self._build_ui()
@@ -239,6 +246,10 @@ class WatchlistPage(QWidget):
             new_store = self._store.renamed(old, new_name)
         except WatchlistError as exc:
             QMessageBox.warning(self, "Could not rename watchlist", str(exc))
+            return
+        if self._rename_handler is not None and not self._rename_handler(
+            new_store, old, new_name
+        ):
             return
         self._current_name = new_name
         self._apply(new_store)

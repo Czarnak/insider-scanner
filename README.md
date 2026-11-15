@@ -655,6 +655,9 @@ watchlists. The text file is retained; later edits belong in the Watchlists page
 A persisted migration marker prevents removed symbols from returning on restart.
 Renaming a list updates its alert references. Duplicate names (ignoring case) and
 full lists or rule stores show an error instead of silently dropping additions.
+Watchlist renames use a recovery journal so an interrupted save can finish on
+restart. If recovery cannot complete, startup reports the problem before loading
+partially updated configuration; restore data-folder access and restart.
 Alerts with malformed criteria or timestamps load disabled with an error shown
 on the Alerts page; recreate them from valid filters to enable matching again.
 Offset-less alert timestamps are interpreted as UTC.
