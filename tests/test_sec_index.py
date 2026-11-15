@@ -118,3 +118,18 @@ def test_ownership_row_with_blank_company_name_is_skipped() -> None:
     text = "320193|   |4|2026-06-15|edgar/data/320193/filing.txt"
 
     assert parse_master_index(text) == ()
+
+
+def test_accession_aliases_keep_first_valid_index_row() -> None:
+    text = "\n".join(
+        (
+            "320193|ISSUER|4|2026-06-15|edgar/data/320193/0000320193-26-000061.txt",
+            "999999|OWNER|4|2026-06-15|edgar/data/999999/0000320193-26-000061.TXT",
+            "999999|BAD ACCESSION|4|2026-06-15|edgar/data/999999/arbitrary.txt",
+        )
+    )
+
+    rows = parse_master_index(text)
+
+    assert len(rows) == 1
+    assert rows[0].company_name == "ISSUER"

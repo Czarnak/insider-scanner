@@ -73,7 +73,8 @@ def make_client(
 
 
 def expected_cache_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
-    digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
+    accession = row.archive_path.rsplit("/", 1)[-1][:-4]
+    digest = hashlib.sha256(accession.encode("ascii")).hexdigest()
     return cache_root / "validated-v1" / f"{digest}.filing"
 
 
@@ -121,6 +122,74 @@ def test_network_fetch_remains_memory_only_until_promotion(tmp_path: Path) -> No
     assert pending.content_path == expected_cache_path(row, tmp_path)
     assert pending.from_cache is False
     assert not (tmp_path / "validated-v1").exists()
+    transport.get.assert_called_once()
+
+
+def test_accession_cache_is_shared_by_related_cik_paths(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    client, transport = make_client(b"same filing")
+    issuer = make_row()
+    owner = replace(
+        issuer,
+        cik="0000999999",
+        archive_path="edgar/data/999999/0000320193-26-000061.txt",
+    )
+    pending = fetch_filing(issuer, client=client, cache_root=tmp_path)
+    promote_validated_filing(pending, cache_root=tmp_path)
+
+    alias = fetch_filing(owner, client=client, cache_root=tmp_path)
+
+    assert alias.from_cache
+    assert alias.content == b"same filing"
+    assert alias.content_path == pending.content_path
+    transport.get.assert_called_once()
+
+
+def test_legacy_path_cache_is_reused_and_promoted_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    row = make_row()
+    digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
+    legacy = tmp_path / "validated-v1" / f"{digest}.filing"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"existing validated filing")
+    client, transport = make_client()
+
+    pending = fetch_filing(row, client=client, cache_root=tmp_path)
+    downloaded = promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert pending.from_cache and downloaded.from_cache
+    assert downloaded.content_path == expected_cache_path(row, tmp_path)
+    assert downloaded.content_path.read_bytes() == legacy.read_bytes()
+    assert legacy.exists()
+    transport.get.assert_not_called()
+
+
+def test_cache_bypass_fetches_without_inspecting_cache_paths(tmp_path: Path) -> None:
+    from insider_scanner.core.sec_downloader import fetch_filing
+
+    root = tmp_path / "not-a-directory"
+    root.write_bytes(b"unrelated local file")
+    client, transport = make_client(b"network bytes")
+
+    with patch(
+        "insider_scanner.core.sec_downloader._validate_cache_root",
+        side_effect=AssertionError("cache filesystem must not be touched"),
+    ):
+        pending = fetch_filing(make_row(), client=client, cache_root=root, cache=False)
+
+    assert not pending.from_cache
+    assert pending.content == b"network bytes"
+    assert root.read_bytes() == b"unrelated local file"
     transport.get.assert_called_once()
 
 

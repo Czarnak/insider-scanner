@@ -11,7 +11,7 @@ from pathlib import Path
 from insider_scanner.core import edgar
 from insider_scanner.core._sec_paths import resolves_within
 from insider_scanner.core.sec_client import SecClient
-from insider_scanner.core.sec_index import SecMasterIndexRow
+from insider_scanner.core.sec_index import SecMasterIndexRow, filing_accession
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
@@ -80,22 +80,42 @@ def fetch_filing(
     *,
     client: SecClient,
     cache_root: Path,
+    cache: bool = True,
 ) -> PendingSecFiling:
-    """Return trusted cache bytes or bounded network bytes without writing them."""
-    _validate_inputs(row, client, cache_root)
+    """Return trusted cache bytes or bounded network bytes without writing them.
+
+    ``cache=False`` bypasses all cache filesystem work for durable bulk ingestion.
+    """
+    _validate_inputs(row, client, cache_root, cache=cache)
     archive_url = edgar.build_filing_archive_url(row.archive_path)
     content_path = _content_path(row, cache_root)
-    _validate_content_path(content_path, cache_root)
     limits = client.policy.limits_for(SecResourceProfile.FILING_DOCUMENT)
-    cached = _read_fresh_cache(
-        content_path,
-        client.policy.cache_freshness_seconds,
-        limits.max_bytes,
-    )
-    if cached is not None:
-        return PendingSecFiling(
-            row, archive_url, cached, content_path, True, limits.max_bytes
+    if cache:
+        _validate_content_path(content_path, cache_root)
+        cached = _read_fresh_cache(
+            content_path,
+            client.policy.cache_freshness_seconds,
+            limits.max_bytes,
         )
+        if cached is None:
+            # Existing installations used the entire CIK-specific archive path.
+            # Reuse those bytes, retaining the original user cache file.
+            legacy_path = _legacy_content_path(row, cache_root)
+            if legacy_path != content_path:
+                _validate_content_path(legacy_path, cache_root)
+                cached = _read_fresh_cache(
+                    legacy_path,
+                    client.policy.cache_freshness_seconds,
+                    limits.max_bytes,
+                )
+                if cached is not None:
+                    return PendingSecFiling(
+                        row, archive_url, cached, legacy_path, True, limits.max_bytes
+                    )
+        if cached is not None:
+            return PendingSecFiling(
+                row, archive_url, cached, content_path, True, limits.max_bytes
+            )
     content = client.fetch_bytes(
         archive_url, profile=SecResourceProfile.FILING_DOCUMENT
     )
@@ -120,13 +140,18 @@ def promote_validated_filing(
     expected_url = edgar.build_filing_archive_url(pending.row.archive_path)
     expected_path = _content_path(pending.row, cache_root)
     _validate_content_path(expected_path, cache_root)
-    if pending.archive_url != expected_url or pending.content_path != expected_path:
+    allowed_paths = {expected_path}
+    if pending.from_cache:
+        allowed_paths.add(_legacy_content_path(pending.row, cache_root))
+    if pending.archive_url != expected_url or pending.content_path not in allowed_paths:
         raise SecDownloadSecurityError()
     if pending.from_cache:
-        _require_regular_file(expected_path)
-        return DownloadedSecFiling(
-            pending.row, pending.archive_url, expected_path, True
-        )
+        _validate_content_path(pending.content_path, cache_root)
+        _require_regular_file(pending.content_path)
+        if pending.content_path == expected_path:
+            return DownloadedSecFiling(
+                pending.row, pending.archive_url, expected_path, True
+            )
     if (
         isinstance(pending.max_bytes, bool)
         or not isinstance(pending.max_bytes, int)
@@ -142,7 +167,9 @@ def promote_validated_filing(
         raise
     except OSError as exc:
         raise SecDownloadIoError() from exc
-    return DownloadedSecFiling(pending.row, pending.archive_url, expected_path, False)
+    return DownloadedSecFiling(
+        pending.row, pending.archive_url, expected_path, pending.from_cache
+    )
 
 
 def purge_stale_cache(
@@ -239,7 +266,7 @@ def quarantine_failed_download(
 
 
 def _validate_inputs(
-    row: SecMasterIndexRow, client: SecClient, cache_root: Path
+    row: SecMasterIndexRow, client: SecClient, cache_root: Path, *, cache: bool
 ) -> None:
     if type(row) is not SecMasterIndexRow:
         raise TypeError("row must be exactly SecMasterIndexRow")
@@ -247,7 +274,8 @@ def _validate_inputs(
         raise TypeError("client must be exactly SecClient")
     if not isinstance(cache_root, Path):
         raise TypeError("cache_root must be a pathlib.Path")
-    _validate_cache_root(cache_root)
+    if cache:
+        _validate_cache_root(cache_root)
 
 
 def _validate_cache_root(cache_root: Path) -> None:
@@ -261,6 +289,13 @@ def _validate_cache_root(cache_root: Path) -> None:
 
 
 def _content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
+    digest = hashlib.sha256(
+        filing_accession(row.archive_path).encode("ascii")
+    ).hexdigest()
+    return cache_root / _CACHE_NAMESPACE / f"{digest}{_CACHE_SUFFIX}"
+
+
+def _legacy_content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
     digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
     return cache_root / _CACHE_NAMESPACE / f"{digest}{_CACHE_SUFFIX}"
 
