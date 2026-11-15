@@ -74,6 +74,7 @@ def _supersessions(
         lambda: defaultdict(list)
     )
     for row in rows:
+        identity: tuple
         if senate:
             if (
                 row["source"] != "senate"
@@ -238,7 +239,9 @@ def rebuild_replacements(
         if issuers:
             conditions.append(table.c.cik_issuer.in_(sorted(issuers)))
         statement = statement.where(or_(*conditions))
-    rows = list(connection.execute(statement).mappings())
+    rows: list[Mapping[str, Any]] = [
+        dict(row) for row in connection.execute(statement).mappings()
+    ]
     market = "us" if table is us_trades else "congress"
     keys = [row["canonical_key"] for row in rows]
     for start in range(0, len(keys), 300):
