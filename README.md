@@ -206,13 +206,13 @@ opened, diagnostics remain on stderr. `--log-level` accepts `DEBUG`, `INFO`,
 `WARNING`, `ERROR` or `CRITICAL`, and overrides `INSIDER_SCANNER_LOG_LEVEL`
 (default: `INFO`).
 
-| Exit code | Meaning |
-| --- | --- |
-| `0` | Command completed; per-filing failures alone are nonfatal. |
-| `1` | Operational failure, including an unresolved CIK, invalid SEC configuration, blocked SEC access or an archive error. |
-| `2` | Invalid arguments or input. |
-| `3` | `sec-daily`/`sec-catchup` left dates incomplete or stopped on an ingestion error, or `sec-backfill` skipped unreadable archive members. |
-| `130` | Interrupted by Ctrl+C. |
+| Exit code | Meaning                                                                                                                                 |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Command completed; per-filing failures alone are nonfatal.                                                                              |
+| `1`       | Operational failure, including an unresolved CIK, invalid SEC configuration, blocked SEC access or an archive error.                    |
+| `2`       | Invalid arguments or input.                                                                                                             |
+| `3`       | `sec-daily`/`sec-catchup` left dates incomplete or stopped on an ingestion error, or `sec-backfill` skipped unreadable archive members. |
+| `130`     | Interrupted by Ctrl+C.                                                                                                                  |
 
 Congress searches resolve seed names and disclosure spellings through the member's
 structured first/last name and stable member ID. A unique surname can be searched;
