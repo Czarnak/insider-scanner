@@ -3,8 +3,8 @@
 An alert rule is essentially a saved screen plus a "tell me about new matches"
 watermark. It reuses :class:`FeedCriteria` as its matching predicate (serialised
 with the same helpers as ``feed_state``) and optionally references a watchlist by
-name. ``last_seen_at`` is a UTC high-water mark used to decide which matches are
-"new" since the user last acknowledged the rule.
+name. ``last_seen_sequence`` tracks presented ingestion progress;
+``last_seen_at`` remains readable for migration from older saved rules.
 
 All public store operations return **new** immutable ``AlertStore`` values.
 """
@@ -30,7 +30,7 @@ from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("alerts")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ALERTS_FILENAME = "alerts.json"
 _MAX_RULES = 200
 
@@ -54,8 +54,13 @@ class AlertRule:
     enabled: bool = True
     last_seen_at: datetime | None = None
     error: str | None = None
+    last_seen_sequence: int | None = None
 
     def __post_init__(self) -> None:
+        if self.last_seen_sequence is not None and (
+            type(self.last_seen_sequence) is not int or self.last_seen_sequence < 0
+        ):
+            raise AlertStoreError("Alert sequence must be a non-negative integer")
         if self.last_seen_at is not None:
             at = self.last_seen_at
             if at.tzinfo is None:
@@ -119,6 +124,20 @@ class AlertStore:
         rules = tuple(replace(r, last_seen_at=at) for r in self.rules)
         return replace(self, rules=rules)
 
+    def marked_seen_sequence(self, name: str, sequence: int) -> AlertStore:
+        """Acknowledge presented progress without moving a rule backwards."""
+        if type(sequence) is not int or sequence < 0:
+            raise AlertStoreError("Alert sequence must be a non-negative integer")
+        return replace(
+            self,
+            rules=tuple(
+                replace(r, last_seen_sequence=max(r.last_seen_sequence or 0, sequence))
+                if r.name == name
+                else r
+                for r in self.rules
+            ),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Serialisation
@@ -132,6 +151,7 @@ def rule_to_dict(r: AlertRule) -> dict:
         "watchlist": r.watchlist,
         "enabled": r.enabled,
         "error": r.error,
+        "last_seen_sequence": r.last_seen_sequence,
         "last_seen_at": r.last_seen_at.isoformat()
         if r.last_seen_at is not None
         else None,
@@ -180,6 +200,11 @@ def rule_from_dict(d: dict) -> AlertRule:
         last_seen_at = None
         error = f"Invalid last-seen timestamp: {exc}"
 
+    sequence = d.get("last_seen_sequence")
+    if sequence is not None and (type(sequence) is not int or sequence < 0):
+        sequence = None
+        error = "Invalid last-seen sequence: expected a non-negative integer"
+
     return AlertRule(
         name=name,
         criteria=criteria,
@@ -187,6 +212,7 @@ def rule_from_dict(d: dict) -> AlertRule:
         enabled=enabled,
         last_seen_at=last_seen_at,
         error=error,
+        last_seen_sequence=sequence,
     )
 
 
