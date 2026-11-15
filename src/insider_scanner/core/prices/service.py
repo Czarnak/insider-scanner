@@ -86,6 +86,18 @@ def get_price_history(
                 for bar in fetched
                 if bar.date in old_by_date and bar.date < checked_at.date()
             )
+            expected_overlap = {
+                bar.date
+                for bar in cached
+                if interval.start <= bar.date <= interval.end
+                and bar.date < checked_at.date()
+            }
+            if expected_overlap and not expected_overlap.intersection(
+                bar.date for bar in fetched
+            ):
+                # An omitted or invalid overlap cannot prove a common basis.
+                # A guarded full refresh may recover it; never append blindly.
+                changed = True
             pending.append((interval, fetched))
             if changed:
                 break

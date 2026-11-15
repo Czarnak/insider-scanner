@@ -285,3 +285,16 @@ def test_partial_provider_results_never_claim_coverage(e):
     source.fetch_daily = FakeSource.fetch_daily.__get__(source)
     get_price_history("AAPL", day, day, source=source, engine=e)
     assert source.calls
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_missing_overlap_never_merges_unknown_adjustment_basis(e, complete):
+    from insider_scanner.core.prices.source import FetchedPriceBars
+
+    source = FakeSource()
+    first, last, end = date(2026, 1, 1), date(2026, 1, 4), date(2026, 1, 6)
+    original = get_price_history("AAPL", first, last, source=source, engine=e)
+    source.fetch_daily = lambda *args: FetchedPriceBars(
+        [PriceBar("AAPL", end, 0.5, 0.5, 0.5, 0.5, 1)], complete=complete
+    )
+    assert get_price_history("AAPL", first, end, source=source, engine=e) == original
