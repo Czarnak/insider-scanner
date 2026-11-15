@@ -108,7 +108,7 @@ analysis workflows available under **Tools**.
 #### Insider Scan tool
 
 - Search a ticker and run both secform4.com and openinsider.com scrapers in one click.
-- Fetch the latest trades (configurable count) and run watchlist scans backed by the user data directory's `tickers_watchlist.txt`.
+- Fetch the latest trades (configurable count) and scan US companies from the named Watchlists page. Individual ticker failures are reported while successful results remain available.
 - Toggle sources, specify a date range, trade type, minimum value, or Congress-only filter.
 - View sortable tables that display filing/trade dates, highlight congressional filings, show EDGAR links, and let you export CSV/JSON.
 - Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
@@ -648,6 +648,20 @@ the stored rows alone. Earlier House partial sales stored as Other lack their
 original transaction code, so the migration preserves them for source verification.
 
 Watchlists, alert rules, and saved feed screens use atomic JSON state files.
+The Watchlists page, US watchlist scan and Analysis symbol picker share
+`watchlists.json`. On first GUI startup, existing `tickers_watchlist.txt` symbols
+are imported into uniquely named `Legacy US` lists alongside existing JSON
+watchlists. The text file is retained; later edits belong in the Watchlists page.
+A persisted migration marker prevents removed symbols from returning on restart.
+Renaming a list updates its alert references. Duplicate names (ignoring case) and
+full lists or rule stores show an error instead of silently dropping additions.
+Watchlist renames use a recovery journal so an interrupted save can finish on
+restart. If recovery cannot complete, startup reports the problem before loading
+partially updated configuration; restore data-folder access and restart.
+Alerts with malformed criteria or timestamps load disabled with an error shown
+on the Alerts page; recreate them from valid filters to enable matching again.
+Offset-less alert timestamps are interpreted as UTC.
+
 If a state file cannot be decoded or parsed, startup loads defaults and preserves
 the original beside it as `<filename>.corrupt-<unique-id>`, with its location in
 the logs. Keep that copy to recover your settings. If the original is locked and
@@ -855,7 +869,8 @@ cache bypass available. Verification links open the human EDGAR search page.
 | ----------------------------- | ---------------------------------------------------------------------------- |
 | `insider_scanner.sqlite3`     | Parsed trades, coverage intervals, refresh state, and schema version         |
 | `congress_members.json`       | Editable Congress member list with committee assignments and sector mappings |
-| `tickers_watchlist.txt`       | Editable ticker watchlist                                                    |
+| `watchlists.json`             | Shared named watchlists for monitoring, US scans and Analysis                |
+| `tickers_watchlist.txt`       | Legacy US symbols imported once into `watchlists.json` by the GUI            |
 | `eu_watchlist.txt`            | Editable European ISIN watchlist                                             |
 | `house_disclosures/`          | Cached House disclosure indexes and PDFs                                     |
 | `exports/scans/`              | Generated CSV/JSON scan exports                                              |

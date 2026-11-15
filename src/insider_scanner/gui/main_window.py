@@ -57,8 +57,14 @@ from insider_scanner.persistence.feed_state import (
     load_feed_state,
     save_feed_state,
 )
+from insider_scanner.persistence.watchlist_rename import (
+    WatchlistRenamePendingError,
+    recover_watchlist_rename,
+    save_watchlist_rename,
+)
 from insider_scanner.persistence.watchlists import (
     WatchEntry,
+    WatchlistError,
     load_watchlists,
     save_watchlists,
     watchlists_path,
@@ -91,15 +97,32 @@ class MainWindow(QMainWindow):
         self._services = services
         self._thread_pool = QThreadPool(self)
         self._shutdown_timeout_ms = shutdown_timeout_ms
+        self._alert_request_id = 0
         self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
         self._feed_state: FeedState = load_feed_state(self._state_path)
         # Watchlists and alerts live alongside the feed-state file.
         self._data_dir: Path = self._state_path.parent
         self._watchlists_path: Path = watchlists_path(self._data_dir)
         self._alerts_path: Path = alerts_path(self._data_dir)
-        self._watchlists = load_watchlists(self._watchlists_path)
+        try:
+            recover_watchlist_rename(self._data_dir)
+        except (OSError, WatchlistError) as exc:
+            log.exception("Watchlist rename recovery failed")
+            raise MainWindowInitializationError(
+                "Could not recover a pending watchlist rename. "
+                "Check data folder access and restart."
+            ) from exc
+        migration_error = None
+        try:
+            self._watchlists = load_watchlists(
+                self._watchlists_path,
+                legacy_path=self._data_dir / "tickers_watchlist.txt",
+            )
+        except (OSError, WatchlistError) as exc:
+            log.exception("Legacy watchlist migration failed")
+            migration_error = exc
+            self._watchlists = load_watchlists(self._watchlists_path)
         self._alerts = load_alerts(self._alerts_path)
-        self._alert_request_id = 0
         self.setWindowTitle("Insider Scanner")
         self.setMinimumSize(900, 550)
         self.resize(1200, 720)
@@ -115,6 +138,12 @@ class MainWindow(QMainWindow):
         self.persist_timer.setSingleShot(True)
         self.persist_timer.setInterval(500)
         self.persist_timer.timeout.connect(self._persist_feed_state)
+        if migration_error is not None:
+            self.log_status(
+                "Could not import legacy watchlist. Existing watchlists are available; "
+                "the import will retry on next startup.",
+                timeout_ms=10_000,
+            )
 
     def _build_shell(self) -> None:
         shell = QWidget()
@@ -311,7 +340,9 @@ class MainWindow(QMainWindow):
     def _init_monitor_pages(self) -> None:
         try:
             self._add_section_label("Monitor")
-            self.watchlist_page = WatchlistPage(self._watchlists)
+            self.watchlist_page = WatchlistPage(
+                self._watchlists, rename_handler=self._on_watchlist_renamed
+            )
             self.watchlist_page.watchlistsChanged.connect(self._on_watchlists_changed)
             self.watchlist_page.openCompanyRequested.connect(self._open_company)
             self.watchlist_page.openInsiderRequested.connect(self._open_insider)
@@ -340,7 +371,7 @@ class MainWindow(QMainWindow):
         """Add the record's company and insider to the active watchlist."""
         added = False
         if record.identifier:
-            self.watchlist_page.add_entry(
+            added |= self.watchlist_page.add_entry(
                 WatchEntry(
                     kind="company",
                     market=record.market,
@@ -348,9 +379,8 @@ class MainWindow(QMainWindow):
                     label=record.issuer or record.identifier,
                 )
             )
-            added = True
         if record.person:
-            self.watchlist_page.add_entry(
+            added |= self.watchlist_page.add_entry(
                 WatchEntry(
                     kind="insider",
                     market=record.market,
@@ -358,13 +388,39 @@ class MainWindow(QMainWindow):
                     label=record.person,
                 )
             )
-            added = True
         if added:
             self.log_status("Added to watchlist", timeout_ms=3_000)
 
     def _on_watchlists_changed(self, store) -> None:
         self._watchlists = store
         self._persist_watchlists()
+        self.scan_tab.set_watchlists(store)
+        if hasattr(self.analysis_tab, "set_watchlists"):
+            self.analysis_tab.set_watchlists(store)
+
+    def _on_watchlist_renamed(self, watchlists, old: str, new: str) -> bool:
+        store = self.alerts_page.store().renamed_watchlist(old, new)
+        try:
+            save_watchlist_rename(self._data_dir, watchlists, store)
+        except WatchlistRenamePendingError:
+            log.exception("Watchlist rename is pending recovery")
+            self.log_status(
+                "Watchlist rename saved for recovery; some files could not be updated.",
+                timeout_ms=10_000,
+            )
+        except (OSError, WatchlistError) as exc:
+            log.exception("Could not save watchlist rename")
+            self._handle_save_failure("watchlist rename", exc)
+            QMessageBox.warning(
+                self,
+                "Could not rename watchlist",
+                "The rename could not be saved. Please retry when the data folder is writable.",
+            )
+            return False
+        self._alerts = store
+        self.alerts_page.set_store(store)
+        self._alert_request_id += 1
+        return True
 
     def _on_alerts_changed(self, store) -> None:
         self._alerts = store
@@ -372,6 +428,7 @@ class MainWindow(QMainWindow):
 
     def _persist_watchlists(self) -> None:
         try:
+            recover_watchlist_rename(self._data_dir)
             save_watchlists(self._watchlists_path, self._watchlists)
         except Exception as exc:
             log.exception("Failed to persist watchlists")
@@ -379,6 +436,7 @@ class MainWindow(QMainWindow):
 
     def _persist_alerts(self) -> None:
         try:
+            recover_watchlist_rename(self._data_dir)
             save_alerts(self._alerts_path, self._alerts)
         except Exception as exc:
             log.exception("Failed to persist alerts")
@@ -462,7 +520,9 @@ class MainWindow(QMainWindow):
         from insider_scanner.gui.scan_tab import ScanTab
 
         service = None if self._services is None else self._services.us
-        self.scan_tab = ScanTab(service, thread_pool=self._thread_pool)
+        self.scan_tab = ScanTab(
+            service, thread_pool=self._thread_pool, watchlists=self._watchlists
+        )
         self._add_page("Insider Scan", self.scan_tab)
 
     def _init_congress_page(self) -> None:
@@ -484,7 +544,9 @@ class MainWindow(QMainWindow):
             from insider_scanner.gui.analysis_tab import AnalysisTab
 
             self.analysis_tab = AnalysisTab(
-                self._services, thread_pool=self._thread_pool
+                self._services,
+                thread_pool=self._thread_pool,
+                watchlists=self._watchlists,
             )
         except Exception as exc:
             log.exception("Analysis page initialization failed")
@@ -715,10 +777,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         if self.shutdown_workers():
             try:
-                self.persist_timer.stop()
-                self._persist_feed_state()
-                self._persist_watchlists()
-                self._persist_alerts()
+                if hasattr(self, "persist_timer"):
+                    self.persist_timer.stop()
+                    self._persist_feed_state()
+                    self._persist_watchlists()
+                    self._persist_alerts()
             except Exception:
                 log.exception("Failed to persist GUI state on close")
             self._disconnect_theme()

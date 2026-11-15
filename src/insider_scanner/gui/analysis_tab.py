@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
 from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui.price_chart import PriceChartWidget
+from insider_scanner.persistence.watchlists import WatchlistStore
 from insider_scanner.services.application import ApplicationServices
 from insider_scanner.services.context import PersistenceContext
-from insider_scanner.utils.config import load_watchlist
 from insider_scanner.utils.threading import Worker
 
 
@@ -57,13 +57,20 @@ class AnalysisTab(QWidget):
         parent=None,
         *,
         thread_pool: QThreadPool | None = None,
+        watchlists: WatchlistStore | None = None,
     ) -> None:
         super().__init__(parent)
         self._services = services
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._watchlists = watchlists if watchlists is not None else WatchlistStore()
         self._request_id = 0
         self._active_request: tuple[int, str] | None = None
         self._build_ui()
+        self._refresh_symbols()
+
+    def set_watchlists(self, store: WatchlistStore) -> None:
+        """Refresh chart symbols from the application's managed watchlists."""
+        self._watchlists = store
         self._refresh_symbols()
 
     def _build_ui(self) -> None:
@@ -94,12 +101,19 @@ class AnalysisTab(QWidget):
 
     def _refresh_symbols(self) -> None:
         current = self.symbol_combo.currentText()
-        self.symbol_combo.clear()
-        self.symbol_combo.addItems(load_watchlist())
-        if current:
-            idx = self.symbol_combo.findText(current)
-            if idx >= 0:
-                self.symbol_combo.setCurrentIndex(idx)
+        signals_blocked = self.symbol_combo.blockSignals(True)
+        try:
+            self.symbol_combo.clear()
+            self.symbol_combo.addItems(self._watchlists.us_symbols())
+            if current:
+                idx = self.symbol_combo.findText(current)
+                if idx >= 0:
+                    self.symbol_combo.setCurrentIndex(idx)
+        finally:
+            self.symbol_combo.blockSignals(signals_blocked)
+        selected = self.symbol_combo.currentText()
+        if selected != current:
+            self._on_symbol_changed(selected)
 
     def _load_selected(self) -> None:
         if self._services is None:

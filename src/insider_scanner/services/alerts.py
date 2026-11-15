@@ -13,7 +13,7 @@ watchlist-based.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from insider_scanner.persistence.alerts import AlertRule, AlertStore
 from insider_scanner.persistence.feed import DEFAULT_PAGE_SIZE, FeedRecord
@@ -37,11 +37,12 @@ def _is_new(record: FeedRecord, watermark: datetime | None) -> bool:
         return True
     if record.created_at is None:
         return True  # cannot prove it is old — surface it
-    try:
-        return record.created_at > watermark
-    except TypeError:
-        # Mismatched naive/aware datetimes — fail open so nothing is silently lost.
-        return True
+    created_at = record.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    if watermark.tzinfo is None:
+        watermark = watermark.replace(tzinfo=UTC)
+    return created_at > watermark
 
 
 def _dedup_preserve_order(records: tuple[FeedRecord, ...]) -> tuple[FeedRecord, ...]:
@@ -58,7 +59,14 @@ def _dedup_preserve_order(records: tuple[FeedRecord, ...]) -> tuple[FeedRecord, 
 def _candidates_for_watchlist(
     repository, watchlists: WatchlistStore, name: str
 ) -> tuple[FeedRecord, ...]:
-    watchlist = watchlists.get(name)
+    watchlist = next(
+        (
+            item
+            for item in watchlists.watchlists
+            if item.name.strip().casefold() == name.strip().casefold()
+        ),
+        None,
+    )
     if watchlist is None:
         return ()
     collected: list[FeedRecord] = []
@@ -93,7 +101,7 @@ def evaluate_alerts(
     """
     hits: list[AlertHit] = []
     for rule in store.rules:
-        if not rule.enabled:
+        if not rule.enabled or rule.error:
             continue
         if rule.watchlist is not None:
             candidates = _candidates_for_watchlist(

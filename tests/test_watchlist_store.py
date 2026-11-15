@@ -13,6 +13,7 @@ from insider_scanner.persistence.watchlists import (
     WATCHLISTS_FILENAME,
     WatchEntry,
     Watchlist,
+    WatchlistError,
     WatchlistStore,
     entry_from_dict,
     entry_to_dict,
@@ -216,3 +217,213 @@ class TestStoreOperations:
         )
         reduced = store.without_entry("Tech", _company("AAPL").key())
         assert reduced.get("Tech").entries == (_company("MSFT"),)
+
+    @pytest.mark.parametrize("name", ["", "   "])
+    def test_blank_names_are_rejected(self, name: str) -> None:
+        with pytest.raises(WatchlistError, match="name"):
+            WatchlistStore().with_list(name)
+
+    def test_new_names_are_trimmed(self) -> None:
+        assert WatchlistStore().with_list(" Tech ").names() == ("Tech",)
+
+    def test_create_rejects_case_insensitive_collision(self) -> None:
+        store = WatchlistStore().with_list("Tech")
+        with pytest.raises(WatchlistError, match="exists"):
+            store.with_list("TECH")
+
+    def test_rename_rejects_collision_without_losing_entries(self) -> None:
+        store = WatchlistStore().with_entry("Tech", _company()).with_list("Other")
+        with pytest.raises(WatchlistError, match="exists"):
+            store.renamed("Tech", "OTHER")
+        assert store.get("Tech").entries == (_company(),)
+
+    def test_case_only_rename_keeps_list_order_and_entries(self) -> None:
+        store = WatchlistStore().with_list("First").with_entry("Tech", _company())
+        updated = store.renamed("Tech", "TECH")
+        assert updated.names() == ("First", "TECH")
+        assert updated.get("TECH").entries == (_company(),)
+
+    def test_list_cap_raises_for_add_and_implicit_entry_list(self, monkeypatch) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_WATCHLISTS", 1)
+        store = WatchlistStore().with_list("Full")
+        with pytest.raises(WatchlistError, match="limit"):
+            store.with_list("Overflow")
+        with pytest.raises(WatchlistError, match="limit"):
+            store.with_entry("Overflow", _company())
+        assert store.with_list("Full") == store
+
+    def test_entry_cap_raises_but_duplicate_remains_noop(self, monkeypatch) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_ENTRIES", 1)
+        store = WatchlistStore().with_entry("Tech", _company())
+        with pytest.raises(WatchlistError, match="limit"):
+            store.with_entry("Tech", _company("MSFT"))
+        assert store.with_entry("Tech", _company()) == store
+
+
+class TestUnifiedWatchlist:
+    def test_symbols_select_us_companies_and_deduplicate(self) -> None:
+        store = WatchlistStore(
+            watchlists=(
+                Watchlist(
+                    "First",
+                    (_company(" aapl "), _insider(), _company("DE", FeedMarket.EUROPE)),
+                ),
+                Watchlist("Second", (_company("AAPL"), _company("msft"), _company(""))),
+            )
+        )
+        assert store.us_symbols() == ("AAPL", "MSFT")
+
+    def test_migration_merges_existing_json_and_imports_only_once(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("# old tickers\naapl\nMSFT\nAAPL\n", encoding="utf-8")
+        save_watchlists(path, WatchlistStore().with_entry("Tech", _company("AAPL")))
+        original = legacy.read_bytes()
+        migrated = load_watchlists(path, legacy_path=legacy)
+        assert migrated.us_symbols() == ("AAPL", "MSFT")
+        assert migrated.get("Tech").entries == (_company("AAPL"),)
+        assert legacy.read_bytes() == original
+
+        trimmed = migrated.without_list("Legacy US")
+        save_watchlists(path, trimmed)
+        legacy.write_text("TSLA\n", encoding="utf-8")
+        reloaded = load_watchlists(path, legacy_path=legacy)
+        assert reloaded.us_symbols() == ("AAPL",)
+
+    def test_migration_creates_json_from_legacy_file(self, tmp_path) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("\ufeff# seed\naapl\n\nMSFT\n", encoding="utf-8")
+        store = load_watchlists(path, legacy_path=legacy)
+        assert store.us_symbols() == ("AAPL", "MSFT")
+        assert load_watchlists(path) == store
+
+    def test_migration_avoids_name_collision(self, tmp_path) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        save_watchlists(path, WatchlistStore().with_list("legacy us"))
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("AAPL", encoding="utf-8")
+        store = load_watchlists(path, legacy_path=legacy)
+        assert store.names() == ("legacy us", "Legacy US (2)")
+        assert store.us_symbols() == ("AAPL",)
+
+    def test_migration_capacity_failure_preserves_original_state(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_WATCHLISTS", 1)
+        path = tmp_path / WATCHLISTS_FILENAME
+        save_watchlists(path, WatchlistStore().with_list("Existing"))
+        previous = path.read_bytes()
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("AAPL", encoding="utf-8")
+        with pytest.raises(WatchlistError, match="limit"):
+            load_watchlists(path, legacy_path=legacy)
+        assert path.read_bytes() == previous
+
+    def test_missing_legacy_file_does_not_mark_migration_complete(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        legacy = tmp_path / "tickers_watchlist.txt"
+        save_watchlists(path, WatchlistStore())
+        assert load_watchlists(path, legacy_path=legacy) == WatchlistStore()
+        legacy.write_text("AAPL", encoding="utf-8")
+        assert load_watchlists(path, legacy_path=legacy).us_symbols() == ("AAPL",)
+
+    def test_migration_write_failure_leaves_existing_json_and_text_intact(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        save_watchlists(path, WatchlistStore().with_list("Existing"))
+        previous = path.read_bytes()
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("AAPL", encoding="utf-8")
+
+        def fail_write(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "insider_scanner.persistence.watchlists.atomic_write_json", fail_write
+        )
+        with pytest.raises(OSError, match="disk full"):
+            load_watchlists(path, legacy_path=legacy)
+        assert path.read_bytes() == previous
+        assert legacy.read_text(encoding="utf-8") == "AAPL"
+
+    def test_migration_splits_large_legacy_list_without_dropping_symbols(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_ENTRIES", 2)
+        path = tmp_path / WATCHLISTS_FILENAME
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_text("AAPL\nMSFT\nTSLA", encoding="utf-8")
+        store = load_watchlists(path, legacy_path=legacy)
+        assert store.us_symbols() == ("AAPL", "MSFT", "TSLA")
+        assert [len(w.entries) for w in store.watchlists] == [2, 1]
+
+    def test_loaded_case_collisions_merge_entries_under_the_first_name(self) -> None:
+        store = store_from_dict(
+            {
+                "watchlists": [
+                    {"name": "Tech", "entries": [entry_to_dict(_company("AAPL"))]},
+                    {"name": " tech ", "entries": [entry_to_dict(_company("MSFT"))]},
+                ]
+            }
+        )
+        assert store.names() == ("Tech",)
+        assert store.get("Tech").entries == (_company("AAPL"), _company("MSFT"))
+
+    def test_loading_preserves_historical_data_over_edit_caps(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_WATCHLISTS", 1)
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_ENTRIES", 1)
+        path = tmp_path / WATCHLISTS_FILENAME
+        original = WatchlistStore(
+            watchlists=(
+                Watchlist("First", (_company("AAPL"), _company("MSFT"))),
+                Watchlist("Second", (_company("TSLA"),)),
+            )
+        )
+        save_watchlists(path, original)
+        loaded = load_watchlists(path)
+        assert loaded == original
+        with pytest.raises(WatchlistError, match="limit"):
+            loaded.with_list("Third")
+        with pytest.raises(WatchlistError, match="limit"):
+            loaded.with_entry("First", _company("NVDA"))
+
+    def test_merged_historical_lists_remain_complete_after_save_reload(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("insider_scanner.persistence.watchlists._MAX_ENTRIES", 1)
+        path = tmp_path / WATCHLISTS_FILENAME
+        path.write_text(
+            json.dumps(
+                {
+                    "watchlists": [
+                        {"name": "Tech", "entries": [entry_to_dict(_company("AAPL"))]},
+                        {"name": "TECH", "entries": [entry_to_dict(_company("MSFT"))]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = load_watchlists(path)
+        assert store.us_symbols() == ("AAPL", "MSFT")
+        save_watchlists(path, store)
+        assert load_watchlists(path).us_symbols() == ("AAPL", "MSFT")
+
+    def test_invalid_legacy_encoding_reports_a_watchlist_error_without_save(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / WATCHLISTS_FILENAME
+        save_watchlists(path, WatchlistStore().with_list("Existing"))
+        previous = path.read_bytes()
+        legacy = tmp_path / "tickers_watchlist.txt"
+        legacy.write_bytes(b"\xff\xfe")
+        with pytest.raises(WatchlistError, match="decode"):
+            load_watchlists(path, legacy_path=legacy)
+        assert path.read_bytes() == previous

@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from insider_scanner.core.trade_types import TransactionDirection, classify_direction
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.trade_display import format_value
-from insider_scanner.persistence.alerts import AlertRule, AlertStore
+from insider_scanner.persistence.alerts import AlertRule, AlertStore, AlertStoreError
 from insider_scanner.persistence.feed import FeedCriteria, FeedRecord
 
 _RULE_HEADERS = ("On", "Name", "Matches")
@@ -53,6 +53,8 @@ def _format_value(record: FeedRecord) -> str:
 
 
 def _criteria_summary(rule: AlertRule) -> str:
+    if rule.error:
+        return f"Invalid alert: {rule.error}"
     if rule.watchlist is not None:
         return f"Watchlist: {rule.watchlist}"
     c = rule.criteria
@@ -202,7 +204,12 @@ class AlertsPage(QWidget):
         if not ok or not name.strip():
             return
         rule = AlertRule(name=name.strip(), criteria=self._criteria_provider())
-        self._apply(self._store.with_rule(rule))
+        try:
+            new_store = self._store.with_rule(rule)
+        except AlertStoreError as exc:
+            QMessageBox.warning(self, "Could not create alert", str(exc))
+            return
+        self._apply(new_store)
 
     def _delete_selected_rule(self) -> None:
         name = self._selected_rule_name()
@@ -228,7 +235,13 @@ class AlertsPage(QWidget):
         enabled = item.checkState() == Qt.CheckState.Checked
         rule = self._store.get(name)
         if rule is not None and rule.enabled != enabled:
-            self._apply(self._store.toggled(name, enabled))
+            try:
+                new_store = self._store.toggled(name, enabled)
+            except AlertStoreError as exc:
+                QMessageBox.warning(self, "Could not enable alert", str(exc))
+                self._refresh_rules()
+                return
+            self._apply(new_store)
 
     # ------------------------------------------------------------------
     # Navigation
@@ -267,10 +280,16 @@ class AlertsPage(QWidget):
         for row, rule in enumerate(self._store.rules):
             check_item = QTableWidgetItem()
             check_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsEnabled
+                Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
+                | (
+                    Qt.ItemFlag.ItemIsUserCheckable
+                    if not rule.error
+                    else Qt.ItemFlag(0)
+                )
             )
+            if rule.error:
+                check_item.setToolTip(rule.error)
             check_item.setCheckState(
                 Qt.CheckState.Checked if rule.enabled else Qt.CheckState.Unchecked
             )

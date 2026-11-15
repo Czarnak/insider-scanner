@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from insider_scanner.persistence.alerts import AlertRule, AlertStore
+from insider_scanner.persistence.alerts import AlertRule, AlertStore, rule_from_dict
 from insider_scanner.persistence.feed import (
     FeedCriteria,
     FeedMarket,
@@ -124,6 +124,27 @@ class TestEvaluateAlerts:
         repo = FakeRepo(query_records=(_record("us:old", created_at=_OLD),))
         store = AlertStore(rules=(AlertRule(name="Big", last_seen_at=_NEW),))
         assert evaluate_alerts(repo, store, WatchlistStore()) == ()
+
+    def test_naive_watermark_does_not_repeat_old_matches(self) -> None:
+        repo = FakeRepo(query_records=(_record("us:old", created_at=_OLD),))
+        store = AlertStore(
+            rules=(AlertRule(name="Big", last_seen_at=datetime(2024, 3, 1)),)
+        )
+        assert evaluate_alerts(repo, store, WatchlistStore()) == ()
+
+    def test_naive_record_timestamp_is_compared_as_utc(self) -> None:
+        repo = FakeRepo(
+            query_records=(_record("us:old", created_at=datetime(2024, 1, 1)),)
+        )
+        store = AlertStore(rules=(AlertRule(name="Big", last_seen_at=_NEW),))
+        assert evaluate_alerts(repo, store, WatchlistStore()) == ()
+
+    def test_invalid_criteria_never_queries_unfiltered_feed(self) -> None:
+        repo = FakeRepo(query_records=(_record("us:1"),))
+        rule = rule_from_dict({"name": "Narrow", "criteria": {"markets": ["bad"]}})
+        store = AlertStore(rules=(rule,))
+        assert evaluate_alerts(repo, store, WatchlistStore()) == ()
+        assert repo.query_calls == []
 
     def test_watchlist_rule_merges_and_dedups(self) -> None:
         shared = _record("us:1", identifier="AAPL", person="Jane Director")

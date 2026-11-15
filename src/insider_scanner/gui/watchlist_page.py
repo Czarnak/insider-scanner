@@ -11,6 +11,8 @@ persist it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
 from insider_scanner.persistence.feed import FeedMarket
 from insider_scanner.persistence.watchlists import (
     WatchEntry,
+    WatchlistError,
     WatchlistStore,
 )
 
@@ -44,15 +47,21 @@ class WatchlistPage(QWidget):
     """Manage named watchlists of companies and insiders."""
 
     watchlistsChanged = Signal(object)  # WatchlistStore
+    watchlistRenamed = Signal(str, str)  # (old name, new name)
     openCompanyRequested = Signal(object, object)  # (identifier, market)
     openInsiderRequested = Signal(object, object)  # (person, market)
     feedSearchRequested = Signal(object)  # (text)
 
     def __init__(
-        self, store: WatchlistStore | None = None, parent: QWidget | None = None
+        self,
+        store: WatchlistStore | None = None,
+        parent: QWidget | None = None,
+        *,
+        rename_handler: Callable[[WatchlistStore, str, str], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._store: WatchlistStore = store or WatchlistStore()
+        self._rename_handler = rename_handler
         self._current_name: str | None = None
         self._current_entries: tuple[WatchEntry, ...] = ()
         self._build_ui()
@@ -79,16 +88,21 @@ class WatchlistPage(QWidget):
         else:
             self._refresh_entries()
 
-    def add_entry(self, entry: WatchEntry) -> None:
+    def add_entry(self, entry: WatchEntry) -> bool:
         """Append *entry* to the current list, creating a default one if needed."""
         target = self._current_name
         if target is None:
             target = (
                 self._store.names()[0] if self._store.names() else _DEFAULT_LIST_NAME
             )
-        new_store = self._store.with_entry(target, entry)
+        try:
+            new_store = self._store.with_entry(target, entry)
+        except WatchlistError as exc:
+            QMessageBox.warning(self, "Could not add entry", str(exc))
+            return False
         self._current_name = target
         self._apply(new_store)
+        return True
 
     # ------------------------------------------------------------------
     # UI construction
@@ -212,8 +226,13 @@ class WatchlistPage(QWidget):
         if not ok or not name.strip():
             return
         name = name.strip()
+        try:
+            new_store = self._store.with_list(name)
+        except WatchlistError as exc:
+            QMessageBox.warning(self, "Could not create watchlist", str(exc))
+            return
         self._current_name = name
-        self._apply(self._store.with_list(name))
+        self._apply(new_store)
 
     def _rename_watchlist(self) -> None:
         if self._current_name is None:
@@ -223,8 +242,18 @@ class WatchlistPage(QWidget):
         if not ok or not name.strip() or name.strip() == old:
             return
         new_name = name.strip()
+        try:
+            new_store = self._store.renamed(old, new_name)
+        except WatchlistError as exc:
+            QMessageBox.warning(self, "Could not rename watchlist", str(exc))
+            return
+        if self._rename_handler is not None and not self._rename_handler(
+            new_store, old, new_name
+        ):
+            return
         self._current_name = new_name
-        self._apply(self._store.renamed(old, new_name))
+        self._apply(new_store)
+        self.watchlistRenamed.emit(old, new_name)
 
     def _delete_watchlist(self) -> None:
         if self._current_name is None:
@@ -259,8 +288,8 @@ class WatchlistPage(QWidget):
             )
         else:
             entry = WatchEntry(kind="insider", market=market, person=text, label=text)
-        self.entry_input.clear()
-        self._apply(self._store.with_entry(self._current_name, entry))
+        if self.add_entry(entry):
+            self.entry_input.clear()
 
     def _remove_selected_entry(self) -> None:
         entry = self._selected_entry()

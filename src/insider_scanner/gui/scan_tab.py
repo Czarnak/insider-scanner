@@ -37,7 +37,8 @@ from insider_scanner.core.fetch_outcome import (
 )
 from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
 from insider_scanner.gui.widgets import SortableTableModel
-from insider_scanner.utils.config import TICKERS_FILE
+from insider_scanner.persistence.watchlists import WatchlistStore
+from insider_scanner.services.common import ScanError
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import Worker, dispatch
 from insider_scanner.utils.trade_display import format_reported_number
@@ -54,13 +55,19 @@ class ScanTab(QWidget):
         parent=None,
         *,
         thread_pool: QThreadPool | None = None,
+        watchlists: WatchlistStore | None = None,
     ):
         super().__init__(parent)
         self._service = service
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._watchlists = watchlists if watchlists is not None else WatchlistStore()
         self._trades: list = []
         self._cancel_event = Event()
         self._build_ui()
+
+    def set_watchlists(self, store: WatchlistStore) -> None:
+        """Use the application's current managed watchlists for the next scan."""
+        self._watchlists = store
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -100,7 +107,7 @@ class ScanTab(QWidget):
 
         self.btn_watchlist = QPushButton("Watchlist Scan")
         self.btn_watchlist.clicked.connect(self._run_watchlist)
-        self.btn_watchlist.setToolTip(f"Scan all tickers in {TICKERS_FILE}")
+        self.btn_watchlist.setToolTip("Scan US companies from your Watchlists")
         search_l.addWidget(self.btn_watchlist)
 
         search_l.addStretch()
@@ -364,14 +371,12 @@ class ScanTab(QWidget):
         )
 
     def _run_watchlist(self):
-        from insider_scanner.utils.config import load_watchlist
-
-        tickers = load_watchlist()
+        tickers = self._watchlists.us_symbols()
         if not tickers:
             QMessageBox.warning(
                 self,
                 "Watchlist",
-                f"No tickers found in {TICKERS_FILE}",
+                "Add US companies on the Watchlists page before scanning.",
             )
             return
 
@@ -409,16 +414,22 @@ class ScanTab(QWidget):
             for i, ticker in enumerate(tickers):
                 if cancel.is_set():
                     break
-                result = as_fetch_result(
-                    self._service.scan(
-                        ticker,
-                        sources=sources,
-                        start_date=sd,
-                        end_date=ed,
-                        use_cache=True,
-                        cancelled=cancel.is_set,
+                try:
+                    result = as_fetch_result(
+                        self._service.scan(
+                            ticker,
+                            sources=sources,
+                            start_date=sd,
+                            end_date=ed,
+                            use_cache=True,
+                            cancelled=cancel.is_set,
+                        )
                     )
-                )
+                except ScanError:
+                    log.exception("Watchlist scan failed for %s", ticker)
+                    issues.append(FetchIssue("scan_failed", identifier=ticker))
+                    worker.signals.progress.emit(i + 1)
+                    continue
                 all_lists.append(result)
                 issues.extend(result.issues)
                 if not result.complete and not result.issues:
@@ -526,6 +537,17 @@ class ScanTab(QWidget):
     def _set_results_status(self, text):
         if warning := describe_incomplete(self._trades):
             text += f"  |  {warning}"
+        if isinstance(self._trades, FetchResult):
+            failed = tuple(
+                dict.fromkeys(
+                    issue.identifier
+                    for issue in self._trades.issues
+                    if issue.reason == "scan_failed"
+                )
+            )
+            if failed:
+                noun = "ticker" if len(failed) == 1 else "tickers"
+                text += f"  |  {len(failed)} {noun} failed: {', '.join(failed)}"
         self.status_label.setText(text)
 
     def _apply_filters(self):
