@@ -59,6 +59,7 @@ from insider_scanner.persistence.feed_state import (
 )
 from insider_scanner.persistence.watchlists import (
     WatchEntry,
+    WatchlistError,
     load_watchlists,
     save_watchlists,
     watchlists_path,
@@ -97,7 +98,16 @@ class MainWindow(QMainWindow):
         self._data_dir: Path = self._state_path.parent
         self._watchlists_path: Path = watchlists_path(self._data_dir)
         self._alerts_path: Path = alerts_path(self._data_dir)
-        self._watchlists = load_watchlists(self._watchlists_path)
+        migration_error = None
+        try:
+            self._watchlists = load_watchlists(
+                self._watchlists_path,
+                legacy_path=self._data_dir / "tickers_watchlist.txt",
+            )
+        except (OSError, WatchlistError) as exc:
+            log.exception("Legacy watchlist migration failed")
+            migration_error = exc
+            self._watchlists = load_watchlists(self._watchlists_path)
         self._alerts = load_alerts(self._alerts_path)
         self._alert_request_id = 0
         self.setWindowTitle("Insider Scanner")
@@ -115,6 +125,12 @@ class MainWindow(QMainWindow):
         self.persist_timer.setSingleShot(True)
         self.persist_timer.setInterval(500)
         self.persist_timer.timeout.connect(self._persist_feed_state)
+        if migration_error is not None:
+            self.log_status(
+                "Could not import legacy watchlist. Existing watchlists are available; "
+                "the import will retry on next startup.",
+                timeout_ms=10_000,
+            )
 
     def _build_shell(self) -> None:
         shell = QWidget()
@@ -313,6 +329,7 @@ class MainWindow(QMainWindow):
             self._add_section_label("Monitor")
             self.watchlist_page = WatchlistPage(self._watchlists)
             self.watchlist_page.watchlistsChanged.connect(self._on_watchlists_changed)
+            self.watchlist_page.watchlistRenamed.connect(self._on_watchlist_renamed)
             self.watchlist_page.openCompanyRequested.connect(self._open_company)
             self.watchlist_page.openInsiderRequested.connect(self._open_insider)
             self.watchlist_page.feedSearchRequested.connect(self._on_global_feed_search)
@@ -340,7 +357,7 @@ class MainWindow(QMainWindow):
         """Add the record's company and insider to the active watchlist."""
         added = False
         if record.identifier:
-            self.watchlist_page.add_entry(
+            added |= self.watchlist_page.add_entry(
                 WatchEntry(
                     kind="company",
                     market=record.market,
@@ -348,9 +365,8 @@ class MainWindow(QMainWindow):
                     label=record.issuer or record.identifier,
                 )
             )
-            added = True
         if record.person:
-            self.watchlist_page.add_entry(
+            added |= self.watchlist_page.add_entry(
                 WatchEntry(
                     kind="insider",
                     market=record.market,
@@ -358,13 +374,20 @@ class MainWindow(QMainWindow):
                     label=record.person,
                 )
             )
-            added = True
         if added:
             self.log_status("Added to watchlist", timeout_ms=3_000)
 
     def _on_watchlists_changed(self, store) -> None:
         self._watchlists = store
         self._persist_watchlists()
+        self.scan_tab.set_watchlists(store)
+        if hasattr(self.analysis_tab, "set_watchlists"):
+            self.analysis_tab.set_watchlists(store)
+
+    def _on_watchlist_renamed(self, old: str, new: str) -> None:
+        store = self.alerts_page.store().renamed_watchlist(old, new)
+        self.alerts_page.set_store(store)
+        self._on_alerts_changed(store)
 
     def _on_alerts_changed(self, store) -> None:
         self._alerts = store
@@ -462,7 +485,9 @@ class MainWindow(QMainWindow):
         from insider_scanner.gui.scan_tab import ScanTab
 
         service = None if self._services is None else self._services.us
-        self.scan_tab = ScanTab(service, thread_pool=self._thread_pool)
+        self.scan_tab = ScanTab(
+            service, thread_pool=self._thread_pool, watchlists=self._watchlists
+        )
         self._add_page("Insider Scan", self.scan_tab)
 
     def _init_congress_page(self) -> None:
@@ -484,7 +509,9 @@ class MainWindow(QMainWindow):
             from insider_scanner.gui.analysis_tab import AnalysisTab
 
             self.analysis_tab = AnalysisTab(
-                self._services, thread_pool=self._thread_pool
+                self._services,
+                thread_pool=self._thread_pool,
+                watchlists=self._watchlists,
             )
         except Exception as exc:
             log.exception("Analysis page initialization failed")
