@@ -102,7 +102,8 @@ class AlertStore:
         """Keep alert references attached when a watchlist display name changes."""
         rules = tuple(
             replace(r, watchlist=new)
-            if r.watchlist is not None and r.watchlist.casefold() == old.casefold()
+            if r.watchlist is not None
+            and r.watchlist.strip().casefold() == old.strip().casefold()
             else r
             for r in self.rules
         )
@@ -171,7 +172,11 @@ def rule_from_dict(d: dict) -> AlertRule:
         last_seen_at = (
             datetime.fromisoformat(raw_seen) if raw_seen is not None else None
         )
-    except ValueError as exc:
+        if last_seen_at is not None:
+            if last_seen_at.tzinfo is None:
+                last_seen_at = last_seen_at.replace(tzinfo=UTC)
+            last_seen_at = last_seen_at.astimezone(UTC)
+    except (ValueError, OverflowError) as exc:
         last_seen_at = None
         error = f"Invalid last-seen timestamp: {exc}"
 

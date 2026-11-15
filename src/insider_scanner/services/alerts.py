@@ -59,7 +59,14 @@ def _dedup_preserve_order(records: tuple[FeedRecord, ...]) -> tuple[FeedRecord, 
 def _candidates_for_watchlist(
     repository, watchlists: WatchlistStore, name: str
 ) -> tuple[FeedRecord, ...]:
-    watchlist = watchlists.get(name)
+    watchlist = next(
+        (
+            item
+            for item in watchlists.watchlists
+            if item.name.strip().casefold() == name.strip().casefold()
+        ),
+        None,
+    )
     if watchlist is None:
         return ()
     collected: list[FeedRecord] = []
