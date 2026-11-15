@@ -12,7 +12,7 @@ rules against the feed is the host window's job — the page only emits
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QFont
@@ -76,6 +76,7 @@ class AlertsPage(QWidget):
     """Manage in-app alert rules and review their latest matches."""
 
     rulesChanged = Signal(object)  # AlertStore
+    matchCountChanged = Signal(int)
     checkRequested = Signal()
     openCompanyRequested = Signal(object, object)
     openInsiderRequested = Signal(object, object)
@@ -106,6 +107,7 @@ class AlertsPage(QWidget):
     def set_store(self, store: AlertStore) -> None:
         """Replace the store without emitting (used to load persisted state)."""
         self._store = store
+        self.display_hits(())
         self._refresh_rules()
 
     def set_criteria_provider(self, provider) -> None:
@@ -121,6 +123,7 @@ class AlertsPage(QWidget):
             (hit.rule_name, record) for hit in self._hits for record in hit.records
         ]
         self._refresh_results()
+        self.matchCountChanged.emit(self.new_match_count())
 
     # ------------------------------------------------------------------
     # UI construction
@@ -221,8 +224,25 @@ class AlertsPage(QWidget):
         self._apply(self._store.without_rule(name))
 
     def _mark_all_seen(self) -> None:
-        self._apply(self._store.marked_all_seen(datetime.now(UTC)))
-        self.display_hits(())
+        store = self._store
+        for hit in self._hits:
+            if not hit.records:
+                continue
+            sequence = getattr(hit, "last_seen_sequence", None)
+            if sequence is not None:
+                store = store.marked_seen_sequence(hit.rule_name, sequence)
+                continue
+            timestamps = [
+                record.created_at.replace(tzinfo=UTC)
+                if record.created_at.tzinfo is None
+                else record.created_at.astimezone(UTC)
+                for record in hit.records
+                if record.created_at is not None
+            ]
+            if timestamps:
+                store = store.marked_seen(hit.rule_name, max(timestamps))
+        if store != self._store:
+            self._apply(store)
 
     def _on_rule_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -265,8 +285,9 @@ class AlertsPage(QWidget):
 
     def _apply(self, new_store: AlertStore) -> None:
         self._store = new_store
-        self.rulesChanged.emit(new_store)
+        self.display_hits(())
         self._refresh_rules()
+        self.rulesChanged.emit(new_store)
 
     def _selected_rule_name(self) -> str | None:
         row = self.rules_table.currentRow()
@@ -328,6 +349,11 @@ class AlertsPage(QWidget):
             self.summary_label.setText(
                 f"{total} new {noun} across {rules} {alert_noun}"
             )
+            remaining = max(0, self.new_match_count() - total)
+            if remaining:
+                self.summary_label.setText(
+                    self.summary_label.text() + f" and {remaining:,} more"
+                )
 
     def _type_brush(self, transaction_type: str) -> QBrush | None:
         direction = classify_direction(transaction_type)

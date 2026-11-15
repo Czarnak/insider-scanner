@@ -7,7 +7,7 @@ from datetime import date
 from threading import Event
 
 import pandas as pd
-from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -48,6 +48,8 @@ log = get_logger("scan_tab")
 
 class ScanTab(QWidget):
     """Full scan workflow: enter ticker → select sources → scan → view → EDGAR."""
+
+    dataChanged = Signal()
 
     def __init__(
         self,
@@ -468,6 +470,7 @@ class ScanTab(QWidget):
             self.status_label.setText(
                 self.status_label.text() + "  (scan was cancelled)"
             )
+        self.dataChanged.emit()
 
     @Slot(tuple)
     def _on_scan_error(self, error_info):
@@ -480,6 +483,7 @@ class ScanTab(QWidget):
             "Scan failed",
             exc_info=(exc_type, exc_value, error_info[2]),
         )
+        self.dataChanged.emit()
         QMessageBox.critical(
             self,
             "Scan Error",

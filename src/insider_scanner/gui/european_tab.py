@@ -17,7 +17,7 @@ from datetime import date
 from threading import Event
 
 import pandas as pd
-from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -79,6 +79,8 @@ _HEADERS = [
 
 class EuropeanTab(QWidget):
     """European insider scan tab."""
+
+    dataChanged = Signal()
 
     def __init__(
         self,
@@ -430,12 +432,14 @@ class EuropeanTab(QWidget):
     @Slot(object)
     def _on_scan_result(self, trades: list[EuropeanInsiderTrade]):
         self._update_table(trades)
+        self.dataChanged.emit()
 
     @Slot(tuple)
     def _on_scan_error(self, error: tuple):
         exc_type = error[0]
         exc = error[1]
         log.error("Scan failed", exc_info=(exc_type, exc, error[2]))
+        self.dataChanged.emit()
         QMessageBox.critical(
             self,
             "Scan Error",

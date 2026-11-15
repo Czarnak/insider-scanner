@@ -353,6 +353,7 @@ class MainWindow(QMainWindow):
                 self._alerts, criteria_provider=self.feed_page.criteria
             )
             self.alerts_page.rulesChanged.connect(self._on_alerts_changed)
+            self.alerts_page.matchCountChanged.connect(self._update_alert_badge)
             self.alerts_page.checkRequested.connect(self._check_alerts)
             self.alerts_page.openCompanyRequested.connect(self._open_company)
             self.alerts_page.openInsiderRequested.connect(self._open_insider)
@@ -397,6 +398,9 @@ class MainWindow(QMainWindow):
         self.scan_tab.set_watchlists(store)
         if hasattr(self.analysis_tab, "set_watchlists"):
             self.analysis_tab.set_watchlists(store)
+        self._alert_request_id += 1
+        self.alerts_page.display_hits(())
+        self._check_alerts()
 
     def _on_watchlist_renamed(self, watchlists, old: str, new: str) -> bool:
         store = self.alerts_page.store().renamed_watchlist(old, new)
@@ -424,7 +428,9 @@ class MainWindow(QMainWindow):
 
     def _on_alerts_changed(self, store) -> None:
         self._alerts = store
+        self._alert_request_id += 1
         self._persist_alerts()
+        self._check_alerts()
 
     def _persist_watchlists(self) -> None:
         try:
@@ -458,15 +464,14 @@ class MainWindow(QMainWindow):
 
     def _check_alerts(self) -> None:
         """Evaluate enabled alert rules against the local feed off the UI thread."""
+        self._alert_request_id += 1
+        request_id = self._alert_request_id
         if self._repository is None:
             return
         store = self.alerts_page.store()
         if not any(rule.enabled for rule in store.rules):
             self.alerts_page.display_hits(())
-            self._update_alert_badge(0)
             return
-        self._alert_request_id += 1
-        request_id = self._alert_request_id
         watchlists = self.watchlist_page.store()
         worker = Worker(evaluate_alerts, self._repository, store, watchlists)
         worker.signals.result.connect(
@@ -481,7 +486,6 @@ class MainWindow(QMainWindow):
         if request_id != self._alert_request_id:
             return
         self.alerts_page.display_hits(hits)
-        self._update_alert_badge(self.alerts_page.new_match_count())
 
     def _on_alerts_error(self, request_id: int, error_info: tuple) -> None:
         if request_id != self._alert_request_id:
@@ -523,6 +527,7 @@ class MainWindow(QMainWindow):
         self.scan_tab = ScanTab(
             service, thread_pool=self._thread_pool, watchlists=self._watchlists
         )
+        self.scan_tab.dataChanged.connect(self._on_data_changed)
         self._add_page("Insider Scan", self.scan_tab)
 
     def _init_congress_page(self) -> None:
@@ -530,6 +535,7 @@ class MainWindow(QMainWindow):
 
         service = None if self._services is None else self._services.congress
         self.congress_tab = CongressTab(service, thread_pool=self._thread_pool)
+        self.congress_tab.dataChanged.connect(self._on_data_changed)
         self._add_page("Congress Scan", self.congress_tab)
 
     def _init_european_page(self) -> None:
@@ -537,6 +543,7 @@ class MainWindow(QMainWindow):
 
         service = None if self._services is None else self._services.european
         self.european_tab = EuropeanTab(service, thread_pool=self._thread_pool)
+        self.european_tab.dataChanged.connect(self._on_data_changed)
         self._add_page("European Scan", self.european_tab)
 
     def _init_analysis_page(self) -> None:
@@ -575,6 +582,13 @@ class MainWindow(QMainWindow):
 
     def _reload_feed(self) -> None:
         self.feed_page.reload()
+        self._check_alerts()
+
+    def _on_data_changed(self) -> None:
+        """Refresh transaction views after a scan has persisted local records."""
+        self.feed_page.reload()
+        self.company_page.reload()
+        self.insider_page.reload()
         self._check_alerts()
 
     def _set_result_count(self, count: int) -> None:
