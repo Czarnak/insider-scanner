@@ -8,6 +8,8 @@ from insider_scanner.core.models import CongressTrade, InsiderTrade
 from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui import analysis_tab as mod
 from insider_scanner.gui.analysis_tab import AnalysisTab, load_trades_for_ticker
+from insider_scanner.persistence.feed import FeedMarket
+from insider_scanner.persistence.watchlists import WatchEntry, Watchlist, WatchlistStore
 
 
 class CapturingPool:
@@ -16,6 +18,19 @@ class CapturingPool:
 
     def start(self, worker):
         self.worker = worker
+
+
+def _watchlists(*symbols):
+    return WatchlistStore(
+        watchlists=(
+            Watchlist(
+                "Companies",
+                tuple(
+                    WatchEntry("company", FeedMarket.US, symbol) for symbol in symbols
+                ),
+            ),
+        )
+    )
 
 
 def _services():
@@ -30,8 +45,8 @@ def _services():
 
 @pytest.fixture
 def tab(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT", "NVDA"])
-    w = AnalysisTab(_services())
+    watchlists = _watchlists("AAPL", "MSFT", "NVDA")
+    w = AnalysisTab(_services(), watchlists=watchlists)
     qtbot.addWidget(w)
     return w
 
@@ -155,9 +170,9 @@ def test_load_trades_for_ticker_bounds_queries_and_trade_dates(monkeypatch):
 
 
 def test_analysis_tab_uses_injected_thread_pool(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
+    watchlists = _watchlists("AAPL")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
     monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
@@ -168,9 +183,9 @@ def test_analysis_tab_uses_injected_thread_pool(qtbot, monkeypatch):
 
 
 def test_analysis_tab_discards_result_after_symbol_changes(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
+    watchlists = _watchlists("AAPL", "MSFT")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
     monkeypatch.setattr(
@@ -194,9 +209,9 @@ def test_analysis_tab_discards_result_after_symbol_changes(qtbot, monkeypatch):
 def test_analysis_tab_keeps_result_stale_after_switching_away_and_back(
     qtbot, monkeypatch
 ):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
+    watchlists = _watchlists("AAPL", "MSFT")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
     monkeypatch.setattr(
@@ -217,9 +232,9 @@ def test_analysis_tab_keeps_result_stale_after_switching_away_and_back(
 
 
 def test_analysis_tab_discards_error_after_symbol_changes(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
+    watchlists = _watchlists("AAPL", "MSFT")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
     monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
@@ -240,9 +255,9 @@ def test_analysis_tab_discards_error_after_symbol_changes(qtbot, monkeypatch):
 def test_analysis_tab_keeps_error_stale_after_switching_away_and_back(
     qtbot, monkeypatch
 ):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
+    watchlists = _watchlists("AAPL", "MSFT")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
     monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
@@ -263,9 +278,9 @@ def test_analysis_tab_keeps_error_stale_after_switching_away_and_back(
 
 
 def test_request_cancellation_suppresses_late_analysis_result(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
+    watchlists = _watchlists("AAPL")
     pool = CapturingPool()
-    tab = AnalysisTab(_services(), thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
     monkeypatch.setattr(
@@ -287,7 +302,7 @@ def test_request_cancellation_suppresses_late_analysis_result(qtbot, monkeypatch
 
 
 def test_analysis_load_uses_application_services_without_bootstrap(qtbot, monkeypatch):
-    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
+    watchlists = _watchlists("AAPL")
     bootstrap = Mock(side_effect=AssertionError("unexpected database bootstrap"))
     monkeypatch.setattr("insider_scanner.services.context.open_persistence", bootstrap)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
@@ -299,7 +314,7 @@ def test_analysis_load_uses_application_services_without_bootstrap(qtbot, monkey
         ),
     )
     pool = CapturingPool()
-    tab = AnalysisTab(services, thread_pool=pool)
+    tab = AnalysisTab(services, thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
     tab._load_selected()
     result = pool.worker.fn()

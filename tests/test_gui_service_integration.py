@@ -12,10 +12,25 @@ from PySide6.QtCore import QRunnable
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, FetchStatus
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.persistence.feed import FeedMarket
+from insider_scanner.persistence.watchlists import WatchEntry, Watchlist, WatchlistStore
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.european import EuropeanScanService
 from insider_scanner.services.us import UsScanService
+
+
+def _watchlists(*symbols):
+    return WatchlistStore(
+        watchlists=(
+            Watchlist(
+                "Companies",
+                tuple(
+                    WatchEntry("company", FeedMarket.US, symbol) for symbol in symbols
+                ),
+            ),
+        )
+    )
 
 
 class InlinePool:
@@ -70,10 +85,7 @@ def test_scan_tab_watchlist_stops_between_identifiers(monkeypatch, qtbot):
 
     service = CancellingService()
     monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
-    monkeypatch.setattr(
-        "insider_scanner.utils.config.load_watchlist", lambda: ["AAPL", "MSFT"]
-    )
-    tab = scan_tab.ScanTab(service)
+    tab = scan_tab.ScanTab(service, watchlists=_watchlists("AAPL", "MSFT"))
     qtbot.addWidget(tab)
 
     tab._run_watchlist()
@@ -149,10 +161,7 @@ def test_scan_tab_watchlist_preserves_incomplete_metadata_and_other_tickers(
             return [InsiderTrade(ticker=identifier)]
 
     monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
-    monkeypatch.setattr(
-        "insider_scanner.utils.config.load_watchlist", lambda: ["AAPL", "MSFT"]
-    )
-    tab = scan_tab.ScanTab(WatchlistService())
+    tab = scan_tab.ScanTab(WatchlistService(), watchlists=_watchlists("AAPL", "MSFT"))
     qtbot.addWidget(tab)
 
     tab._run_watchlist()
@@ -174,8 +183,7 @@ def test_scan_tab_watchlist_preserves_permanently_unsupported_outcome(
         issues=[FetchIssue("unsupported_format", source="example", retryable=False)],
     )
     monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
-    monkeypatch.setattr("insider_scanner.utils.config.load_watchlist", lambda: ["AAPL"])
-    tab = scan_tab.ScanTab(FakeService(result))
+    tab = scan_tab.ScanTab(FakeService(result), watchlists=_watchlists("AAPL"))
     qtbot.addWidget(tab)
 
     tab._run_watchlist()
@@ -519,7 +527,7 @@ def test_main_window_tab_failure_is_logged_and_propagated_without_secret(
 
     secret = "api-token=super-secret"
 
-    def fail_tab(service, *, thread_pool=None):
+    def fail_tab(service, *, thread_pool=None, watchlists=None):
         raise RuntimeError(secret)
 
     tab_module = importlib.import_module(module_name)
