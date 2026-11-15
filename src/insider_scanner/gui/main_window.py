@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self._thread_pool = QThreadPool(self)
         self._shutdown_timeout_ms = shutdown_timeout_ms
         self._alert_request_id = 0
+        self._alert_workers: dict[int, Worker] = {}
         self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
         self._feed_state: FeedState = load_feed_state(self._state_path)
         # Watchlists and alerts live alongside the feed-state file.
@@ -480,7 +481,12 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(
             lambda error_info: self._on_alerts_error(request_id, error_info)
         )
+        worker.signals.finished.connect(lambda: self._release_alert_worker(request_id))
+        self._alert_workers[request_id] = worker
         self._thread_pool.start(worker)
+
+    def _release_alert_worker(self, request_id: int) -> None:
+        self._alert_workers.pop(request_id, None)
 
     def _on_alerts_evaluated(self, request_id: int, hits) -> None:
         if request_id != self._alert_request_id:

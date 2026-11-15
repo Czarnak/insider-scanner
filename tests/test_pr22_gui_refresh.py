@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from types import SimpleNamespace
@@ -238,6 +240,26 @@ def test_disabling_all_rules_invalidates_inflight_evaluation(window):
 
     assert window.alerts_page.new_match_count() == 0
     assert window.alerts_button.text() == "Alerts"
+
+
+def test_alert_worker_survives_until_queued_signals_are_delivered(window, monkeypatch):
+    workers = []
+    monkeypatch.setattr(
+        window._thread_pool, "start", lambda worker: workers.append(weakref.ref(worker))
+    )
+    window.alerts_page.set_store(AlertStore(rules=(AlertRule("A"),)))
+
+    window._check_alerts()
+    gc.collect()
+
+    worker = workers[0]()
+    assert worker is not None
+    worker.signals.result.emit((AlertHit("A", (_record(),), 1),))
+    assert window.alerts_button.text() == "Alerts (1)"
+    worker.signals.finished.emit()
+    del worker
+    gc.collect()
+    assert workers[0]() is None
 
 
 def test_rule_changes_clear_badge_and_schedule_new_evaluation(window, monkeypatch):
