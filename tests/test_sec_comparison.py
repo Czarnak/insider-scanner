@@ -379,3 +379,90 @@ def test_comparison_does_not_aggregate_different_filings(persistence):
     assert summary.matched_count == 0
     assert len(summary.sec_only) == 2
     assert len(summary.legacy_only) == 1
+
+
+def test_comparison_does_not_aggregate_different_securities(persistence):
+    persistence.us_trades.upsert(
+        [
+            _trade(
+                shares=4.0,
+                value=400.0,
+                sec_row_id="non-derivative:0",
+                sec_detail_json='{"security_title":"Common Stock"}',
+            ),
+            _trade(
+                shares=6.0,
+                value=600.0,
+                sec_row_id="non-derivative:1",
+                sec_detail_json='{"security_title":"Preferred Stock"}',
+            ),
+            _trade(
+                source="openinsider",
+                shares=10.0,
+                value=1_000.0,
+                accession_number="",
+                sec_row_id="",
+            ),
+        ]
+    )
+
+    summary = (
+        SecComparisonService(persistence)
+        .compare(
+            targets=(SecComparisonTarget("AAPL", date(2026, 1, 7), date(2026, 1, 7)),),
+            legacy_sources=("openinsider",),
+        )
+        .results[0]
+        .summary_for("openinsider")
+    )
+
+    assert summary.matched_count == 0
+    assert [row.sec_row_id for row in summary.sec_only] == [
+        "non-derivative:0",
+        "non-derivative:1",
+    ]
+    assert len(summary.legacy_only) == 1
+
+
+def test_comparison_preserves_aggregate_when_single_lot_has_another_filing_match(
+    persistence,
+):
+    persistence.us_trades.upsert(
+        [
+            _trade(shares=4.0, value=400.0, sec_row_id="non-derivative:0"),
+            _trade(shares=6.0, value=600.0, sec_row_id="non-derivative:1"),
+            _trade(
+                shares=4.0,
+                value=400.0,
+                accession_number="0000320193-26-000002",
+            ),
+            _trade(
+                source="openinsider",
+                shares=4.0,
+                value=400.0,
+                accession_number="",
+                sec_row_id="",
+            ),
+            _trade(
+                source="openinsider",
+                shares=10.0,
+                value=1_000.0,
+                accession_number="",
+                sec_row_id="",
+            ),
+        ]
+    )
+
+    summary = (
+        SecComparisonService(persistence)
+        .compare(
+            targets=(SecComparisonTarget("AAPL", date(2026, 1, 7), date(2026, 1, 7)),),
+            legacy_sources=("openinsider",),
+        )
+        .results[0]
+        .summary_for("openinsider")
+    )
+
+    assert summary.sec_count == 3
+    assert summary.legacy_count == summary.matched_count == 2
+    assert summary.sec_only == summary.legacy_only == ()
