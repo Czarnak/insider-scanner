@@ -5,16 +5,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Literal
 
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine, RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.sec_ingestion import SecFilingOutcome, SecFilingStatus
 from insider_scanner.persistence.effective import rebuild_replacements
 from insider_scanner.persistence.engine import immediate_transaction
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.repositories import (
     UpsertResult,
     UsTradeRepository,
@@ -24,6 +26,7 @@ from insider_scanner.persistence.schema import (
     sec_archive_progress,
     sec_archive_retries,
     sec_ingested_filings,
+    trade_replacements,
     us_trades,
 )
 
@@ -34,6 +37,7 @@ class SecIngestionWrite:
 
     outcome: SecFilingOutcome
     trades: tuple[InsiderTrade, ...] = ()
+    representation: Literal["xml", "dataset"] = "xml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +68,10 @@ class SecArchiveProgress:
 
 def _safe_reason(value: str) -> str:
     return "".join(char if char.isprintable() else "?" for char in value)[:2_000]
+
+
+def _dataset_row(accession: str, row_id: str) -> bool:
+    return row_id.startswith(f"{accession}:dataset:")
 
 
 class SecIngestionRepository:
@@ -105,6 +113,91 @@ class SecIngestionRepository:
     def is_terminal(self, accession: str) -> bool:
         record = self.get(accession)
         return record is not None and record.complete
+
+    def _prepare_representations(
+        self, connection: Connection, entries: Sequence[SecIngestionWrite]
+    ) -> tuple[list[SecIngestionWrite], list[RowMapping], int, bool]:
+        """Recheck XML precedence while holding the database write lock.
+
+        Dataset surrogate IDs have no documented relationship to XML ordinals.
+        A full successful representation replaces the old dataset rows, rather
+        than allowing two namespaces to contribute to totals. Existing XML
+        evidence, including pre-ledger imports and empty filings, takes priority.
+        """
+        accessions = list({entry.outcome.accession for entry in entries})
+        rows: dict[str, list[RowMapping]] = {}
+        records: dict[str, RowMapping] = {}
+        for offset in range(0, len(accessions), 300):
+            scope = accessions[offset : offset + 300]
+            for row in connection.execute(
+                select(
+                    us_trades.c.accession_number,
+                    us_trades.c.sec_row_id,
+                    us_trades.c.canonical_key,
+                    us_trades.c.ticker,
+                    us_trades.c.cik_issuer,
+                ).where(
+                    us_trades.c.accession_number.in_(scope),
+                    us_trades.c.source == "sec_edgar",
+                )
+            ).mappings():
+                rows.setdefault(row["accession_number"], []).append(row)
+            for record in connection.execute(
+                select(sec_ingested_filings).where(
+                    sec_ingested_filings.c.accession.in_(scope)
+                )
+            ).mappings():
+                records[record["accession"]] = record
+        incoming_xml = {
+            entry.outcome.accession
+            for entry in entries
+            if entry.representation == "xml"
+            and entry.outcome.status is SecFilingStatus.SUCCESS
+        }
+        prepared: list[SecIngestionWrite] = []
+        removed: dict[str, RowMapping] = {}
+        skipped = 0
+        guarded = False
+        for entry in entries:
+            accession = entry.outcome.accession or ""
+            old = rows.get(accession, [])
+            dataset_rows = [
+                row for row in old if _dataset_row(accession, row["sec_row_id"])
+            ]
+            if (
+                dataset_rows
+                and entry.representation == "xml"
+                and any(trade.accession_number != accession for trade in entry.trades)
+            ):
+                raise ValueError("SEC row accession must match its filing outcome")
+            guarded |= bool(dataset_rows) or entry.representation == "dataset"
+            if entry.outcome.status is SecFilingStatus.SUCCESS:
+                existing_record = records.get(accession)
+                xml_present = (
+                    accession in incoming_xml
+                    or (len(old) > len(dataset_rows) and existing_record is None)
+                    or (
+                        existing_record is not None
+                        and existing_record["status"] == SecFilingStatus.SUCCESS.value
+                        and existing_record["stage"] != "dataset"
+                    )
+                )
+                if entry.representation == "dataset" and xml_present:
+                    skipped += len(entry.trades)
+                    entry = SecIngestionWrite(
+                        SecFilingOutcome(accession, SecFilingStatus.SUCCESS)
+                    )
+                else:
+                    incoming = {trade.sec_row_id for trade in entry.trades}
+                    removed.update(
+                        (row["canonical_key"], row)
+                        for row in (
+                            old if entry.representation == "dataset" else dataset_rows
+                        )
+                        if row["sec_row_id"] not in incoming
+                    )
+            prepared.append(entry)
+        return prepared, list(removed.values()), skipped, guarded
 
     def archive_progress(self, archive_id: str, scope: str) -> SecArchiveProgress:
         try:
@@ -190,18 +283,53 @@ class SecIngestionRepository:
                 raise ValueError("SEC ingestion requires a filing accession")
             if entry.trades and entry.outcome.status is not SecFilingStatus.SUCCESS:
                 raise ValueError("Only successful SEC parses may contain trades")
-
-        trades: list[InsiderTrade] = []
-        spans: list[tuple[int, int]] = []
-        for entry in entries:
-            start = len(trades)
-            trades.extend(entry.trades)
-            spans.append((start, len(trades)))
+            if entry.representation not in {"xml", "dataset"}:
+                raise ValueError("Unknown SEC representation")
+            if entry.representation == "dataset" and any(
+                trade.accession_number != entry.outcome.accession
+                or trade.source != "sec_edgar"
+                or not _dataset_row(entry.outcome.accession, trade.sec_row_id)
+                for trade in entry.trades
+            ):
+                raise ValueError("Invalid SEC dataset row identity")
 
         outcomes: list[SecFilingOutcome] = []
         try:
             with immediate_transaction(self._engine) as connection:
+                entries, removed, skipped, guarded = self._prepare_representations(
+                    connection, entries
+                )
+                trades: list[InsiderTrade] = []
+                spans: list[tuple[int, int]] = []
+                for entry in entries:
+                    start = len(trades)
+                    trades.extend(entry.trades)
+                    spans.append((start, len(trades)))
                 upserts = self._trades.upsert_in_connection(connection, trades)
+                if guarded and upserts.errors:
+                    # Replacing representations must not leave the previous
+                    # dataset plus a partial XML repair visible together. The
+                    # bounded batch remains wholly available for retry.
+                    raise PersistenceError(
+                        "SEC representation replacement rejected rows"
+                    )
+                upserts += UpsertResult(skipped=skipped)
+                for offset in range(0, len(removed), 300):
+                    keys = [
+                        row["canonical_key"] for row in removed[offset : offset + 300]
+                    ]
+                    connection.execute(
+                        delete(trade_replacements).where(
+                            trade_replacements.c.market == "us",
+                            or_(
+                                trade_replacements.c.canonical_key.in_(keys),
+                                trade_replacements.c.replacement_key.in_(keys),
+                            ),
+                        )
+                    )
+                    connection.execute(
+                        delete(us_trades).where(us_trades.c.canonical_key.in_(keys))
+                    )
                 now = datetime.now(UTC)
                 values = []
                 for entry, (start, end) in zip(entries, spans, strict=True):
@@ -260,7 +388,7 @@ class SecIngestionRepository:
                     ),
                     values,
                 )
-                if trades:
+                if trades or removed:
                     # Status is now final for this transaction. A partly
                     # rejected amendment must not replace a complete original.
                     rebuild_replacements(
@@ -270,12 +398,14 @@ class SecIngestionRepository:
                             trade.ticker.strip().upper()
                             for trade in trades
                             if isinstance(trade.ticker, str)
-                        },
+                        }
+                        | {row["ticker"] for row in removed},
                         issuers={
                             trade.cik_issuer
                             for trade in trades
                             if isinstance(trade.cik_issuer, str) and trade.cik_issuer
-                        },
+                        }
+                        | {row["cik_issuer"] for row in removed if row["cik_issuer"]},
                     )
         except SQLAlchemyError as error:
             raise _wrap("SEC ingestion commit", error) from error

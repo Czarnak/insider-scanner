@@ -206,13 +206,13 @@ opened, diagnostics remain on stderr. `--log-level` accepts `DEBUG`, `INFO`,
 `WARNING`, `ERROR` or `CRITICAL`, and overrides `INSIDER_SCANNER_LOG_LEVEL`
 (default: `INFO`).
 
-| Exit code | Meaning                                                                                                                                 |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`       | Command completed; per-filing failures alone are nonfatal.                                                                              |
-| `1`       | Operational failure, including an unresolved CIK, invalid SEC configuration, blocked SEC access or an archive error.                    |
-| `2`       | Invalid arguments or input.                                                                                                             |
-| `3`       | `sec-daily`/`sec-catchup` left dates incomplete or stopped on an ingestion error, or `sec-backfill` skipped unreadable archive members. |
-| `130`     | Interrupted by Ctrl+C.                                                                                                                  |
+| Exit code | Meaning                                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`       | Command completed; per-filing failures alone are nonfatal.                                                                                 |
+| `1`       | Operational failure, including an unresolved CIK, invalid SEC configuration, blocked SEC access or an archive error.                       |
+| `2`       | Invalid arguments or input.                                                                                                                |
+| `3`       | SEC dates are incomplete, XML backfill skipped unreadable members, or a dataset import has failed filings or unavailable quarter postings. |
+| `130`     | Interrupted by Ctrl+C.                                                                                                                     |
 
 Congress searches resolve seed names and disclosure spellings through the member's
 structured first/last name and stable member ID. A unique surname can be searched;
@@ -254,8 +254,8 @@ Pass `--country` to restrict to `UK`/`DE`/`FR`/`NL` (default: `All`), `--type` t
 ### SEC EDGAR ingestion CLI
 
 Ingest SEC transactions (Forms 4/5 and their amendments) directly into the local
-database. These commands require a valid `SEC_USER_AGENT` (see SEC fair access
-below), so set it first:
+database. Network commands require a valid `SEC_USER_AGENT` (see SEC fair access
+below). Importing an already downloaded quarterly ZIP works without it:
 
 ```bash
 # Required: your app/company name plus a real contact email
@@ -280,7 +280,7 @@ reported in the summary; an incomplete date makes `sec-daily`/`sec-catchup` exit
 `3`, including an explicitly requested provisional current date. A failure count
 alone does not fail the command when all requested dates are complete.
 
-For all three SEC ingestion commands, the first Ctrl+C requests a cooperative
+For SEC ingestion commands, the first Ctrl+C requests a cooperative
 stop. The current filing finishes, buffered results are committed, and the CLI
 prints a partial summary, closes its clients and database, and exits `130`.
 Run the same command again to resume from durable progress. A second Ctrl+C
@@ -335,10 +335,76 @@ classified as missing because their original values were not stored; their
 flags retain legacy defaults. Recovering those distinctions requires the
 original filing data.
 
-#### SEC full bulk backfill
+#### Quarterly historical datasets
 
-For a one-time historical import of all SEC ownership filings you can download the
-SEC's "submissions" bulk archive and run the dedicated backfill command.
+Use the [SEC Insider Transactions Data Sets](https://www.sec.gov/data-research/sec-markets-data/insider-transactions-data-sets)
+for history from **2006 Q1** onward. The importer downloads one ZIP per published
+quarter through the shared SEC client, rather than fetching every historical
+filing separately. It discovers actual published links; it does not guess URLs
+or assume the current quarter is available.
+
+```bash
+# Download published quarters and import filings in an inclusive date range
+insider-scanner-cli sec-backfill-dataset --since 2006-01-01 --until 2026-06-15
+
+# Import local quarterly ZIPs without network access or SEC_USER_AGENT
+insider-scanner-cli sec-backfill-dataset --zip ./2026q1_form345.zip --zip ./2026q2_form345.zip
+
+# Select issuer/reporting-owner CIKs; retain downloads in an explicit directory
+insider-scanner-cli sec-backfill-dataset --since 2026-01-01 --cik 320193 --download-dir ./sec-datasets
+
+# Refresh a republished quarter and reimport successful dataset accessions
+insider-scanner-cli sec-backfill-dataset --since 2026-01-01 --until 2026-03-15 --redownload --reimport
+```
+
+Dates default to 2006-01-01 through today in US Eastern time. Local imports cover
+only the supplied archives; their success does not assert continuous historical
+coverage. Downloads remain in the SEC cache's `datasets` directory unless
+`--download-dir` is supplied. Existing ZIPs are reused; `--redownload` replaces
+them atomically. `--reimport` retries successful dataset filings while preserving
+richer XML evidence. `--quiet` suppresses progress, retaining summaries/errors.
+
+TSVs stream into a disposable SQLite join store, then use the shared ownership
+mapper, bounded filing batches and accession ledger. Owners, derivatives,
+footnotes, missing values, amendments and raw observations keep the established
+semantics. Dataset SK values have no documented XML-position equivalence, so
+dataset rows use their own identity namespace. A complete XML repair atomically
+replaces that accession's dataset rows; an unsuccessful repair retains them.
+Dataset imports cannot overwrite complete XML, including older imported rows.
+Unavailable XML hashes and exact archive URLs remain empty. Narrative at the
+documented 2,000-character cap, or missing footnote-reference columns, remains
+insufficient for amendment supersession. Short complete narratives use the same
+conservative amendment matching as XML.
+
+Archive/member names, entry types, compression ratios and uncompressed bounds
+are checked before reads. Dataset downloads and individual members are capped
+at 1 GiB; the existing 16 GiB total and 2,000,000-entry limits remain. Imported
+tables (`SUBMISSION`, `REPORTINGOWNER`, `NONDERIV_TRANS`, `DERIV_TRANS`,
+`FOOTNOTES`) must be present with their required headers, even when empty.
+Holding and signature tables are not turned into transactions. Corrupt
+attributable filings remain retryable; schema/orphan failures reject the archive.
+Progress reports staged rows separately from committed filings. Repeating an
+interrupted run restages the local TSVs and skips already committed accessions.
+
+**Historical and publication gaps are explicit.** Datasets do not cover
+2003–2005; use bounded XML backfill for that interval. Earlier non-XML filings
+remain unsupported. The [SEC format guide](https://www.sec.gov/files/insider_transactions_readme.pdf)
+places filings after 5:30 p.m. Eastern on the final business day into the next
+posting. The download planner includes the following posting for requested dates
+in the final week, allowing for SEC holidays. Missing postings and failed
+dataset filings return `3`, with catch-up/repair guidance. No date is marked
+covered merely because a quarterly archive imported successfully.
+
+After importing published history, run `sec-catchup` from a week before the
+latest published quarter ends through your desired end date. This includes the
+unpublished quarter and the boundary overlap. Daily ingestion skips committed
+accessions through the same ledger. Use `sec-backfill --cik ... --force` for an
+individual issuer/owner repair, including replacing a dataset with full XML.
+
+#### Bounded XML backfill and repairs
+
+For 2003–2005, older gaps or targeted repairs, download SEC's "submissions"
+metadata archive and run the XML backfill command.
 
 **Download the archive** (multi-GB, refreshed nightly):
 
@@ -350,11 +416,14 @@ Download it manually — the file is too large for an automated in-process fetch
 After saving it locally, run the backfill:
 
 ```bash
-# Ingest all ownership filings from the bulk archive (resumable)
-insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill
+# Ingest the XML interval before quarterly datasets begin (resumable)
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --since 2003-01-01 --until 2005-12-31 --confirm-full-backfill
 
 # Limit to specific CIKs (--cik is repeatable)
 insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --cik 0000320193 --cik 0001318605 --confirm-full-backfill
+
+# Re-fetch successful filings for a targeted repair, including dataset rows
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --cik 0000320193 --since 2026-01-01 --until 2026-06-15 --force --confirm-full-backfill
 
 # Override an archive-size limit after checking a trusted local archive
 insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --zip-max-total-bytes 34359738368
@@ -383,6 +452,10 @@ retries transient fetch, mapping or persistence failures. Attempts and the lates
 failure reason remain in the ledger after a run finishes. A targeted `--cik` run
 cannot clear full-run progress; renamed or refreshed archives reuse known
 accessions. Removing a download cache does not remove ingestion progress.
+Filing-date bounds are applied before network requests and have independent
+resume positions. `--force` requires CIKs or both date bounds and rereads that
+scope on every invocation, bypassing both terminal accession skips and the
+archive cursor. Other scopes retain their progress.
 
 Migration 10 adds a member-position cursor and separate retry positions for each
 archive and CIK scope. Resume checks the central directory, then opens only
@@ -435,9 +508,10 @@ same hardened downloader and parser as `sec-daily`.
   unfinished dates and filings available for a later retry. The process waits
   at least 10 minutes before allowing one probe; a longer SEC `Retry-After` is
   honored. Restarting the process does not remove a server-side block.
-- A full backfill touches every ownership filing in EDGAR — expect it to take
-  several hours and generate significant network traffic. Run it once and use
-  `sec-daily` / `sec-catchup` for ongoing ingestion.
+- Unbounded XML backfill fetches one document per accession; at 8 requests/second
+  its theoretical ceiling is 28,800 filings/hour, so millions of filings take
+  days even before network and database overhead. Use quarterly datasets for
+  published history and reserve XML for early history, recent gaps and repairs.
 - The SEC daily index lags approximately one business day; filings from the
   most recent day may not yet appear in the bulk archive.
 

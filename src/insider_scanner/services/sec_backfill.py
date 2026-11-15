@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from hashlib import sha256
 from pathlib import Path
 from time import monotonic
@@ -30,6 +31,7 @@ from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
 )
+from insider_scanner.persistence.sec_ingestion import SecArchiveProgress
 from insider_scanner.services.common import not_cancelled
 from insider_scanner.services.context import PersistenceContext
 from insider_scanner.services.sec_persistence import SecTradeBatch, make_persist_sink
@@ -110,6 +112,9 @@ class SecBackfillService:
         *,
         confirm: bool = False,
         ciks: frozenset[str] | None = None,
+        since: date | None = None,
+        until: date | None = None,
+        force: bool = False,
         cancelled: Callable[[], bool] = not_cancelled,
         on_progress: Callable[[SecBackfillSummary], None] | None = None,
     ) -> SecBackfillSummary:
@@ -117,6 +122,10 @@ class SecBackfillService:
             raise SecBackfillConfirmationError(
                 "Full bulk backfill requires explicit confirmation"
             )
+        if since is not None and until is not None and since > until:
+            raise ValueError("since must not be after until")
+        if force and not ciks and (since is None or until is None):
+            raise ValueError("Forced XML repair requires CIKs or both date bounds")
 
         counters = new_counters()
         started = monotonic()
@@ -135,7 +144,17 @@ class SecBackfillService:
             if ciks is None
             else sha256(",".join(sorted(ciks)).encode("ascii")).hexdigest()
         )
-        position = ledger.archive_progress(archive_id, scope)
+        if since is not None or until is not None or force:
+            scope = sha256(
+                f"{scope}|{since}|{until}|force={force}".encode("ascii")
+            ).hexdigest()
+        # Explicit repairs reread their selected scope on every invocation.
+        # Normal date/CIK scopes keep independent durable archive positions.
+        position = (
+            SecArchiveProgress()
+            if force
+            else ledger.archive_progress(archive_id, scope)
+        )
         batch = SecTradeBatch(
             ledger.commit,
             max_filings=self._batch_filings,
@@ -288,6 +307,14 @@ class SecBackfillService:
                 if cancellation_requested():
                     break
                 discovered_rows += 1
+                if (since is not None or until is not None) and (
+                    meta.filing_date is None
+                    or (since is not None and meta.filing_date < since)
+                    or (until is not None and meta.filing_date > until)
+                ):
+                    skipped_metadata += 1
+                    emit_progress()
+                    continue
                 accession = meta.accession_number
                 if accession in seen:
                     duplicates += 1
@@ -297,7 +324,7 @@ class SecBackfillService:
                 if accession in attempted:
                     emit_progress()
                     continue
-                if ledger.is_terminal(accession):
+                if not force and ledger.is_terminal(accession):
                     attempted.add(accession)
                     skipped_resume += 1
                     emit_progress()

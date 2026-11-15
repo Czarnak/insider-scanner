@@ -24,6 +24,8 @@ def test_resource_profiles_and_reason_codes_are_stable_enums() -> None:
         "daily_index",
         "json_metadata",
         "filing_document",
+        "dataset_index",
+        "dataset_zip",
     }
     assert {reason.value for reason in SecSecurityReason} == {
         "host",

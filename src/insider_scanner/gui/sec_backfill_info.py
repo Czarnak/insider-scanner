@@ -12,12 +12,14 @@ def build_sec_backfill_info_group() -> QGroupBox:
     group = QGroupBox("SEC Full Backfill (command line)")
     layout = QVBoxLayout(group)
     label = QLabel(
-        "Full historical backfill runs from the command line. First download the "
+        "Historical backfill runs from the command line. For 2006 Q1 onward, use:<br>"
+        "<code>insider-scanner-cli sec-backfill-dataset</code><br><br>"
+        "For 2003–2005 or targeted XML repairs, download the "
         "SEC submissions bulk archive (multi-GB, refreshed nightly):<br>"
         f'<a href="{SEC_BULK_SUBMISSIONS_URL}">{SEC_BULK_SUBMISSIONS_URL}</a><br><br>'
-        "Then run:<br>"
+        "Then run with filing-date bounds and, for repairs, a CIK:<br>"
         "<code>insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip "
-        "--confirm-full-backfill</code><br><br>"
+        "--since 2003-01-01 --until 2005-12-31 --confirm-full-backfill</code><br><br>"
         "The run is resumable — re-run the same command to continue after an "
         "interruption."
     )

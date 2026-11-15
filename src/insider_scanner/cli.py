@@ -12,7 +12,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from threading import Event, current_thread, main_thread
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from insider_scanner.core import edgar
 from insider_scanner.core.fetch_outcome import describe_incomplete
@@ -39,22 +39,33 @@ if TYPE_CHECKING:
 
 log = get_logger("cli")
 
-# SEC submissions bulk archive — the only input to full backfill.
+# SEC submissions metadata archive for bounded legacy ingestion and XML repairs.
 # Verified reachable: ranged GET with a compliant SEC User-Agent returned HTTP 206,
 # Content-Type application/zip, ~1.55 GB. Host www.sec.gov is in the SEC client allowlist.
 SEC_BULK_SUBMISSIONS_URL = (
     "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
 )
 SEC_BULK_INSTRUCTIONS = (
-    "Full backfill needs the SEC 'submissions' bulk archive (multi-GB, refreshed nightly).\n"
+    "For history from 2006 Q1, use quarterly SEC datasets:\n"
+    "   insider-scanner-cli sec-backfill-dataset --since 2006-01-01\n"
+    "For 2003–2005 or targeted XML repairs, use the SEC 'submissions' archive "
+    "(multi-GB, refreshed nightly).\n"
     "1. Download it once:\n"
     f"   {SEC_BULK_SUBMISSIONS_URL}\n"
     "2. Run backfill against the local file:\n"
     "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
+    "Use --since/--until to bound filing dates, and --cik for targeted repairs.\n"
+    "Add --force to a scoped repair to replace an already-ingested dataset filing.\n"
     "Backfill is resumable: re-run the same command after an interruption to continue."
 )
 DEFAULT_US_SCAN_SOURCES = ("secform4", "openinsider")
 DEFAULT_US_LATEST_SOURCES = ("openinsider",)
+
+
+class _BackfillOptions(TypedDict, total=False):
+    since: date
+    until: date
+    force: bool
 
 
 def _parse_date_arg(value: str) -> date:
@@ -613,8 +624,14 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
 
     try:
         ciks = frozenset(edgar.normalize_cik(c) for c in args.cik) if args.cik else None
+        since, until = getattr(args, "since", None), getattr(args, "until", None)
+        force = getattr(args, "force", False)
+        if since is not None and until is not None and since > until:
+            raise ValueError("since must not be after until")
+        if force and not ciks and (since is None or until is None):
+            raise ValueError("--force requires --cik or both --since and --until")
     except ValueError as error:
-        print(f"Invalid --cik value: {error}", file=sys.stderr)
+        print(f"Invalid backfill input: {error}", file=sys.stderr)
         return 2
 
     limits = {
@@ -634,6 +651,13 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
             cleanup=not args.no_cleanup,
         )
         print(f"Starting full bulk backfill from {zip_path} (resumable).")
+        options: _BackfillOptions = {}
+        if since is not None:
+            options["since"] = since
+        if until is not None:
+            options["until"] = until
+        if force:
+            options["force"] = True
         try:
             summary = service.run(
                 zip_path,
@@ -641,6 +665,7 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
                 ciks=ciks,
                 cancelled=cancelled,
                 on_progress=_make_backfill_progress(getattr(args, "quiet", False)),
+                **options,
             )
         except SecBulkError as error:
             print(f"SEC backfill archive error: {error}", file=sys.stderr)
@@ -659,6 +684,21 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
             )
             return 3
         return 0
+
+
+def cmd_sec_backfill_dataset(
+    args: argparse.Namespace, services: ApplicationServices
+) -> int:
+    """Import quarterly history with explicit publication-gap guidance."""
+    from insider_scanner.cli_sec_dataset import run_dataset_command
+
+    return run_dataset_command(
+        args,
+        services,
+        build_client=_build_sec_client,
+        cache_root=_sec_cache_root,
+        interrupt=_cooperative_interrupt,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -905,6 +945,64 @@ def build_parser() -> argparse.ArgumentParser:
             help=f"Override the {description} limit for a trusted local archive",
         )
     p_sec_backfill.set_defaults(func=cmd_sec_backfill)
+
+    p_sec_backfill.add_argument(
+        "--since", type=_parse_date_arg, help="First filing date to fetch (inclusive)"
+    )
+    p_sec_backfill.add_argument(
+        "--until", type=_parse_date_arg, help="Last filing date to fetch (inclusive)"
+    )
+    p_sec_backfill.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-fetch terminal filings; requires CIKs or both date bounds",
+    )
+
+    p_dataset = sub.add_parser(
+        "sec-backfill-dataset",
+        help="Import quarterly SEC datasets (2006 Q1 onward)",
+        description="Import local quarterly Form 3/4/5 ZIPs or download published quarters from SEC. Unpublished quarters require sec-catchup; 2003–2005 requires XML backfill.",
+    )
+    p_dataset.add_argument(
+        "--zip",
+        action="append",
+        type=Path,
+        help="Local quarterly ZIP; repeat for several quarters. Omit to download from SEC.",
+    )
+    p_dataset.add_argument(
+        "--since",
+        type=_parse_date_arg,
+        help="First filing date, inclusive (default: 2006-01-01)",
+    )
+    p_dataset.add_argument(
+        "--until",
+        type=_parse_date_arg,
+        help="Last filing date, inclusive (default: today in US Eastern time)",
+    )
+    p_dataset.add_argument(
+        "--cik", action="append", help="Select issuer/reporting-owner CIK; repeatable"
+    )
+    p_dataset.add_argument(
+        "--download-dir",
+        type=Path,
+        help="Keep downloaded quarters here (default: SEC cache/datasets)",
+    )
+    p_dataset.add_argument(
+        "--redownload",
+        action="store_true",
+        help="Atomically refresh cached ZIPs from the published links",
+    )
+    p_dataset.add_argument(
+        "--reimport",
+        action="store_true",
+        help="Reimport successful dataset filings; existing XML retains priority",
+    )
+    p_dataset.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress; keep final summaries and errors",
+    )
+    p_dataset.set_defaults(func=cmd_sec_backfill_dataset)
 
     # sec-compare (local validation report, no live network fetches)
     p_sec_compare = sub.add_parser(
