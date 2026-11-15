@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -148,14 +148,30 @@ class SecIngestionRepository:
                         }
                     )
                 statement = insert(sec_ingested_filings)
+                # Downloads happen outside this transaction. An overlapping run
+                # can finish successfully while another still holds a stale
+                # fetch/mapping failure; that attempt must not erase success.
+                keep_success = and_(
+                    sec_ingested_filings.c.status == SecFilingStatus.SUCCESS.value,
+                    statement.excluded.status != SecFilingStatus.SUCCESS.value,
+                )
                 connection.execute(
                     statement.on_conflict_do_update(
                         index_elements=[sec_ingested_filings.c.accession],
                         set_={
-                            "status": statement.excluded.status,
+                            "status": case(
+                                (keep_success, sec_ingested_filings.c.status),
+                                else_=statement.excluded.status,
+                            ),
                             "attempts": sec_ingested_filings.c.attempts + 1,
-                            "stage": statement.excluded.stage,
-                            "reason": statement.excluded.reason,
+                            "stage": case(
+                                (keep_success, sec_ingested_filings.c.stage),
+                                else_=statement.excluded.stage,
+                            ),
+                            "reason": case(
+                                (keep_success, sec_ingested_filings.c.reason),
+                                else_=statement.excluded.reason,
+                            ),
                             "updated_at": statement.excluded.updated_at,
                         },
                     ),

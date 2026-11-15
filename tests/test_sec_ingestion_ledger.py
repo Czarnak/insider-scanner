@@ -85,6 +85,41 @@ def test_retry_attempts_increment_and_success_clears_diagnostics(persistence):
     assert len(persistence.us_trades.query_latest(10)) == 1
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        SecFilingStatus.RETRYABLE_FAILURE,
+        SecFilingStatus.PERMANENT_FAILURE,
+        SecFilingStatus.UNSUPPORTED,
+    ],
+)
+def test_overlapping_late_failure_cannot_downgrade_committed_success(
+    persistence, status
+):
+    overlapping = SecIngestionRepository(persistence.engine)
+    assert overlapping.get(ACCESSION) is None
+    persistence.sec_ingestion.commit([successful_write()])
+
+    # The other run started its fetch before the successful commit and only now
+    # finishes its unsuccessful attempt. Keep that attempt's report truthful,
+    # while the durable ledger retains the successfully committed result.
+    result = overlapping.commit(
+        [
+            SecIngestionWrite(
+                SecFilingOutcome(ACCESSION, status, "fetch", "late failure")
+            )
+        ]
+    )
+
+    assert result.outcomes[0].status is status
+    record = persistence.sec_ingestion.get(ACCESSION)
+    assert record is not None
+    assert record.status is SecFilingStatus.SUCCESS
+    assert record.attempts == 2
+    assert record.stage == record.reason == ""
+    assert persistence.us_trades.query_latest(10) == [sec_trade()]
+
+
 @pytest.mark.parametrize("failure", ["database", "interrupt"])
 def test_ledger_write_failure_rolls_back_all_trades_and_progress(persistence, failure):
     def fail_ledger(connection, cursor, statement, parameters, context, executemany):
