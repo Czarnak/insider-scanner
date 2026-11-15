@@ -16,7 +16,7 @@ configuration.
 
 ### GitHub environments
 
-In `Czarnak/insider-scan`, open **Settings -> Environments** and create:
+In `Czarnak/insider-scanner`, open **Settings -> Environments** and create:
 
 - `testpypi`
 - `pypi`
@@ -30,7 +30,7 @@ On <https://pypi.org>, add a pending Trusted Publisher with these exact values:
 
 - PyPI project name: `insider-scanner`
 - GitHub owner: `Czarnak`
-- GitHub repository: `insider-scan`
+- GitHub repository: `insider-scanner`
 - Workflow filename: `release.yml`
 - Environment name: `pypi`
 
@@ -40,7 +40,7 @@ On <https://test.pypi.org>, add the corresponding pending Trusted Publisher:
 
 - TestPyPI project name: `insider-scanner`
 - GitHub owner: `Czarnak`
-- GitHub repository: `insider-scan`
+- GitHub repository: `insider-scanner`
 - Workflow filename: `release.yml`
 - Environment name: `testpypi`
 
