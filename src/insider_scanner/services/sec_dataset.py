@@ -184,8 +184,21 @@ class SecDatasetService:
                         mapped = []
                         for trade in trades:
                             detail = json.loads(trade.sec_detail_json)
+                            # SEC documents 2,000-character narrative columns.
+                            # At that ceiling the dataset cannot prove the
+                            # absence of truncated addition/omission wording.
                             detail.update(
-                                dataset_representation=True, narrative_complete=False
+                                dataset_representation=True,
+                                narrative_complete=(
+                                    detail.get("narrative_complete") is True
+                                    and "dataset_reference_columns_missing"
+                                    not in detail.get("warnings", [])
+                                    and len(item.filing.remarks or "") < 2000
+                                    and all(
+                                        len(note.text) < 2000
+                                        for note in item.filing.footnotes
+                                    )
+                                ),
                             )
                             # The TSV has no verified master-index archive path
                             # or XML bytes. Keep those unavailable, not invented.

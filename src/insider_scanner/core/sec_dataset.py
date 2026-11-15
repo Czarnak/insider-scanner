@@ -135,6 +135,31 @@ _KEY_COLUMNS = {
     "DERIV_TRANS": "DERIV_TRANS_SK",
     "FOOTNOTES": "FOOTNOTE_ID",
 }
+_REFERENCE_COLUMNS = frozenset(
+    {
+        "SECURITY_TITLE_FN",
+        "TRANS_DATE_FN",
+        "DEEMED_EXECUTION_DATE_FN",
+        "EQUITY_SWAP_TRANS_CD_FN",
+        "TRANS_TIMELINESS_FN",
+        "TRANS_SHARES_FN",
+        "TRANS_PRICEPERSHARE_FN",
+        "TRANS_ACQUIRED_DISP_CD_FN",
+        "SHRS_OWND_FOLWNG_TRANS_FN",
+        "VALU_OWND_FOLWNG_TRANS_FN",
+        "DIRECT_INDIRECT_OWNERSHIP_FN",
+        "NATURE_OF_OWNERSHIP_FN",
+    }
+)
+_DERIVATIVE_REFERENCES = _REFERENCE_COLUMNS | {
+    "CONV_EXERCISE_PRICE_FN",
+    "TRANS_TOTAL_VALUE_FN",
+    "EXCERCISE_DATE_FN",
+    "EXPIRATION_DATE_FN",
+    "UNDLYNG_SEC_TITLE_FN",
+    "UNDLYNG_SEC_SHARES_FN",
+    "UNDLYNG_SEC_VALUE_FN",
+}
 
 
 class SecDatasetError(SecBulkError):
@@ -581,6 +606,11 @@ def _transaction(
         "shares_owned_following": _number(row, "SHRS_OWND_FOLWNG_TRANS", policy),
         "direct_or_indirect": ownership,
         "footnote_ids": references,
+        "warnings": ()
+        if (
+            _DERIVATIVE_REFERENCES if kind == "derivative" else _REFERENCE_COLUMNS
+        ).issubset(row)
+        else ("dataset_reference_columns_missing",),
         "transaction_total_value": _number(row, "TRANS_TOTAL_VALUE", policy),
         "value_owned_following": _number(row, "VALU_OWND_FOLWNG_TRANS", policy),
         "price_footnote_ids": _references(
