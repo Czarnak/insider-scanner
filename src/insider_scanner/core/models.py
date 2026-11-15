@@ -85,6 +85,7 @@ class InsiderTrade:
     cik_issuer: str = ""
     cik_insider: str = ""
     period_of_report: date | None = None
+    original_submission_date: date | None = None
     is_amendment: bool = False
     is_derivative: bool = False
     document_sha256: str = ""

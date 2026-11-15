@@ -142,7 +142,7 @@ def european_to_values(
 
 
 def us_from_row(row: Any) -> InsiderTrade:
-    return InsiderTrade(**{field: row[field] for field in _US_FIELDS})
+    return InsiderTrade(**{field: row[field] for field in _US_FIELDS if field in row})
 
 
 def congress_from_row(row: Any) -> CongressTrade:

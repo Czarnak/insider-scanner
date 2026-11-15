@@ -1,17 +1,19 @@
 """Derived replacement links; original source observations remain untouched.
 
-Amendments replace a complete filing, not guessed individual transaction rows.
+SEC amendments restate individual lines; unmatched original lines survive.
 Only a uniquely identified original can anchor an amendment chain. Missing or
-ambiguous evidence is retained. Cross-source matches require dated economic
-evidence and never coalesce separate native lots or separate accessions.
+ambiguous evidence is retained. Senate amendments replace complete reports.
+Cross-source matches never coalesce separate native lots or accessions.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import Table, and_, delete, exists, insert, or_, select
@@ -68,39 +70,25 @@ def _owners(row: Mapping[str, Any]) -> tuple[str, ...]:
     return (owner,) if owner else ()
 
 
-def _supersessions(
-    rows: list[Mapping[str, Any]], *, senate: bool
-) -> dict[str, tuple[str, str]]:
+def _senate_supersessions(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
     groups: dict[tuple, dict[str, list[Mapping[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for row in rows:
-        identity: tuple
-        if senate:
-            if (
-                row["source"] != "senate"
-                or not row["period_of_report"]
-                or not row["report_title"]
-            ):
-                continue
-            identity = (
-                _normalized(row["official_name"]),
-                row["chamber"],
-                row["period_of_report"],
-            )
-            filing = row["doc_id"].strip()
-            if not identity[0] or row["chamber"] != "Senate":
-                continue
-        else:
-            if not row["accession_number"] or not row["sec_row_id"]:
-                continue
-            issuer = row["cik_issuer"].strip().lstrip("0")
-            owners = _owners(row)
-            form = row["form_type"].upper().removesuffix("/A")
-            if not issuer or not owners or not row["period_of_report"] or not form:
-                continue
-            identity = (issuer, owners, row["period_of_report"], form)
-            filing = row["accession_number"].strip()
+        if (
+            row["source"] != "senate"
+            or not row["period_of_report"]
+            or not row["report_title"]
+        ):
+            continue
+        identity = (
+            _normalized(row["official_name"]),
+            row["chamber"],
+            row["period_of_report"],
+        )
+        filing = row["doc_id"].strip()
+        if not identity[0] or row["chamber"] != "Senate":
+            continue
         if filing and row["filing_date"]:
             groups[identity][filing].append(row)
     links: dict[str, tuple[str, str]] = {}
@@ -116,11 +104,7 @@ def _supersessions(
             key: lots
             for key, lots in filings.items()
             if all(row["is_amendment"] for row in lots)
-            and (not senate or all(row["filing_complete"] for row in lots))
-            and (
-                senate
-                or all(row.get("_filing_status") in {None, "success"} for row in lots)
-            )
+            and all(row["filing_complete"] for row in lots)
         }
         if not candidates:
             continue
@@ -135,12 +119,190 @@ def _supersessions(
             if key == winner:
                 continue
             # Senate UUIDs cannot establish same-day filing order.
-            if senate and lots[0]["filing_date"] >= winning_date:
-                continue
-            if lots[0]["filing_date"] > winning_date:
+            if lots[0]["filing_date"] >= winning_date:
                 continue
             for row in lots:
                 links[row["canonical_key"]] = (replacement, "superseded")
+    return links
+
+
+def _detail(row: Mapping[str, Any]) -> dict:
+    try:
+        value = json.loads(row["sec_detail_json"])
+        return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _decimal_key(value: Any) -> str:
+    try:
+        number = Decimal(str(value))
+        if number.is_finite():
+            return str(number.normalize())
+    except (ValueError, InvalidOperation):
+        pass
+    return str(value)
+
+
+def _line_key(row: Mapping[str, Any]) -> tuple | None:
+    detail = _detail(row)
+    title = _normalized(str(detail.get("security_title") or ""))
+    if not title or not row["trade_date"] or not row["transaction_code"]:
+        return None
+    key: tuple = (
+        title,
+        row["trade_date"],
+        row["transaction_code"],
+        row["is_derivative"],
+        row["acquired_disposed"],
+        row["direct_or_indirect"],
+    )
+    if row["is_derivative"]:
+        key += (
+            detail.get("exercise_date"),
+            detail.get("expiration_date"),
+            _decimal_key(detail.get("conversion_or_exercise_price")),
+            _normalized(str(detail.get("underlying_security_title") or "")),
+        )
+    return key
+
+
+def _financial_key(row: Mapping[str, Any]) -> tuple:
+    return tuple(
+        (row[name], row[f"{name}_missing"])
+        for name in ("shares", "price", "value", "shares_owned_after")
+    )
+
+
+def _narrative(row: Mapping[str, Any]) -> str:
+    detail = _detail(row)
+    footnotes = detail.get("footnotes")
+    texts = list(footnotes.values()) if isinstance(footnotes, dict) else []
+    return _normalized(
+        " ".join(str(value) for value in [*texts, detail.get("remarks", "")])
+    )
+
+
+_ADDITION = re.compile(r"\b(?:add(?:s|ed|ing|ition|itional)?|omitt?\w*|unreported)\b")
+_CORRECTION = re.compile(r"\bcorrect(?:s|ed|ing|ion|ions)?\b")
+
+
+def _corrects_financial_fields(old: Mapping[str, Any], new: Mapping[str, Any]) -> bool:
+    text = _narrative(new)
+    if not _CORRECTION.search(text) or _ADDITION.search(text):
+        return False
+    field_words = {
+        "shares": r"\b(?:number of shares|share count|transaction shares|quantity)\b",
+        "price": r"\bprice\b",
+        "shares_owned_after": r"\b(?:holdings|owned|ownership|balance)\b",
+    }
+    changed = [
+        name
+        for name in field_words
+        if (old[name], old[f"{name}_missing"]) != (new[name], new[f"{name}_missing"])
+    ]
+    if not changed:
+        return bool(re.search(r"\b(?:value|amount|proceeds)\b", text))
+    return all(re.search(field_words[name], text) for name in changed)
+
+
+def _replace_sec_lines(
+    active: list[Mapping[str, Any]],
+    incoming: list[Mapping[str, Any]],
+    links: dict[str, tuple[str, str]],
+) -> list[Mapping[str, Any]]:
+    available = {row["canonical_key"]: row for row in active}
+    pending = []
+    for row in incoming:
+        key = _line_key(row)
+        if key is None or _ADDITION.search(_narrative(row)):
+            continue
+        exact = [
+            old
+            for old in available.values()
+            if _line_key(old) == key and _financial_key(old) == _financial_key(row)
+        ]
+        if exact:
+            old = min(exact, key=lambda item: item["canonical_key"])
+            links[old["canonical_key"]] = (row["canonical_key"], "superseded")
+            del available[old["canonical_key"]]
+        else:
+            pending.append(row)
+    # No ordinal guessing: amendment tables omit unchanged lines. A differing
+    # line needs one candidate and narrative evidence about the changed field.
+    for row in pending:
+        candidates = [
+            old for old in available.values() if _line_key(old) == _line_key(row)
+        ]
+        competing = [new for new in pending if _line_key(new) == _line_key(row)]
+        if len(candidates) == len(competing) == 1 and _corrects_financial_fields(
+            candidates[0], row
+        ):
+            old = candidates[0]
+            links[old["canonical_key"]] = (row["canonical_key"], "superseded")
+            del available[old["canonical_key"]]
+    return [*available.values(), *incoming]
+
+
+def _sec_supersessions(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    groups: dict[tuple, dict[str, list[Mapping[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for row in rows:
+        issuer, owners = row["cik_issuer"].strip().lstrip("0"), _owners(row)
+        form = row["form_type"].upper().removesuffix("/A")
+        if not (
+            row["accession_number"]
+            and row["sec_row_id"]
+            and issuer
+            and owners
+            and row["period_of_report"]
+            and form
+            and row["filing_date"]
+        ):
+            continue
+        groups[(issuer, owners, row["period_of_report"], form)][
+            row["accession_number"]
+        ].append(row)
+    links: dict[str, tuple[str, str]] = {}
+    for filings in groups.values():
+        originals = {
+            key: lots
+            for key, lots in filings.items()
+            if not any(row["is_amendment"] for row in lots)
+        }
+        active = {key: list(lots) for key, lots in originals.items()}
+        amendments = [
+            lots
+            for lots in filings.values()
+            if all(
+                row["is_amendment"] and row.get("_filing_status") in {None, "success"}
+                for row in lots
+            )
+        ]
+        for lots in sorted(
+            amendments,
+            key=lambda items: (items[0]["filing_date"], items[0]["accession_number"]),
+        ):
+            dates = {row["original_submission_date"] for row in lots}
+            if len(dates) != 1:
+                continue
+            original_date = next(iter(dates))
+            candidates = [
+                key
+                for key, original in originals.items()
+                if original_date is None or original[0]["filing_date"] == original_date
+            ]
+            if len(candidates) != 1:
+                continue
+            original_key = candidates[0]
+            if originals[original_key][0]["filing_date"] > lots[0]["filing_date"]:
+                continue
+            active[original_key] = _replace_sec_lines(active[original_key], lots, links)
+    for key, (replacement, reason) in list(links.items()):
+        while replacement in links:
+            replacement = links[replacement][0]
+        links[key] = (replacement, reason)
     return links
 
 
@@ -192,7 +354,7 @@ def _matches(scraper: Mapping[str, Any], lots: list[Mapping[str, Any]]) -> bool:
 
 
 def _us_links(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
-    links = _supersessions(rows, senate=False)
+    links = _sec_supersessions(rows)
     native: dict[tuple, dict[tuple, list[Mapping[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -273,7 +435,7 @@ def rebuild_replacements(
                 )
             )
         )
-    links = _us_links(rows) if table is us_trades else _supersessions(rows, senate=True)
+    links = _us_links(rows) if table is us_trades else _senate_supersessions(rows)
     if links:
         connection.execute(
             insert(trade_replacements),

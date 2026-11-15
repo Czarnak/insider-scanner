@@ -25,6 +25,7 @@ def native(**kwargs):
             "period_of_report": date(2026, 1, 5),
             "form_type": "4",
             "transaction_code": "S",
+            "sec_detail_json": '{"security_title":"Common Stock","remarks":"Corrects the share count in the original report."}',
             **kwargs,
         }
     )
@@ -47,12 +48,18 @@ def amended(original, **kwargs):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_sec_amendment_replaces_entire_filing_before_filters_and_limits(
+def test_sec_amendment_replaces_matching_line_before_filters_and_limits(
     engine, reverse
 ):
     repo = UsTradeRepository(engine)
     original = native()
-    second_lot = replace(original, sec_row_id="non-derivative:1", shares=5, value=1000)
+    second_lot = replace(
+        original,
+        sec_row_id="non-derivative:1",
+        shares=5,
+        value=1000,
+        trade_date=date(2026, 1, 4),
+    )
     amendment = amended(original)
     for rows in (
         [[amendment], [original, second_lot]]
@@ -60,13 +67,13 @@ def test_sec_amendment_replaces_entire_filing_before_filters_and_limits(
         else [[original, second_lot], [amendment]]
     ):
         repo.upsert(rows)
-    assert repo.query("AAPL") == [amendment]
+    assert repo.query("AAPL") == [amendment, second_lot]
     assert repo.query_latest(1) == [amendment]
-    assert repo.query("AAPL", end_date=original.filing_date) == []
+    assert repo.query("AAPL", end_date=original.filing_date) == [second_lot]
     assert len(repo.query_raw("AAPL")) == 3
-    assert repo.query_raw("AAPL", include_superseded=False) == [amendment]
+    assert repo.query_raw("AAPL", include_superseded=False) == [amendment, second_lot]
     feed = FeedRepository(engine).query(FeedQuery(markets=(FeedMarket.US,)))
-    assert len(feed.records) == 1
+    assert len(feed.records) == 2
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -275,7 +282,9 @@ def test_sec_amendment_with_rejected_rows_cannot_supersede_complete_original(
 
     original = native()
     amendment = amended(original)
-    invalid = replace(amendment, sec_row_id="non-derivative:1", price=-1)
+    invalid = replace(
+        amendment, sec_row_id="non-derivative:1", price=-1, trade_date=date(2026, 1, 6)
+    )
     persistence.us_trades.upsert([original])
     outcome = SecFilingOutcome(amendment.accession_number, SecFilingStatus.SUCCESS)
     result = persistence.sec_ingestion.commit(
@@ -287,3 +296,64 @@ def test_sec_amendment_with_rejected_rows_cannot_supersede_complete_original(
         [SecIngestionWrite(outcome, (amendment, replace(invalid, price=200)))]
     )
     assert original not in persistence.us_trades.query("AAPL")
+
+
+def test_sec_line_amendment_preserves_unchanged_original_transactions(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    unchanged = replace(
+        original, sec_row_id="non-derivative:1", trade_date=date(2026, 1, 4)
+    )
+    amendment = amended(original)
+    repo.upsert([original, unchanged, amendment])
+    assert repo.query("AAPL") == [amendment, unchanged]
+
+
+def test_sec_added_transaction_does_not_replace_same_day_original(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    addition = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Adds a previously omitted transaction."}',
+    )
+    repo.upsert([original, addition])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_sec_identical_restatement_replaces_only_one_repeated_lot(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    repeated = replace(original, sec_row_id="non-derivative:1")
+    amendment = amended(original, shares=original.shares, value=original.value)
+    repo.upsert([original, repeated, amendment])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_sec_unknown_changed_line_remains_visible_without_correction_evidence(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    unknown = amended(original, sec_detail_json='{"security_title":"Common Stock"}')
+    repo.upsert([original, unknown])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_sec_original_submission_date_disambiguates_same_period_filings(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    other = replace(
+        original, accession_number="0000320193-26-000003", filing_date=date(2026, 1, 6)
+    )
+    amendment = amended(original, original_submission_date=original.filing_date)
+    repo.upsert([original, other, amendment])
+    assert repo.query("AAPL") == [amendment, other]
+
+
+def test_sec_nonfinancial_correction_cannot_authorize_changed_quantity(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    amendment = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address."}',
+    )
+    repo.upsert([original, amendment])
+    assert len(repo.query("AAPL")) == 2

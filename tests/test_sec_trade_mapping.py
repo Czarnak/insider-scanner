@@ -170,6 +170,30 @@ def _filing(
 # ---------------------------------------------------------------------------
 
 
+def test_amendment_remarks_retained_for_transaction_linkage():
+    filing = replace(
+        _filing(non_derivs=(_non_deriv(),), is_amendment=True),
+        remarks="Amendment to correct the number of shares in the original transaction.",
+    )
+
+    trade = ownership_filing_to_trades(filing, _INDEX_ROW)[0]
+
+    assert json.loads(trade.sec_detail_json).get("remarks") == (
+        "Amendment to correct the number of shares in the original transaction."
+    )
+
+
+def test_amendment_remarks_are_bounded_in_transaction_detail():
+    filing = replace(
+        _filing(non_derivs=(_non_deriv(),), is_amendment=True),
+        remarks="c" * 5000,
+    )
+
+    trade = ownership_filing_to_trades(filing, _INDEX_ROW)[0]
+
+    assert json.loads(trade.sec_detail_json).get("remarks") == "c" * 4096
+
+
 class TestTransactionOrdering:
     def test_non_deriv_first_then_deriv(self) -> None:
         nd0 = _non_deriv(row_id="nd:0")

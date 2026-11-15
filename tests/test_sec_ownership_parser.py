@@ -7,7 +7,7 @@ sec_ownership_parser.py is implemented.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -290,6 +290,61 @@ def test_amendment_fixture_metadata() -> None:
     assert filing.period_of_report == date(2026, 5, 20)
     assert filing.remarks is not None
     assert "Amendment to correct" in filing.remarks
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-05-21", date(2026, 5, 21)),
+        ("2026-05-21Z", date(2026, 5, 21)),
+        ("2026-02-30", None),
+        ("", None),
+    ],
+)
+def test_original_submission_date_metadata_is_optional_and_validated(raw, expected):
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+
+    doc = _load_doc("sec_form4_amendment.xml", document_type="4/A")
+    element = (
+        f"<dateOfOriginalSubmission>{raw}</dateOfOriginalSubmission>" if raw else ""
+    )
+    filing = parse_ownership_document(
+        replace(
+            doc,
+            xml_text=doc.xml_text.replace(
+                "</ownershipDocument>", f"{element}</ownershipDocument>"
+            ),
+        )
+    )
+
+    assert getattr(filing, "original_submission_date", None) == expected
+    if raw and expected is None:
+        assert "invalid_date:dateOfOriginalSubmission" in filing.warnings
+    assert len(filing.non_derivative_transactions) == 1
+
+
+def test_original_submission_date_survives_trade_mapping():
+    from insider_scanner.core.sec_index import SecMasterIndexRow
+    from insider_scanner.core.sec_ownership_parser import parse_ownership_document
+    from insider_scanner.core.sec_trade_mapping import ownership_filing_to_trades
+
+    doc = _load_doc("sec_form4_amendment.xml", document_type="4/A")
+    xml = doc.xml_text.replace(
+        "</ownershipDocument>",
+        "<dateOfOriginalSubmission>2026-05-21</dateOfOriginalSubmission></ownershipDocument>",
+    )
+    filing = parse_ownership_document(replace(doc, xml_text=xml))
+    index = SecMasterIndexRow(
+        cik="0000320193",
+        company_name="Apple Inc.",
+        form_type="4/A",
+        filing_date=date(2026, 5, 22),
+        archive_path="edgar/data/320193/0000320193-26-000061-index.htm",
+    )
+
+    trades = ownership_filing_to_trades(filing, index)
+
+    assert getattr(trades[0], "original_submission_date", None) == date(2026, 5, 21)
 
 
 # ---------------------------------------------------------------------------

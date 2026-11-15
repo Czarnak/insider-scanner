@@ -60,7 +60,13 @@ def _insert_historical(engine, name, values):
 
 def _rows(engine, table):
     with engine.connect() as connection:
-        return list(connection.execute(select(table).order_by(table.c.id)).mappings())
+        names = {
+            column["name"] for column in inspect(connection).get_columns(table.name)
+        }
+        columns = [column for column in table.c if column.name in names]
+        return list(
+            connection.execute(select(*columns).order_by(table.c.id)).mappings()
+        )
 
 
 def test_upgrade_rekeys_scraper_preserves_native_sec_and_reingest_is_idempotent(
@@ -90,8 +96,9 @@ def test_upgrade_rekeys_scraper_preserves_native_sec_and_reingest_is_idempotent(
     assert dict(after[0]) == {
         **dict(before[0]),
         "canonical_key": us_canonical_key(scraper),
+        "original_submission_date": None,
     }
-    assert dict(after[1]) == dict(before[1])
+    assert dict(after[1]) == {**dict(before[1]), "original_submission_date": None}
     repo = UsTradeRepository(engine)
     assert repo.upsert([scraper, native]) == UpsertResult(skipped=2)
     assert len(repo.query_raw("AAPL")) == 2

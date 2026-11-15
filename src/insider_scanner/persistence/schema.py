@@ -370,6 +370,7 @@ us_trades.append_column(
     Column("cik_insider", String(16), nullable=False, server_default="")
 )
 us_trades.append_column(Column("period_of_report", Date))
+us_trades.append_column(Column("original_submission_date", Date))
 us_trades.append_column(
     Column("is_amendment", Boolean, nullable=False, server_default=text("0"))
 )
