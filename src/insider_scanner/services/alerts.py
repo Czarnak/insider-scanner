@@ -75,7 +75,9 @@ def _candidates_for_watchlist(
 
 
 def _candidates_for_criteria(repository, rule: AlertRule) -> tuple[FeedRecord, ...]:
-    page = repository.query(rule.criteria.to_query(limit=DEFAULT_PAGE_SIZE))
+    page = repository.query(
+        rule.criteria.to_query(limit=DEFAULT_PAGE_SIZE, include_total=False)
+    )
     return page.records
 
 

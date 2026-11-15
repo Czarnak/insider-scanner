@@ -349,7 +349,7 @@ us_trades.indexes.difference_update(
         if index.name == "ix_us_trades_source_filing_date"
     }
 )
-READ_INDEXES = []
+READ_INDEXES: list[Index] = []
 for _table, _identifier, _person in (
     (us_trades, "ticker", "insider_name"),
     (congress_trades, "ticker", "official_name"),
