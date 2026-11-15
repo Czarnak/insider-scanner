@@ -399,18 +399,10 @@ class TestEnsureHouseIndex:
         assert result.exists()
         assert (tmp_path / "2026FD.txt").exists()
 
-    def test_skip_if_present(self, tmp_path):
-        # Pre-create the file
-        xml_path = tmp_path / "2026FD.xml"
-        xml_path.write_text("<FinancialDisclosure></FinancialDisclosure>")
-
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            result = ensure_house_index(2026)
-
-        assert result == xml_path
-        # Should not have made any HTTP requests
+    @responses.activate
+    def test_skip_if_present(self, fresh_house_index):
+        assert ensure_house_index(2026) == fresh_house_index
+        assert not responses.calls
 
     @responses.activate
     def test_force_redownload(self, tmp_path):
