@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import Literal
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.sec_index import SecMasterIndexRow
@@ -44,10 +45,22 @@ class SecTradeBatch:
         self._outcomes: list[SecFilingOutcome] = []
         self.upserts = UpsertResult()
 
-    def add(self, accession: str | None, trades: Sequence[InsiderTrade]) -> None:
+    def add(
+        self,
+        accession: str | None,
+        trades: Sequence[InsiderTrade],
+        *,
+        representation: Literal["xml", "dataset"] = "xml",
+    ) -> None:
         self._add(
             SecIngestionWrite(
-                SecFilingOutcome(accession, SecFilingStatus.SUCCESS), tuple(trades)
+                SecFilingOutcome(
+                    accession,
+                    SecFilingStatus.SUCCESS,
+                    "dataset" if representation == "dataset" else "",
+                ),
+                tuple(trades),
+                representation,
             )
         )
 
