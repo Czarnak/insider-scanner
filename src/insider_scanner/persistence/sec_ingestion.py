@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, case, select
+from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,7 +19,11 @@ from insider_scanner.persistence.repositories import (
     UsTradeRepository,
     _wrap,
 )
-from insider_scanner.persistence.schema import sec_ingested_filings
+from insider_scanner.persistence.schema import (
+    sec_archive_progress,
+    sec_archive_retries,
+    sec_ingested_filings,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +52,12 @@ class SecIngestionRecord:
     @property
     def complete(self) -> bool:
         return self.status is not SecFilingStatus.RETRYABLE_FAILURE
+
+
+@dataclass(frozen=True, slots=True)
+class SecArchiveProgress:
+    next_member: int = 0
+    retry_members: frozenset[int] = frozenset()
 
 
 def _safe_reason(value: str) -> str:
@@ -93,6 +103,77 @@ class SecIngestionRepository:
     def is_terminal(self, accession: str) -> bool:
         record = self.get(accession)
         return record is not None and record.complete
+
+    def archive_progress(self, archive_id: str, scope: str) -> SecArchiveProgress:
+        try:
+            with self._engine.connect() as connection:
+                position = connection.scalar(
+                    select(sec_archive_progress.c.next_member).where(
+                        sec_archive_progress.c.archive_id == archive_id,
+                        sec_archive_progress.c.scope == scope,
+                    )
+                )
+                retries = connection.scalars(
+                    select(sec_archive_retries.c.member_index).where(
+                        sec_archive_retries.c.archive_id == archive_id,
+                        sec_archive_retries.c.scope == scope,
+                    )
+                )
+                return SecArchiveProgress(position or 0, frozenset(retries))
+        except SQLAlchemyError as error:
+            raise _wrap("SEC archive progress lookup", error) from error
+
+    def commit_archive_progress(
+        self, archive_id: str, scope: str, members: Sequence[tuple[int, bool]]
+    ) -> None:
+        """Advance only after filing batches commit; retain failed members.
+
+        A crash between the filing commit and this transaction only replays
+        discovery. The accession ledger prevents duplicate successful fetches.
+        Retry rows are updated individually instead of rewriting a growing set.
+        """
+        if not members:
+            return
+        if any(index < 0 for index, _retry in members):
+            raise ValueError("Archive member positions must not be negative")
+        try:
+            with immediate_transaction(self._engine) as connection:
+                statement = insert(sec_archive_progress).values(
+                    archive_id=archive_id,
+                    scope=scope,
+                    next_member=max(index for index, _ in members) + 1,
+                )
+                connection.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=["archive_id", "scope"],
+                        set_={
+                            "next_member": func.max(
+                                sec_archive_progress.c.next_member,
+                                statement.excluded.next_member,
+                            )
+                        },
+                    )
+                )
+                completed = [index for index, retry in members if not retry]
+                if completed:
+                    connection.execute(
+                        delete(sec_archive_retries).where(
+                            sec_archive_retries.c.archive_id == archive_id,
+                            sec_archive_retries.c.scope == scope,
+                            sec_archive_retries.c.member_index.in_(completed),
+                        )
+                    )
+                failures = [
+                    {"archive_id": archive_id, "scope": scope, "member_index": index}
+                    for index, retry in members
+                    if retry
+                ]
+                if failures:
+                    connection.execute(
+                        insert(sec_archive_retries).on_conflict_do_nothing(), failures
+                    )
+        except SQLAlchemyError as error:
+            raise _wrap("SEC archive progress commit", error) from error
 
     def commit(self, entries: Sequence[SecIngestionWrite]) -> SecIngestionCommit:
         """Publish status and rows together, or roll back the complete batch.

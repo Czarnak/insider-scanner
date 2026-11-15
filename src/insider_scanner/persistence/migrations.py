@@ -22,6 +22,8 @@ from insider_scanner.persistence.schema import (
     congress_trades,
     refresh_state,
     scan_coverage,
+    sec_archive_progress,
+    sec_archive_retries,
     sec_ingested_filings,
     us_trades,
     v1_metadata,
@@ -274,6 +276,11 @@ def _add_sec_ingestion_ledger(connection: Connection) -> None:
     sec_ingested_filings.create(connection)
 
 
+def _add_sec_archive_progress(connection: Connection) -> None:
+    sec_archive_progress.create(connection)
+    sec_archive_retries.create(connection)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -319,5 +326,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=9,
         name="add_sec_ingestion_ledger",
         upgrade=_add_sec_ingestion_ledger,
+    ),
+    Migration(
+        version=10,
+        name="add_sec_archive_progress",
+        upgrade=_add_sec_archive_progress,
     ),
 )
