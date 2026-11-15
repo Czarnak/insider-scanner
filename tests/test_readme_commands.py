@@ -30,7 +30,7 @@ def test_readme_cli_examples_parse_without_running_commands():
 
     for example in re.findall(r"^insider-scanner-cli (.+)$", content, re.MULTILINE):
         argv = shlex.split(example, comments=True)
-        if argv == ["--help"]:
+        if argv in (["--help"], ["--version"]):
             continue
         args = parser.parse_args(argv)
         assert callable(args.func), example

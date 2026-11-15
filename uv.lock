@@ -640,7 +640,6 @@ dependencies = [
     { name = "pandas" },
     { name = "pdfplumber" },
     { name = "platformdirs" },
-    { name = "pyyaml" },
     { name = "requests" },
     { name = "sqlalchemy" },
 ]
@@ -655,6 +654,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-qt" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
     { name = "responses" },
     { name = "ruff" },
     { name = "setuptools" },
@@ -663,6 +663,9 @@ dev = [
 gui = [
     { name = "pyqtgraph" },
     { name = "pyside6" },
+]
+maintainer = [
+    { name = "pyyaml" },
 ]
 release = [
     { name = "build" },
@@ -690,7 +693,8 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1" },
     { name = "pytest-qt", marker = "extra == 'dev'", specifier = ">=4.2" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
-    { name = "pyyaml", specifier = ">=6.0,<7" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0,<7" },
+    { name = "pyyaml", marker = "extra == 'maintainer'", specifier = ">=6.0,<7" },
     { name = "requests", specifier = ">=2.31,<3" },
     { name = "responses", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.0" },
@@ -699,7 +703,7 @@ requires-dist = [
     { name = "twine", marker = "extra == 'release'", specifier = ">=5.1" },
     { name = "wheel", marker = "extra == 'dev'" },
 ]
-provides-extras = ["gui", "dev", "release"]
+provides-extras = ["gui", "maintainer", "dev", "release"]
 
 [[package]]
 name = "jaraco-classes"

@@ -1,155 +1,204 @@
 name: release
 
 on:
-    push:
-        tags:
-            - "v*.*.*"
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
-    contents: read
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-    build:
-        name: Build sdist + wheel
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-            - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-              with:
-                  python-version: "3.12"
-            - run: python -m pip install --upgrade pip build twine
-            - run: rm -rf build dist
-            - run: python -m build
-            - run: python -m twine check dist/*
-            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-              with:
-                  name: dist
-                  path: dist/
+  validate-version:
+    name: Verify release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Match tag to package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
 
-    smoke-test:
-        name: Install-verify (py ${{ matrix.python }} / ${{ matrix.os }})
-        needs: build
-        runs-on: ${{ matrix.os }}
-        strategy:
-            fail-fast: false
-            matrix:
-                os: [ubuntu-latest, windows-latest]
-                python: ["3.11", "3.12", "3.13", "3.14"]
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-            - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-              with:
-                  python-version: ${{ matrix.python }}
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: dist
-                  path: dist
-            - name: Verify base wheel installation
-              shell: bash
-              run: |
-                  python -m pip install dist/*.whl
-                  python scripts/verify_install.py --mode base
-            - name: Install Qt system libraries (Linux)
-              if: runner.os == 'Linux'
-              shell: bash
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y libegl1
-            - name: Verify GUI wheel installation
-              shell: bash
-              env:
-                  QT_QPA_PLATFORM: offscreen
-              run: |
-                  wheel_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.whl')).resolve().as_uri())")"
-                  python -m pip install "insider-scanner[gui] @ ${wheel_uri}"
-                  python scripts/verify_install.py --mode gui
+          version = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+          tag = os.environ["RELEASE_TAG"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Release tag {tag!r} does not match package version v{version}")
+          print(f"Release version verified: {version}")
+          PY
 
-    sdist-smoke-test:
-        name: Install-verify sdist
-        needs: build
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-            - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-              with:
-                  python-version: "3.12"
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: dist
-                  path: dist
-            - name: Install Qt system libraries (Linux)
-              if: runner.os == 'Linux'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y libegl1
-            - name: Verify base and GUI sdist installations
-              env:
-                  QT_QPA_PLATFORM: offscreen
-              run: |
-                  python -m pip install dist/*.tar.gz
-                  python scripts/verify_install.py --mode base
-                  sdist_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.tar.gz')).resolve().as_uri())")"
-                  python -m pip install "insider-scanner[gui] @ ${sdist_uri}"
-                  python scripts/verify_install.py --mode gui
+  quality:
+    name: Release quality gates
+    needs: validate-version
+    uses: ./.github/workflows/ci.yml
 
-    publish-testpypi:
-        name: Publish to TestPyPI
-        needs: [smoke-test, sdist-smoke-test]
-        runs-on: ubuntu-latest
-        environment: testpypi
-        permissions:
-            id-token: write # OIDC for Trusted Publishing
-        steps:
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: dist
-                  path: dist
-            - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
-              with:
-                  repository-url: https://test.pypi.org/legacy/
+  build:
+    name: Build sdist + wheel
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip build twine
+      - run: rm -rf build dist
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
 
-    verify-testpypi:
-        name: Verify install from TestPyPI
-        needs: publish-testpypi
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-            - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-              with:
-                  python-version: "3.12"
-            - name: Install Qt system libraries (Linux)
-              if: runner.os == 'Linux'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y libegl1
-            - name: Wait for TestPyPI to index, then install
-              env:
-                  QT_QPA_PLATFORM: offscreen
-                  VERSION: ${{ github.ref_name }}
-              run: |
-                  ver="${VERSION#v}"
-                  for attempt in 1 2 3 4 5 6; do
-                    if python -m pip install \
-                      --index-url https://test.pypi.org/simple/ \
-                      --extra-index-url https://pypi.org/simple/ \
-                      "insider-scanner[gui]==${ver}"; then
-                      python scripts/verify_install.py --mode gui
-                      exit 0
-                    fi
-                    sleep $((attempt * 10))
-                  done
-                  exit 1
+  smoke-test:
+    name: Install-verify (py ${{ matrix.python }} / ${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Verify base wheel installation
+        shell: bash
+        run: |
+          python -m pip install dist/*.whl
+          python scripts/verify_install.py --mode base
+      - name: Install Qt system libraries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+      - name: Verify GUI wheel installation
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          wheel_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.whl')).resolve().as_uri())")"
+          python -m pip install "insider-scanner[gui] @ ${wheel_uri}"
+          python scripts/verify_install.py --mode gui
 
-    publish-pypi:
-        name: Publish to PyPI
-        needs: verify-testpypi
-        runs-on: ubuntu-latest
-        environment: pypi
-        permissions:
-            id-token: write # OIDC for Trusted Publishing
-        steps:
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: dist
-                  path: dist
-            - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+  sdist-smoke-test:
+    name: Install-verify sdist
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Install Qt system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+      - name: Verify base and GUI sdist installations
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install dist/*.tar.gz
+          python scripts/verify_install.py --mode base
+          sdist_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.tar.gz')).resolve().as_uri())")"
+          python -m pip install "insider-scanner[gui] @ ${sdist_uri}"
+          python scripts/verify_install.py --mode gui
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [smoke-test, sdist-smoke-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: testpypi
+    permissions:
+      id-token: write # OIDC for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  verify-testpypi:
+    name: Verify install from TestPyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: Install Qt system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+      - name: Install candidate dependencies from PyPI
+        run: |
+          wheel_uri="$(python -c "from pathlib import Path; print(next(Path('dist').glob('*.whl')).resolve().as_uri())")"
+          python -m pip install --index-url https://pypi.org/simple/ "insider-scanner[gui] @ ${wheel_uri}"
+      - name: Wait for TestPyPI to index, then replace the candidate
+        env:
+          QT_QPA_PLATFORM: offscreen
+          VERSION: ${{ github.ref_name }}
+        run: |
+          ver="${VERSION#v}"
+          for attempt in 1 2 3 4 5 6; do
+            if python -m pip install \
+              --no-deps --force-reinstall \
+              --index-url https://test.pypi.org/simple/ \
+              "insider-scanner[gui]==${ver}"; then
+              python scripts/verify_install.py --mode gui
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          exit 1
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: verify-testpypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write # OIDC for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1

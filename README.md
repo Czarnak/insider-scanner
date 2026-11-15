@@ -27,6 +27,7 @@ insider-scanner
 
 ```bash
 insider-scanner-cli --help # command-line interface
+insider-scanner-cli --version # installed package version
 insider-scanner            # desktop GUI (requires the gui extra)
 ```
 
@@ -40,9 +41,19 @@ pip install -e ".[gui,dev]"
 
 ### Requirements
 
-Python 3.11.5+. Core dependencies include `requests`, `beautifulsoup4`, `lxml`,
-`pandas`, `pyyaml`, `pdfplumber`, `numpy`, `platformdirs`, and SQLAlchemy.
-The `gui` extra adds `PySide6` and `pyqtgraph`.
+Python 3.11.5+. Core dependencies include `curl-cffi`, `requests`, `beautifulsoup4`,
+`lxml`, `pandas`, `pdfplumber`, `platformdirs`, and SQLAlchemy. Explicit
+`cryptography` and `numpy` bounds preserve the supported transitive dependency
+ranges for PDF parsing, pandas and the optional GUI.
+The `gui` extra adds `PySide6` and `pyqtgraph`. The `maintainer` extra installs
+PyYAML for `scripts/update_congress.py`; YAML is also included in `dev` for tests.
+
+Release tags must match the version in `pyproject.toml` (for example, `v2.0.0`).
+The package and `--version` read installed distribution metadata. Releases run
+the same offline tests, coverage, lint, type and dependency checks as CI before
+building artifacts, then verify base and GUI wheel/sdist installations. TestPyPI
+verification installs dependencies from PyPI before replacing the candidate with
+the exact TestPyPI version using `--no-deps`.
 
 ### Runtime data and cache directories
 

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.core.sources import SEC_EDGAR_SOURCE, US_SOURCES
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services.context import PersistenceContext
@@ -20,7 +21,7 @@ log = get_logger("services.importer")
 
 _ISIN_PATTERN = re.compile(r"^[A-Z]{2}[A-Z0-9]{9}[0-9]$")
 _TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,31}$")
-_US_SOURCES = {"secform4", "openinsider", "edgar"}
+_US_SOURCE_ALIASES = {"edgar": SEC_EDGAR_SOURCE}
 _CONGRESS_ENUMS = {
     "house": ("house", "House"),
     "senate": ("senate", "Senate"),
@@ -120,6 +121,12 @@ def _require_strings(item: dict, fields: tuple[str, ...]) -> None:
             raise ValueError(f"{field} must be a string")
 
 
+def _require_booleans(item: dict, fields: tuple[str, ...]) -> None:
+    for field in fields:
+        if field in item and not isinstance(item[field], bool):
+            raise ValueError(f"{field} must be a boolean")
+
+
 def _require_nonblank(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} is required")
@@ -148,6 +155,18 @@ def _normalize_source(value: str, allowed: set[str], field: str = "source") -> s
 
 
 def _parse_us(item: dict) -> InsiderTrade:
+    _require_booleans(
+        item,
+        (
+            "is_congress",
+            "is_amendment",
+            "is_derivative",
+            "shares_missing",
+            "price_missing",
+            "value_missing",
+            "shares_owned_after_missing",
+        ),
+    )
     _require_strings(
         item,
         (
@@ -166,26 +185,20 @@ def _parse_us(item: dict) -> InsiderTrade:
     trade = InsiderTrade.from_dict(item)
     ticker = _normalize_ticker(trade.ticker, required=True)
     _require_nonblank(trade.insider_name, "insider_name")
-    source = _normalize_source(trade.source, _US_SOURCES)
+    source_value = _require_nonblank(trade.source, "source").casefold()
+    source = _US_SOURCE_ALIASES.get(source_value, source_value)
+    if source not in US_SOURCES:
+        raise ValueError("invalid source")
     if trade.trade_date is None and trade.filing_date is None:
         raise ValueError("trade_date or filing_date is required")
     if trade.trade_type not in {"Buy", "Sell", "Exercise", "Other"}:
         raise ValueError("invalid trade_type")
-    if "is_congress" in item and not isinstance(item["is_congress"], bool):
-        raise ValueError("is_congress must be a boolean")
-    for flag in (
-        "shares_missing",
-        "price_missing",
-        "value_missing",
-        "shares_owned_after_missing",
-    ):
-        if flag in item and not isinstance(item[flag], bool):
-            raise ValueError(f"{flag} must be a boolean")
     _require_finite((trade.shares, trade.price, trade.value, trade.shares_owned_after))
     return replace(trade, ticker=ticker, source=source)
 
 
 def _parse_congress(item: dict) -> CongressTrade:
+    _require_booleans(item, ("is_amendment", "filing_complete"))
     _require_strings(
         item,
         (
@@ -343,7 +356,7 @@ def _import_file(
         return LegacyFileReport(path, 0, 0, 0, 1, ("file: file_too_large",))
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError as error:
         _log_import_error("Malformed legacy JSON file", error, path=path)
         return LegacyFileReport(path, 0, 0, 0, 1, ("file: malformed_json",))
