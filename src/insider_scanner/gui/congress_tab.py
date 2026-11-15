@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-from PySide6.QtCore import QDate, Qt, QThreadPool, Slot
+from PySide6.QtCore import QDate, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -204,6 +204,8 @@ def save_congress_results(
 
 class CongressTab(QWidget):
     """Congress trade scanner: select official → scan sources → filter → view."""
+
+    dataChanged = Signal()
 
     def __init__(
         self,
@@ -522,6 +524,7 @@ class CongressTab(QWidget):
             self.status_label.setText(
                 self.status_label.text() + "  (scan was cancelled)"
             )
+        self.dataChanged.emit()
 
     @Slot(tuple)
     def _on_scan_error(self, error_info):
@@ -533,6 +536,7 @@ class CongressTab(QWidget):
             "Congress scan failed",
             exc_info=(exc_type, exc_value, error_info[2]),
         )
+        self.dataChanged.emit()
         QMessageBox.critical(
             self,
             "Scan Error",

@@ -60,14 +60,39 @@ class FakeRepo:
         self._by_person = by_person or {}
         self.query_calls: list = []
 
-    def query(self, q, *, now=None) -> FeedPage:
-        self.query_calls.append(q)
+    def query_alerts(
+        self,
+        criteria,
+        *,
+        after_sequence=0,
+        created_after=None,
+        watch_entries=None,
+        limit=200,
+    ) -> FeedPage:
+        self.query_calls.append(criteria)
+        if watch_entries is None:
+            records = self._query_records
+        else:
+            candidates = []
+            for entry in watch_entries:
+                source = self._by_issuer if entry.kind == "company" else self._by_person
+                key = entry.identifier if entry.kind == "company" else entry.person
+                candidates.extend(source.get(key.casefold(), ()))
+            records = tuple({record.key: record for record in candidates}.values())
+        if created_after is not None:
+            cutoff = created_after.replace(microsecond=0)
+            records = tuple(
+                record
+                for record in records
+                if record.created_at is None
+                or record.created_at.replace(tzinfo=UTC) >= cutoff
+            )
         return FeedPage(
-            records=self._query_records,
-            total_count=len(self._query_records),
+            records=records[:limit],
+            total_count=len(records),
             freshness_at=None,
             is_stale=False,
-            has_more=False,
+            has_more=len(records) > limit,
         )
 
     def recent_by_issuer(self, identifier, *, markets=(), limit=8, exclude_key=None):

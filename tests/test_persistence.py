@@ -33,6 +33,7 @@ from insider_scanner.persistence.schema import (
 from insider_scanner.persistence.types import UTCDateTime
 
 EXPECTED_TABLES = {
+    "feed_ingestion",
     "trade_replacements",
     "schema_version",
     "us_trades",
@@ -52,6 +53,7 @@ EXPECTED_TABLES.update(
 )
 
 EXPECTED_UNIQUE_CONSTRAINTS = {
+    "feed_ingestion": {"uq_feed_ingestion_record"},
     "us_trades": {"uq_us_trades_canonical_key"},
     "congress_trades": {"uq_congress_trades_canonical_key"},
     "european_trades": {"uq_european_trades_canonical_key"},
@@ -60,6 +62,7 @@ EXPECTED_UNIQUE_CONSTRAINTS = {
 }
 
 EXPECTED_INDEXES = {
+    "feed_ingestion": {"ix_feed_ingestion_market_sequence"},
     "us_trades": {
         "ix_us_trades_ticker_filing_date",
         "ix_us_trades_accession",

@@ -7,7 +7,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import MetaData, Table, delete, literal, select
+from sqlalchemy import MetaData, Table, delete, insert, literal, select, union_all
 from sqlalchemy.engine import Connection
 
 from insider_scanner.core.congress_common import parse_amount_range
@@ -22,6 +22,8 @@ from insider_scanner.persistence.mappings import (
 from insider_scanner.persistence.schema import (
     READ_INDEXES,
     congress_trades,
+    european_trades,
+    feed_ingestion,
     refresh_state,
     scan_coverage,
     sec_archive_progress,
@@ -332,6 +334,47 @@ def _scale_database_reads(connection: Connection) -> None:
     install_search_indexes(connection)
 
 
+def _add_feed_ingestion_progress(connection: Connection) -> None:
+    """Backfill insertion positions and maintain them inside trade transactions."""
+    feed_ingestion.create(connection)
+    markets = (
+        ("US", us_trades),
+        ("Congress", congress_trades),
+        ("Europe", european_trades),
+    )
+    historical = union_all(
+        *(
+            select(
+                literal(market).label("market"),
+                table.c.id.label("record_id"),
+                table.c.created_at,
+            )
+            for market, table in markets
+        )
+    ).subquery()
+    connection.execute(
+        insert(feed_ingestion).from_select(
+            ["market", "record_id"],
+            select(historical.c.market, historical.c.record_id).order_by(
+                historical.c.created_at, historical.c.market, historical.c.record_id
+            ),
+        )
+    )
+    # Table and market names come exclusively from the fixed schema map above.
+    # INSERT triggers deliberately exclude updates, including no-op reimports.
+    for market, table in markets:
+        connection.exec_driver_sql(
+            f"CREATE TRIGGER {table.name}_ingestion_insert AFTER INSERT ON {table.name} "
+            "BEGIN INSERT OR REPLACE INTO feed_ingestion (market, record_id) "
+            f"VALUES ('{market}', new.id); END"
+        )
+        connection.exec_driver_sql(
+            f"CREATE TRIGGER {table.name}_ingestion_delete AFTER DELETE ON {table.name} "
+            f"BEGIN DELETE FROM feed_ingestion WHERE market = '{market}' "
+            "AND record_id = old.id; END"
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -392,5 +435,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=12,
         name="scale_database_reads",
         upgrade=_scale_database_reads,
+    ),
+    Migration(
+        version=13,
+        name="add_feed_ingestion_progress",
+        upgrade=_add_feed_ingestion_progress,
     ),
 )

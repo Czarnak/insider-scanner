@@ -339,6 +339,26 @@ scan_coverage = metadata.tables["scan_coverage"]
 refresh_state = metadata.tables["refresh_state"]
 price_history = metadata.tables["price_history"]
 
+# A committed insertion gets one global position independent of trade dates,
+# timestamp precision, and row-ID reuse after deleting the latest observation.
+feed_ingestion = Table(
+    "feed_ingestion",
+    metadata,
+    Column("sequence", Integer, primary_key=True, autoincrement=True),
+    Column("market", String(16), nullable=False),
+    Column("record_id", Integer, nullable=False),
+    UniqueConstraint("market", "record_id", name="uq_feed_ingestion_record"),
+    CheckConstraint(
+        "market IN ('US', 'Congress', 'Europe')", name="ck_feed_ingestion_market"
+    ),
+    sqlite_autoincrement=True,
+)
+Index(
+    "ix_feed_ingestion_market_sequence",
+    feed_ingestion.c.market,
+    feed_ingestion.c.sequence,
+)
+
 # Migration twelve replaces the unused US primary-source index with indexes
 # matching bounded feed, issuer, person and latest reads. Keep the original
 # snapshot intact so upgrades still reproduce historical schema versions.

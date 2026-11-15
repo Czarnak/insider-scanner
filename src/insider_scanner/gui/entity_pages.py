@@ -69,6 +69,8 @@ class EntityResearchPage(QWidget):
             thread_pool or QThreadPool.globalInstance()
         )
         self._request_id: int = 0
+        self._selection: tuple[str, FeedMarket] | None = None
+        self._workers: dict[int, Worker] = {}
         self._build_ui()
         self._show_state(self._empty_prompt())
 
@@ -123,16 +125,20 @@ class EntityResearchPage(QWidget):
         Shows an empty prompt immediately if *value* is blank.
         Shows unavailable if *repository* is None.
         """
-        if not value.strip():
+        self._request_id += 1
+        request_id = self._request_id
+        self._selection = (value, market) if value.strip() else None
+        if self._selection is None:
+            self.progress.hide()
+            self.model.replace_records(())
+            self.header_label.clear()
+            self.summary_label.clear()
             self._show_state(self._empty_prompt())
             return
 
         if self._repository is None:
             self._show_state("Local transaction data is unavailable.")
             return
-
-        self._request_id += 1
-        request_id = self._request_id
 
         self.progress.show()
         self._show_state(f"Loading {self._noun()} activity…")
@@ -144,8 +150,19 @@ class EntityResearchPage(QWidget):
         worker.signals.error.connect(
             lambda error_info: self._on_error(request_id, error_info)
         )
-        worker.signals.finished.connect(self.progress.hide)
+        worker.signals.finished.connect(lambda: self._on_finished(request_id))
+        self._workers[request_id] = worker
         self._thread_pool.start(worker)
+
+    def reload(self) -> None:
+        """Refresh the selected company or insider while retaining its identity."""
+        if self._selection is not None:
+            self.load(*self._selection)
+
+    def _on_finished(self, request_id: int) -> None:
+        self._workers.pop(request_id, None)
+        if request_id == self._request_id:
+            self.progress.hide()
 
     # ------------------------------------------------------------------
     # Abstract hooks (override in subclasses)

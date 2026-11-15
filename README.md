@@ -102,6 +102,17 @@ analysis workflows available under **Tools**.
   to be loaded into memory.
 - Shows local-data freshness, empty and error states, semantic transaction
   labels, and direct filing/source links.
+- Refreshes the feed, selected company/insider pages and alerts after scans
+  finish, including partial results.
+
+Alerts follow local ingestion order, so late filings and backfilled trades can
+match regardless of their trade date. Each check presents up to 200 matches per
+rule and reports how many remain. **Mark all seen** acknowledges that presented
+page; further pages and trades ingested since the check remain pending.
+
+Existing alert timestamps remain readable. Their final second is checked again
+once to avoid losing matches to older timestamp precision. The database upgrade
+adds ingestion positions for existing records without changing transaction data.
 
 ![Unified Feed](img/feed.png)
 
