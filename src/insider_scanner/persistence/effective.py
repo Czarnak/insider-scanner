@@ -238,6 +238,14 @@ def rebuild_replacements(
         conditions = [table.c.ticker.in_(sorted(tickers))]
         if issuers:
             conditions.append(table.c.cik_issuer.in_(sorted(issuers)))
+            issuer_rows = table.alias("issuer_rows")
+            conditions.append(
+                table.c.ticker.in_(
+                    select(issuer_rows.c.ticker).where(
+                        issuer_rows.c.cik_issuer.in_(sorted(issuers))
+                    )
+                )
+            )
         statement = statement.where(or_(*conditions))
     rows: list[Mapping[str, Any]] = [
         dict(row) for row in connection.execute(statement).mappings()

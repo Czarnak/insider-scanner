@@ -256,3 +256,12 @@ def test_metadata_free_import_cannot_promote_partial_senate_amendment(engine):
         ]
     )
     assert len(repo.query()) == 2
+
+
+def test_amendment_under_new_ticker_supersedes_original_scraper_evidence(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    repo.upsert([original, us_trade(shares=10, value=2000)])
+    repo.upsert([amended(original, ticker="MSFT")])
+    assert repo.query("AAPL", sources=["secform4"]) == []
+    assert repo.query_raw("AAPL", include_superseded=False) == []
