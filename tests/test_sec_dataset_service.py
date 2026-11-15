@@ -141,7 +141,7 @@ def test_service_reimport_updates_dataset_without_degrading_xml(persistence, tmp
     assert persistence.us_trades.query_latest(10)[0].value == 40
 
 
-@pytest.mark.parametrize("capped", [False, True])
+@pytest.mark.parametrize("capped", [False, True, "whitespace"])
 def test_dataset_amendments_use_complete_uncapped_narrative(
     persistence, tmp_path, capped
 ):
@@ -154,7 +154,9 @@ def test_dataset_amendments_use_complete_uncapped_narrative(
     )
 
     narrative = "Corrects the transaction shares."
-    if capped:
+    if capped == "whitespace":
+        narrative += " " * (2000 - len(narrative))
+    elif capped:
         narrative += " " * (2000 - len(narrative) - 1) + "."
     path = make_dataset(
         tmp_path / "amendment.zip",

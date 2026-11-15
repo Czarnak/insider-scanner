@@ -328,9 +328,14 @@ def _stage_tables(
                         db, table, accession, dict(zip(header, values, strict=False))
                     )
                     continue
-                row = dict(
-                    zip(header, (value.strip() for value in values), strict=True)
-                )
+                # Preserve narrative storage length: padding at the SEC's
+                # column limit is still evidence of possible truncation.
+                row = {
+                    name: value
+                    if name in {"REMARKS", "FOOTNOTE_TXT"}
+                    else value.strip()
+                    for name, value in zip(header, values, strict=True)
+                }
                 try:
                     _validate_fields(row, policy)
                     key = _row_key(table, row)

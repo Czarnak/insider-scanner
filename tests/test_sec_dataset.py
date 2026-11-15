@@ -78,6 +78,29 @@ def test_documented_nullable_dataset_code_is_unknown_not_rejected(tmp_path, deri
     assert trade.trade_type == "Other"
 
 
+def test_narrative_padding_preserves_storage_limit_evidence(tmp_path):
+    narrative = "Correction." + " " * (2000 - len("Correction."))
+    (item,) = _read(
+        make_dataset(
+            tmp_path / "quarter.zip",
+            tables={
+                "SUBMISSION": [submission(REMARKS=narrative)],
+                "FOOTNOTES": [
+                    {
+                        "ACCESSION_NUMBER": ACCESSION,
+                        "FOOTNOTE_ID": "F1",
+                        "FOOTNOTE_TXT": narrative,
+                    }
+                ],
+            },
+        )
+    )
+    assert (len(item.filing.remarks), len(item.filing.footnotes[0].text)) == (
+        2000,
+        2000,
+    )
+
+
 def test_dataset_uses_native_surrogate_identity_without_invented_xml_hash(tmp_path):
     (item,) = _read(make_dataset(tmp_path / "quarter.zip"))
     assert item.error == ""
