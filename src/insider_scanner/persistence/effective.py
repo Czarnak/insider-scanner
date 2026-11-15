@@ -19,6 +19,7 @@ from sqlalchemy.engine import Connection
 
 from insider_scanner.persistence.schema import (
     congress_trades,
+    sec_ingested_filings,
     trade_replacements,
     us_trades,
 )
@@ -116,6 +117,10 @@ def _supersessions(
             for key, lots in filings.items()
             if all(row["is_amendment"] for row in lots)
             and (not senate or all(row["filing_complete"] for row in lots))
+            and (
+                senate
+                or all(row.get("_filing_status") in {None, "success"} for row in lots)
+            )
         }
         if not candidates:
             continue
@@ -234,6 +239,13 @@ def rebuild_replacements(
     if table is not us_trades and table is not congress_trades:
         return
     statement = select(table)
+    if table is us_trades:
+        statement = select(
+            table, sec_ingested_filings.c.status.label("_filing_status")
+        ).outerjoin(
+            sec_ingested_filings,
+            sec_ingested_filings.c.accession == table.c.accession_number,
+        )
     if table is us_trades and tickers is not None:
         conditions = [table.c.ticker.in_(sorted(tickers))]
         if issuers:

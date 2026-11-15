@@ -265,3 +265,25 @@ def test_amendment_under_new_ticker_supersedes_original_scraper_evidence(engine)
     repo.upsert([amended(original, ticker="MSFT")])
     assert repo.query("AAPL", sources=["secform4"]) == []
     assert repo.query_raw("AAPL", include_superseded=False) == []
+
+
+def test_sec_amendment_with_rejected_rows_cannot_supersede_complete_original(
+    persistence,
+):
+    from insider_scanner.core.sec_ingestion import SecFilingOutcome, SecFilingStatus
+    from insider_scanner.persistence.sec_ingestion import SecIngestionWrite
+
+    original = native()
+    amendment = amended(original)
+    invalid = replace(amendment, sec_row_id="non-derivative:1", price=-1)
+    persistence.us_trades.upsert([original])
+    outcome = SecFilingOutcome(amendment.accession_number, SecFilingStatus.SUCCESS)
+    result = persistence.sec_ingestion.commit(
+        [SecIngestionWrite(outcome, (amendment, invalid))]
+    )
+    assert result.upserts.failed == 1
+    assert original in persistence.us_trades.query("AAPL")
+    persistence.sec_ingestion.commit(
+        [SecIngestionWrite(outcome, (amendment, replace(invalid, price=200)))]
+    )
+    assert original not in persistence.us_trades.query("AAPL")
