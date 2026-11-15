@@ -30,6 +30,8 @@ class SecResourceProfile(StrEnum):
     DAILY_INDEX = "daily_index"
     JSON_METADATA = "json_metadata"
     FILING_DOCUMENT = "filing_document"
+    DATASET_INDEX = "dataset_index"
+    DATASET_ZIP = "dataset_zip"
 
 
 class SecSecurityReason(StrEnum):
@@ -242,6 +244,19 @@ DEFAULT_SEC_SECURITY_POLICY = SecSecurityPolicy(
                 }
             ),
             32 * _MIB,
+        ),
+        SecResourceProfile.DATASET_INDEX: SecResourceLimits(
+            frozenset({"text/html"}), 4 * _MIB
+        ),
+        SecResourceProfile.DATASET_ZIP: SecResourceLimits(
+            frozenset(
+                {
+                    "application/zip",
+                    "application/octet-stream",
+                    "application/x-zip-compressed",
+                }
+            ),
+            1024 * _MIB,
         ),
     },
 )

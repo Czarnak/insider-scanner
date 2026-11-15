@@ -10,7 +10,8 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Protocol, Self
+from pathlib import Path
+from typing import BinaryIO, Protocol, Self
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -33,6 +34,7 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
+from insider_scanner.utils.atomic_file import atomic_binary_writer
 
 _EMAIL_PATTERN = re.compile(
     r"(?<![A-Za-z0-9.!#$%&'*+/=?^_`{|}~-])"
@@ -188,6 +190,10 @@ class SecDecodeError(SecClientError):
         super().__init__(f"SEC response was not valid UTF-8 for {self.url}")
 
 
+class SecDownloadCancelled(SecClientError):
+    """A cooperative cancellation left the destination unpublished."""
+
+
 @dataclass(frozen=True, slots=True)
 class SecClient:
     """Fetch approved SEC resources with bounded, typed failures.
@@ -237,11 +243,38 @@ class SecClient:
             raise SecDecodeError(url) from None
 
     def fetch_bytes(self, url: str, *, profile: SecResourceProfile) -> bytes:
+        return self._fetch(url, profile=profile)
+
+    def fetch_to_file(
+        self,
+        url: str,
+        path: Path,
+        *,
+        profile: SecResourceProfile,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> Path:
+        """Stream bounded retries to a sibling file and publish it atomically."""
+        _validate_url(url, self.policy)
+        _check_cancelled(cancelled)
+        with atomic_binary_writer(path) as output:
+            self._fetch(url, profile=profile, output=output, cancelled=cancelled)
+        return path
+
+    def _fetch(
+        self,
+        url: str,
+        *,
+        profile: SecResourceProfile,
+        output: BinaryIO | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> bytes:
         limits = self.policy.limits_for(profile)
         current_url = _validate_url(url, self.policy)
         redirects = 0
         while True:
-            result = self._request_with_retry(current_url, limits)
+            result = self._request_with_retry(
+                current_url, limits, output=output, cancelled=cancelled
+            )
             if isinstance(result, bytes):
                 return result
             response = result
@@ -256,11 +289,21 @@ class SecClient:
                 _close_response(response, current_url)
 
     def _request_with_retry(
-        self, url: str, limits: SecResourceLimits
+        self,
+        url: str,
+        limits: SecResourceLimits,
+        *,
+        output: BinaryIO | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> _SecResponse | bytes:
         """Retry each complete network hop, including its streamed response body."""
         for attempt in range(1, self.retry_policy.max_attempts + 1):
+            _check_cancelled(cancelled)
+            if output is not None:
+                output.seek(0)
+                output.truncate()
             self.rate_limiter.acquire()
+            _check_cancelled(cancelled)
             try:
                 ticket = self.circuit_breaker.acquire()
             except SecCircuitOpenError as exc:
@@ -278,7 +321,14 @@ class SecClient:
                 try:
                     if 200 <= status < 300:
                         _validate_response_headers(response.headers, limits, url)
-                        content = _read_bounded(response, limits, self.policy, url)
+                        content = _read_bounded(
+                            response,
+                            limits,
+                            self.policy,
+                            url,
+                            output=output,
+                            cancelled=cancelled,
+                        )
                         self.circuit_breaker.record_response(ticket, status)
                         return content
                     cooldown = self.circuit_breaker.record_response(
@@ -370,11 +420,15 @@ def _read_bounded(
     limits: SecResourceLimits,
     policy: SecSecurityPolicy,
     url: str,
+    *,
+    output: BinaryIO | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> bytes:
     chunks: list[bytes] = []
     total = 0
     try:
         for chunk in response.iter_content(policy.response_chunk_bytes):
+            _check_cancelled(cancelled)
             if not chunk:
                 continue
             if not isinstance(chunk, bytes):
@@ -382,12 +436,21 @@ def _read_bounded(
             total += len(chunk)
             if total > limits.max_bytes:
                 raise SecClientSecurityError(SecSecurityReason.RESPONSE_SIZE, url)
-            chunks.append(chunk)
+            if output is None:
+                chunks.append(chunk)
+            else:
+                output.write(chunk)
+        _check_cancelled(cancelled)
     except SecClientError:
         raise
     except _RETRYABLE_TRANSPORT_ERRORS as exc:
         raise SecTransportError(url) from exc
     return b"".join(chunks)
+
+
+def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise SecDownloadCancelled("SEC download cancelled; destination is unchanged")
 
 
 def _validate_url(url: str, policy: SecSecurityPolicy) -> str:
