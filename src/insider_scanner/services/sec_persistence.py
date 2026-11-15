@@ -74,7 +74,15 @@ class SecTradeBatch:
                 "".join(char if char.isprintable() else "?" for char in str(error))
                 or type(error).__name__
             )
-            _log.warning("SEC ingestion batch commit failed reason=%s", reason)
+            # A rolled-back database cannot retain the failed accession ledger.
+            # Preserve each accession in the configured logs, with a stable
+            # reason instead of arbitrary driver or exception text.
+            for item in entries:
+                _log.warning(
+                    "SEC ingestion batch commit failed accession=%s stage=persist reason=%s",
+                    item.outcome.accession,
+                    type(error).__name__,
+                )
             self._outcomes.extend(
                 SecFilingOutcome(
                     item.outcome.accession,
