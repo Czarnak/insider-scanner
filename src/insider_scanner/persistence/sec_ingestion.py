@@ -130,7 +130,13 @@ class SecIngestionRepository:
         for offset in range(0, len(accessions), 300):
             scope = accessions[offset : offset + 300]
             for row in connection.execute(
-                select(us_trades).where(
+                select(
+                    us_trades.c.accession_number,
+                    us_trades.c.sec_row_id,
+                    us_trades.c.canonical_key,
+                    us_trades.c.ticker,
+                    us_trades.c.cik_issuer,
+                ).where(
                     us_trades.c.accession_number.in_(scope),
                     us_trades.c.source == "sec_edgar",
                 )
