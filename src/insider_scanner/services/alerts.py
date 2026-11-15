@@ -2,8 +2,8 @@
 
 This is a pure, side-effect-free pass over a repository: given the saved alert
 rules and watchlists, it returns the *new* matching transactions per enabled
-rule. "New" means a record whose ``created_at`` is later than the rule's
-``last_seen_at`` watermark (or any record when the rule has never been seen).
+rule. New matches follow committed ingestion sequence rather than trade date.
+Each hit carries progress through its presented page for acknowledgement.
 
 Rules are either criteria-based (a saved :class:`FeedCriteria`) or watchlist-based
 (referencing a watchlist by name); a rule with a watchlist set is evaluated as
@@ -13,13 +13,10 @@ watchlist-based.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
-from insider_scanner.persistence.alerts import AlertRule, AlertStore
-from insider_scanner.persistence.feed import DEFAULT_PAGE_SIZE, FeedRecord
+from insider_scanner.persistence.alerts import AlertStore
+from insider_scanner.persistence.feed import DEFAULT_PAGE_SIZE, FeedCriteria, FeedRecord
 from insider_scanner.persistence.watchlists import WatchlistStore
-
-_PER_ENTRY_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -29,64 +26,7 @@ class AlertHit:
     rule_name: str
     records: tuple[FeedRecord, ...]
     match_count: int
-
-
-def _is_new(record: FeedRecord, watermark: datetime | None) -> bool:
-    """Return True if *record* counts as new relative to *watermark*."""
-    if watermark is None:
-        return True
-    if record.created_at is None:
-        return True  # cannot prove it is old — surface it
-    created_at = record.created_at
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=UTC)
-    if watermark.tzinfo is None:
-        watermark = watermark.replace(tzinfo=UTC)
-    return created_at > watermark
-
-
-def _dedup_preserve_order(records: tuple[FeedRecord, ...]) -> tuple[FeedRecord, ...]:
-    seen: set[str] = set()
-    out: list[FeedRecord] = []
-    for r in records:
-        if r.key in seen:
-            continue
-        seen.add(r.key)
-        out.append(r)
-    return tuple(out)
-
-
-def _candidates_for_watchlist(
-    repository, watchlists: WatchlistStore, name: str
-) -> tuple[FeedRecord, ...]:
-    watchlist = next(
-        (
-            item
-            for item in watchlists.watchlists
-            if item.name.strip().casefold() == name.strip().casefold()
-        ),
-        None,
-    )
-    if watchlist is None:
-        return ()
-    collected: list[FeedRecord] = []
-    for entry in watchlist.entries:
-        if entry.kind == "company" and entry.identifier:
-            collected.extend(
-                repository.recent_by_issuer(entry.identifier, limit=_PER_ENTRY_LIMIT)
-            )
-        elif entry.kind == "insider" and entry.person:
-            collected.extend(
-                repository.recent_by_person(entry.person, limit=_PER_ENTRY_LIMIT)
-            )
-    return _dedup_preserve_order(tuple(collected))
-
-
-def _candidates_for_criteria(repository, rule: AlertRule) -> tuple[FeedRecord, ...]:
-    page = repository.query(
-        rule.criteria.to_query(limit=DEFAULT_PAGE_SIZE, include_total=False)
-    )
-    return page.records
+    last_seen_sequence: int | None = None
 
 
 def evaluate_alerts(
@@ -96,28 +36,50 @@ def evaluate_alerts(
 ) -> tuple[AlertHit, ...]:
     """Return one :class:`AlertHit` per enabled rule that has new matches.
 
-    Rules with no new matches (or that are disabled) produce no hit, so the total
-    number of new transactions is ``sum(hit.match_count for hit in result)``.
+    ``match_count`` includes matches beyond the bounded displayed page. A rule's
+    acknowledgement advances only through ``last_seen_sequence`` of that page.
     """
     hits: list[AlertHit] = []
     for rule in store.rules:
         if not rule.enabled or rule.error:
             continue
+        entries = None
         if rule.watchlist is not None:
-            candidates = _candidates_for_watchlist(
-                repository, watchlists, rule.watchlist
+            watchlist = next(
+                (
+                    item
+                    for item in watchlists.watchlists
+                    if item.name.strip().casefold() == rule.watchlist.strip().casefold()
+                ),
+                None,
             )
-        else:
-            candidates = _candidates_for_criteria(repository, rule)
-
-        new_records = tuple(r for r in candidates if _is_new(r, rule.last_seen_at))
-        if not new_records:
+            if watchlist is None or not watchlist.entries:
+                continue
+            entries = watchlist.entries
+        page = repository.query_alerts(
+            FeedCriteria() if entries is not None else rule.criteria,
+            after_sequence=rule.last_seen_sequence or 0,
+            created_after=rule.last_seen_at
+            if rule.last_seen_sequence is None
+            else None,
+            watch_entries=entries,
+            limit=DEFAULT_PAGE_SIZE,
+        )
+        if not page.records:
             continue
+        sequences = [
+            r.ingestion_sequence
+            for r in page.records
+            if r.ingestion_sequence is not None
+        ]
         hits.append(
             AlertHit(
                 rule_name=rule.name,
-                records=new_records,
-                match_count=len(new_records),
+                records=page.records,
+                match_count=page.total_count
+                if page.total_count is not None
+                else len(page.records),
+                last_seen_sequence=max(sequences) if sequences else None,
             )
         )
     return tuple(hits)
