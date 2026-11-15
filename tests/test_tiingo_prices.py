@@ -60,7 +60,7 @@ def assert_sanitized(
     error: PriceSourceError,
     secret: str = API_KEY,
 ) -> None:
-    assert str(error) == "Tiingo price request failed"
+    assert str(error).startswith("Tiingo price request failed")
     assert secret not in f"{error!s} {error!r} {error.args!r}"
 
 
@@ -108,7 +108,6 @@ def test_parse_tiingo_json_preserves_provider_order_and_date_forms() -> None:
         {},
         "secret-payload",
         42,
-        [],
         {"message": "secret-payload"},
         {"detail": "secret-payload"},
     ],
@@ -122,10 +121,9 @@ def test_parse_tiingo_json_rejects_invalid_top_level(payload: object) -> None:
 
 @pytest.mark.parametrize("record", [None, [], "record", 42])
 def test_parse_tiingo_json_rejects_non_mapping_records(record: object) -> None:
-    with pytest.raises(PriceSourceError) as raised:
-        parse_tiingo_json([record], "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_tiingo_json([record], "AAPL")
+    assert bars == []
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -137,16 +135,15 @@ def test_parse_tiingo_json_rejects_missing_or_null_required_fields(
     field: str,
     mode: str,
 ) -> None:
-    payload = tiingo_payload()[:1]
+    payload = tiingo_payload()
     if mode == "missing":
         del payload[0][field]
     else:
         payload[0][field] = None
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_tiingo_json(payload, "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_tiingo_json(payload, "AAPL")
+    assert [bar.date for bar in bars] == [date(2026, 6, 10), date(2026, 6, 11)]
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -166,10 +163,9 @@ def test_parse_tiingo_json_rejects_invalid_dates(value: object) -> None:
     payload = tiingo_payload()[:1]
     payload[0]["date"] = value
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_tiingo_json(payload, "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_tiingo_json(payload, "AAPL")
+    assert bars == []
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -186,10 +182,9 @@ def test_parse_tiingo_json_rejects_non_eod_utc_dates(value: str) -> None:
     payload = tiingo_payload()[:1]
     payload[0]["date"] = value
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_tiingo_json(payload, "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_tiingo_json(payload, "AAPL")
+    assert bars == []
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -211,10 +206,35 @@ def test_parse_tiingo_json_translates_invalid_price_bar_values(
     payload = tiingo_payload()[:1]
     payload[0][field] = value
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_tiingo_json(payload, "AAPL")
+    bars = parse_tiingo_json(payload, "AAPL")
+    assert bars == []
+    assert not bars.complete
 
-    assert_sanitized(raised.value)
+
+def test_tiingo_empty_success_is_complete() -> None:
+    bars = parse_tiingo_json([], "AAPL")
+    assert bars == []
+    assert bars.complete
+
+
+def test_tiingo_provider_has_stable_identity() -> None:
+    assert TiingoSource(API_KEY, session=FakeSession()).name == "tiingo"
+
+
+def test_tiingo_close_preserves_injected_session(monkeypatch) -> None:
+    class ClosingSession(FakeSession):
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    injected = ClosingSession()
+    TiingoSource(API_KEY, session=injected).close()
+    assert not injected.closed
+    owned = ClosingSession()
+    monkeypatch.setattr(requests, "Session", lambda: owned)
+    TiingoSource(API_KEY).close()
+    assert owned.closed
 
 
 class FakeResponse:
@@ -383,6 +403,14 @@ def test_tiingo_source_sanitizes_http_errors(status_code: int) -> None:
         source.fetch_daily("AAPL", date(2026, 6, 1), date(2026, 6, 9))
 
     assert_sanitized(raised.value)
+    assert raised.value.status_code == status_code
+    assert raised.value.reason == (
+        "auth"
+        if status_code in {401, 403}
+        else "rate_limit"
+        if status_code == 429
+        else "http"
+    )
 
 
 @pytest.mark.parametrize(

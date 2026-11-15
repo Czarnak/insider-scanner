@@ -10,13 +10,21 @@ from urllib.parse import quote
 
 import requests
 
+from insider_scanner.utils.logging import get_logger
+
 from .model import PriceBar
-from .source import PriceSourceError, _checked_json, validate_price_request
+from .source import (
+    FetchedPriceBars,
+    PriceSourceError,
+    _checked_json,
+    validate_price_request,
+)
 
 _DAILY_URL = "https://api.tiingo.com/tiingo/daily"
 _TIMEOUT = (5.0, 20.0)
 _REQUIRED_FIELDS = ("date", "open", "high", "low", "close", "volume")
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+log = get_logger("prices.tiingo")
 
 
 def _record(value: object) -> Mapping[str, object]:
@@ -49,39 +57,48 @@ def _calendar_date(value: object) -> Date:
     return parsed.date()
 
 
-def parse_tiingo_json(payload: object, symbol: str) -> list[PriceBar]:
+def parse_tiingo_json(payload: object, symbol: str) -> FetchedPriceBars:
     """Parse decoded Tiingo EOD JSON into provider-ordered daily bars."""
     try:
-        if not isinstance(payload, list) or not payload:
+        if not isinstance(payload, list):
             raise TypeError
 
-        bars: list[PriceBar] = []
+        bars = FetchedPriceBars()
+        skipped = 0
         for item in payload:
-            record = _record(item)
-            if any(
-                field not in record or record[field] is None
-                for field in _REQUIRED_FIELDS
-            ):
-                raise ValueError
-            bars.append(
-                PriceBar(
-                    symbol=symbol,
-                    date=_calendar_date(record["date"]),
-                    open=record["open"],
-                    high=record["high"],
-                    low=record["low"],
-                    close=record["close"],
-                    volume=record["volume"],
-                    adjusted_close=record.get("adjClose"),
+            try:
+                record = _record(item)
+                if any(
+                    field not in record or record[field] is None
+                    for field in _REQUIRED_FIELDS
+                ):
+                    raise ValueError
+                bars.append(
+                    PriceBar(
+                        symbol=symbol,
+                        date=_calendar_date(record["date"]),
+                        open=record["open"],
+                        high=record["high"],
+                        low=record["low"],
+                        close=record["close"],
+                        volume=record["volume"],
+                        adjusted_close=record.get("adjClose"),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                skipped += 1
+        if skipped:
+            bars.complete = False
+            log.debug("Skipped %d invalid Tiingo price rows", skipped)
         return bars
-    except (KeyError, TypeError, ValueError, OverflowError):
-        raise PriceSourceError("Tiingo") from None
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise PriceSourceError("Tiingo", reason="schema", cause=exc)
 
 
 class TiingoSource:
     """Fetch validated daily bars from Tiingo's EOD endpoint."""
+
+    name = "tiingo"
 
     def __init__(
         self,
@@ -99,7 +116,13 @@ class TiingoSource:
             raise ValueError("api_key must not be blank")
 
         self._api_key = normalized_key
+        self._owns_session = session is None
         self._session = session if session is not None else requests.Session()
+
+    def close(self) -> None:
+        """Release a session created by this provider."""
+        if self._owns_session:
+            self._session.close()
 
     def fetch_daily(self, symbol: str, start: Date, end: Date) -> list[PriceBar]:
         """Fetch daily bars for an inclusive date range."""
@@ -123,5 +146,5 @@ class TiingoSource:
             return parse_tiingo_json(payload, normalized_symbol)
         except PriceSourceError:
             raise
-        except requests.RequestException:
-            raise PriceSourceError("Tiingo") from None
+        except requests.RequestException as exc:
+            raise PriceSourceError("Tiingo", reason="network", cause=exc)
