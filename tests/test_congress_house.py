@@ -125,6 +125,22 @@ SAMPLE_INDEX_XML = """\
 """
 
 
+@pytest.fixture
+def fresh_house_index(tmp_path, monkeypatch, fixed_today):
+    """Keep PDF tests independent of wall-clock and filesystem precision."""
+    from insider_scanner.core import congress_house as house
+
+    cached = tmp_path / "2026FD.xml"
+    cached.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
+    # Older Windows clocks can lag a freshly written file's mtime slightly.
+    # Establish a positive age explicitly; freshness boundary tests set their
+    # own clock and timestamps instead of using this fixture.
+    now = cached.stat().st_mtime + 60
+    monkeypatch.setattr(house, "time", lambda: now)
+    monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
+    return cached
+
+
 def _make_sample_zip(xml_content: str = SAMPLE_INDEX_XML, year: int = 2026) -> bytes:
     """Create an in-memory ZIP file containing the XML and TXT index."""
     buf = io.BytesIO()
@@ -383,18 +399,10 @@ class TestEnsureHouseIndex:
         assert result.exists()
         assert (tmp_path / "2026FD.txt").exists()
 
-    def test_skip_if_present(self, tmp_path):
-        # Pre-create the file
-        xml_path = tmp_path / "2026FD.xml"
-        xml_path.write_text("<FinancialDisclosure></FinancialDisclosure>")
-
-        with patch(
-            "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
-        ):
-            result = ensure_house_index(2026)
-
-        assert result == xml_path
-        # Should not have made any HTTP requests
+    @responses.activate
+    def test_skip_if_present(self, fresh_house_index):
+        assert ensure_house_index(2026) == fresh_house_index
+        assert not responses.calls
 
     @responses.activate
     def test_force_redownload(self, tmp_path):
@@ -680,12 +688,8 @@ class TestParsePtrPdf:
 
 class TestScrapeHouseTrades:
     @responses.activate
-    def test_full_pipeline(self, tmp_path):
+    def test_full_pipeline(self, tmp_path, fresh_house_index):
         """End-to-end: download index → search → fetch PDF → parse → CongressTrade."""
-        # Setup: create index
-        xml_path = tmp_path / "2026FD.xml"
-        xml_path.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
-
         # Mock PDF download
         responses.add(
             responses.GET,
@@ -753,10 +757,7 @@ class TestScrapeHouseTrades:
         assert sale.amount_low == 1000000.0
         assert sale.amount_high == 1000000.0
 
-    def test_no_matching_filings(self, tmp_path):
-        xml_path = tmp_path / "2026FD.xml"
-        xml_path.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
-
+    def test_no_matching_filings(self, tmp_path, fresh_house_index):
         with patch(
             "insider_scanner.core.congress_house.HOUSE_DISCLOSURES_DIR", tmp_path
         ):
@@ -768,10 +769,7 @@ class TestScrapeHouseTrades:
 
         assert trades == []
 
-    def test_progress_callback(self, tmp_path):
-        xml_path = tmp_path / "2026FD.xml"
-        xml_path.write_text(SAMPLE_INDEX_XML, encoding="utf-8")
-
+    def test_progress_callback(self, tmp_path, fresh_house_index):
         responses.start()
         responses.add(
             responses.GET,
@@ -986,11 +984,12 @@ def test_house_owned_session_closes_when_download_fails(tmp_path, monkeypatch):
 
 
 @responses.activate
-def test_house_refetches_cached_pdf_once_on_extraction_failure(tmp_path, monkeypatch):
+def test_house_refetches_cached_pdf_once_on_extraction_failure(
+    tmp_path, monkeypatch, fresh_house_index
+):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     cached = tmp_path / "2026" / "pdfs" / "20034001.pdf"
     cached.parent.mkdir(parents=True)
     cached.write_bytes(SAMPLE_PDF)
@@ -1024,12 +1023,11 @@ def test_pdf_extraction_error_can_be_distinguished_from_empty_result():
 @pytest.mark.parametrize("cached_bytes", [b"not a PDF", b"%PDF-1.4 truncated"])
 @responses.activate
 def test_house_corrupt_cache_repair_does_not_download_again_on_extraction_error(
-    tmp_path, monkeypatch, cached_bytes
+    tmp_path, monkeypatch, cached_bytes, fresh_house_index
 ):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     cached = tmp_path / "2026" / "pdfs" / "20034001.pdf"
     cached.parent.mkdir(parents=True)
     cached.write_bytes(cached_bytes)
@@ -1125,11 +1123,12 @@ def test_house_failed_year_is_not_reported_as_empty_success(monkeypatch):
     )
 
 
-def test_house_partial_pdf_rows_reach_scan_result(tmp_path, monkeypatch):
+def test_house_partial_pdf_rows_reach_scan_result(
+    tmp_path, monkeypatch, fresh_house_index
+):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=None))
     monkeypatch.setattr(house, "fetch_ptr_pdf", MagicMock(return_value=SAMPLE_PDF))
     issue = FetchIssue(
@@ -1197,12 +1196,11 @@ def test_house_missing_index_retains_failure_metadata_through_search(
     "reason", ["pdf_page_parse_failed", "transaction_table_missing"]
 )
 def test_house_repairs_cached_pdf_once_for_retryable_parse_outcome(
-    tmp_path, monkeypatch, reason
+    tmp_path, monkeypatch, reason, fresh_house_index
 ):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
     fetch = MagicMock(return_value=SAMPLE_PDF)
     monkeypatch.setattr(house, "fetch_ptr_pdf", fetch)
@@ -1238,12 +1236,11 @@ def test_house_repairs_cached_pdf_once_for_retryable_parse_outcome(
 
 @pytest.mark.parametrize("repair_stage", ["download", "parse"])
 def test_house_failed_cache_repair_retains_partial_transactions(
-    tmp_path, monkeypatch, repair_stage
+    tmp_path, monkeypatch, repair_stage, fresh_house_index
 ):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
     fetch = MagicMock(return_value=SAMPLE_PDF)
     if repair_stage == "download":
@@ -1287,12 +1284,11 @@ def test_house_failed_cache_repair_retains_partial_transactions(
 
 
 def test_house_does_not_repair_deterministically_unsupported_cached_pdf(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, fresh_house_index
 ):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     monkeypatch.setattr(house, "_read_cached_pdf", MagicMock(return_value=SAMPLE_PDF))
     fetch = MagicMock()
     monkeypatch.setattr(house, "fetch_ptr_pdf", fetch)
@@ -1309,11 +1305,12 @@ def test_house_does_not_repair_deterministically_unsupported_cached_pdf(
     fetch.assert_not_called()
 
 
-def test_house_no_cache_refreshes_indexes_and_pdfs(tmp_path, monkeypatch):
+def test_house_no_cache_refreshes_indexes_and_pdfs(
+    tmp_path, monkeypatch, fresh_house_index
+):
     from insider_scanner.core import congress_house as house
 
     monkeypatch.setattr(house, "HOUSE_DISCLOSURES_DIR", tmp_path)
-    (tmp_path / "2026FD.xml").write_text(SAMPLE_INDEX_XML, encoding="utf-8")
     cached_pdf = tmp_path / "2026" / "pdfs" / "20034001.pdf"
     cached_pdf.parent.mkdir(parents=True)
     cached_pdf.write_bytes(SAMPLE_PDF)

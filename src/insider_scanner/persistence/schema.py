@@ -428,3 +428,21 @@ sec_ingested_filings = Table(
     ),
 )
 Index("ix_sec_ingested_filings_status", sec_ingested_filings.c.status)
+
+# Archive positions are scoped independently of the global accession ledger.
+sec_archive_progress = Table(
+    "sec_archive_progress",
+    metadata,
+    Column("archive_id", String(64), primary_key=True),
+    Column("scope", String(64), primary_key=True),
+    Column("next_member", Integer, nullable=False),
+    CheckConstraint("next_member >= 0", name="ck_sec_archive_progress_position"),
+)
+sec_archive_retries = Table(
+    "sec_archive_retries",
+    metadata,
+    Column("archive_id", String(64), primary_key=True),
+    Column("scope", String(64), primary_key=True),
+    Column("member_index", Integer, primary_key=True),
+    CheckConstraint("member_index >= 0", name="ck_sec_archive_retries_position"),
+)

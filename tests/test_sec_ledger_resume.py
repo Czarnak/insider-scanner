@@ -56,6 +56,9 @@ def _synthetic_archive(monkeypatch, count):
         return [sec_trade(accession_number=accession)]
 
     monkeypatch.setattr(sec_backfill, "iter_ownership_filings", iterate)
+    monkeypatch.setattr(
+        sec_backfill, "bulk_archive_fingerprint", lambda *_a, **_k: "synthetic"
+    )
     monkeypatch.setattr(sec_backfill, "process_filing_row", process)
     monkeypatch.setattr(sec_persistence, "ownership_filing_to_trades", map_trades)
     return metadata, fetched, dispositions

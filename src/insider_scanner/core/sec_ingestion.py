@@ -89,6 +89,7 @@ def process_filing_row(
     cache_root: Path,
     counters: dict[str, int],
     retain_failed_downloads: bool = False,
+    cache: bool = True,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
     on_filing_parsed: Callable[[sec_index.SecMasterIndexRow, OwnershipFiling], None]
     | None = None,
@@ -101,7 +102,7 @@ def process_filing_row(
     """
     accession = _accession_from_path(row.archive_path)
     try:
-        pending = fetch_filing(row, client=client, cache_root=cache_root)
+        pending = fetch_filing(row, client=client, cache_root=cache_root, cache=cache)
     except SecBlockedError:
         raise
     except _RECOVERABLE as exc:
@@ -141,7 +142,7 @@ def process_filing_row(
             "SEC filing failed stage=parse cik=%s reason=%s", row.cik, exc
         )
         _maybe_quarantine(
-            pending, cache_root=cache_root, enabled=retain_failed_downloads
+            pending, cache_root=cache_root, enabled=retain_failed_downloads and cache
         )
         return SecFilingOutcome(
             accession, SecFilingStatus.PERMANENT_FAILURE, "parse", type(exc).__name__
@@ -163,14 +164,15 @@ def process_filing_row(
                 accession, SecFilingStatus.RETRYABLE_FAILURE, stage, type(exc).__name__
             )
 
-    try:
-        promote_validated_filing(pending, cache_root=cache_root)
-    except SecDownloadError as exc:
-        _log.warning(
-            "SEC optional cache write failed accession=%s reason=%s",
-            accession,
-            type(exc).__name__,
-        )
+    if cache:
+        try:
+            promote_validated_filing(pending, cache_root=cache_root)
+        except SecDownloadError as exc:
+            _log.warning(
+                "SEC optional cache write failed accession=%s reason=%s",
+                accession,
+                type(exc).__name__,
+            )
     return SecFilingOutcome(accession, SecFilingStatus.SUCCESS)
 
 

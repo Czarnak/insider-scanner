@@ -184,7 +184,7 @@ def test_reopen_retains_progress_without_an_archive_identity(tmp_path):
 def test_migration_adds_ledger_without_guessing_legacy_completion(tmp_path):
     engine = create_sqlite_engine(tmp_path / "legacy.db")
     try:
-        bootstrap_database(engine, migrations=MIGRATIONS[:-1])
+        bootstrap_database(engine, migrations=MIGRATIONS[:8])
         UsTradeRepository(engine).upsert([sec_trade()])
         assert "sec_ingested_filings" not in inspect(engine).get_table_names()
 

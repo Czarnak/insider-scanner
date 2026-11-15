@@ -11,11 +11,13 @@ Member naming conventions in the archive:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import stat
 import zipfile
-from collections.abc import Generator, Iterator
+import zlib
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
@@ -29,6 +31,9 @@ from insider_scanner.core.sec_security import (
     SecSecurityPolicy,
     SecSecurityReason,
 )
+from insider_scanner.utils.logging import get_logger
+
+_log = get_logger("sec_bulk")
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -39,9 +44,9 @@ from insider_scanner.core.sec_security import (
 # Filename patterns
 # ---------------------------------------------------------------------------
 
-_RE_MAIN = re.compile(r"^CIK(\d{10})\.json$")
-_RE_CONT = re.compile(r"^CIK(\d{10})-submissions-(\d+)\.json$")
-_ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_RE_MAIN = re.compile(r"^CIK([0-9]{10})\.json$")
+_RE_CONT = re.compile(r"^CIK([0-9]{10})-submissions-([0-9]+)\.json$")
+_ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,7 @@ class BulkFilingMetadata:
     filing_date: date | None
     accession_number: str
     primary_document: str | None
+    member_index: int | None = None
 
 
 class SecBulkError(Exception):
@@ -68,13 +74,21 @@ class SecBulkSecurityError(SecBulkError):
     """Raised when a bulk archive violates the immutable security policy.
 
     Subclasses :class:`SecBulkError` so existing ``except SecBulkError`` handlers
-    still catch it.  The message carries only a stable reason code — never a
-    member name or payload.
+    still catch it. Messages carry stable reason codes and numeric limit
+    diagnostics, never member names or payload.
     """
 
-    def __init__(self, reason: SecSecurityReason = SecSecurityReason.ZIP) -> None:
+    def __init__(
+        self,
+        reason: SecSecurityReason = SecSecurityReason.ZIP,
+        *,
+        limit: str | None = None,
+        observed: float | None = None,
+        allowed: float | None = None,
+    ) -> None:
         self.reason = reason
-        super().__init__(f"SEC bulk archive rejected ({reason.value})")
+        detail = f": {limit} observed={observed} allowed={allowed}" if limit else ""
+        super().__init__(f"SEC bulk archive rejected ({reason.value}){detail}")
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +106,7 @@ def bulk_metadata_to_index_row(meta: BulkFilingMetadata) -> SecMasterIndexRow:
         raise TypeError("meta must be a BulkFilingMetadata")
     if meta.filing_date is None:
         raise SecBulkError("bulk metadata has no filing_date")
-    if not _ACCESSION_RE.match(meta.accession_number):
+    if not _ACCESSION_RE.fullmatch(meta.accession_number):
         raise SecBulkError("bulk metadata has a malformed accession number")
     cik_no_zeros = str(int(meta.cik))  # meta.cik is 10-digit zero-padded
     archive_path = f"edgar/data/{cik_no_zeros}/{meta.accession_number}.txt"
@@ -106,106 +120,135 @@ def bulk_metadata_to_index_row(meta: BulkFilingMetadata) -> SecMasterIndexRow:
     )
 
 
+def bulk_archive_fingerprint(
+    zip_path: Path,
+    *,
+    policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+) -> str:
+    """Identify central-directory content and order without reading member bodies.
+
+    Renaming an archive preserves its identity. Replaced or reordered members
+    change it, so a saved member cursor cannot silently skip a new archive.
+    The same archive-level preflight used by iteration runs before hashing.
+    """
+    _validate_zip_location(zip_path, None)
+    with _open_archive(zip_path) as zf:
+        members = zf.infolist()
+        _preflight_members(members, policy)
+        digest = hashlib.sha256()
+        for info in members:
+            descriptor = json.dumps(
+                [
+                    info.filename,
+                    info.CRC,
+                    info.file_size,
+                    info.compress_size,
+                    info.header_offset,
+                    info.compress_type,
+                    info.flag_bits,
+                    info.external_attr,
+                ],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+            digest.update(descriptor)
+            digest.update(b"\n")
+        return digest.hexdigest()
+
+
 def iter_ownership_filings(
     zip_path: Path,
     *,
-    cache_root: Path,
+    cache_root: Path | None = None,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
     ciks: frozenset[str] | None = None,
+    start_member: int = 0,
+    retry_members: frozenset[int] = frozenset(),
+    on_member_error: Callable[[int, str], None] | None = None,
+    on_member_complete: Callable[[int], None] | None = None,
 ) -> Generator[BulkFilingMetadata, None, None]:
-    """Yield ownership-form filing metadata streamed from a submissions bulk ZIP.
+    """Stream ownership metadata from a preflighted local archive.
 
-    Parameters
-    ----------
-    zip_path:
-        Path to the submissions bulk archive.  Must be a :class:`pathlib.Path`
-        that resolves inside *cache_root* and is not a symlink.
-    cache_root:
-        Injected trusted root the archive must live under.  Must be a
-        :class:`pathlib.Path`.
-    policy:
-        Immutable security policy bounding member counts, sizes, totals,
-        compression ratios, and names.  Defaults to the secure default.
-    ciks:
-        Optional frozenset of normalized 10-digit CIKs to include; ``None``
-        means all CIKs are yielded.  Filtering occurs before the JSON read for
-        efficiency on large multi-GB archives.
+    ``start_member`` is a central-directory position; members before it are
+    never opened unless explicitly listed in ``retry_members``. Positions are
+    valid only for the archive fingerprint they were saved with. The caller
+    must retain failed positions separately when advancing its durable cursor.
 
-    Yields
-    ------
-    BulkFilingMetadata
-        One record per ownership-form row found across all recognized members.
+    Malformed member JSON, array shapes and corrupt member reads are reported
+    by index and stable error class, then iteration continues. Security-policy
+    violations remain fatal. Completion callbacks run only after a selected
+    member is fully consumed, including empty, ignored or malformed members;
+    closing the generator partway through a member does not complete it.
 
-    Raises
-    ------
-    TypeError
-        If *zip_path* or *cache_root* is not a :class:`pathlib.Path`.
-    SecBulkSecurityError
-        If the archive is outside *cache_root*, is a symlink, or any member
-        fails preflight (unsafe name, directory/symlink entry, excessive count,
-        size, total, or compression ratio).
-    SecBulkError
-        If *zip_path* is not a valid ZIP file, or if a recognized member
-        contains malformed JSON.
+    Explicit local paths are accepted without an artificial containment root.
+    A supplied ``cache_root`` retains the older trusted-root contract. Symlink
+    archives and non-regular files are always rejected. Every member is
+    preflighted before content reads, and decompression is bounded.
 
-    Notes
-    -----
-    Every member is preflighted from the central directory before any member
-    content is read.  Recognized members are then read with a bounded stream;
-    ZIP extraction APIs are never used.
-
-    **ZIP resource lifetime**: the underlying :class:`zipfile.ZipFile` handle
-    stays open for the lifetime of the generator — it is released when the
-    generator is exhausted, garbage-collected, or explicitly closed.  Callers
-    who abandon iteration early should call ``.close()`` on the generator
-    object to release the file handle promptly::
-
-        gen = iter_ownership_filings(path, cache_root=root)
-        first = next(gen)
-        gen.close()   # releases the ZIP handle immediately
+    The ZIP remains open until exhaustion or generator.close(); callers that
+    stop early must close the generator promptly.
     """
-    if not isinstance(zip_path, Path):
-        raise TypeError(
-            f"zip_path must be a pathlib.Path, got {type(zip_path).__name__!r}"
-        )
-    if not isinstance(cache_root, Path):
-        raise TypeError(
-            f"cache_root must be a pathlib.Path, got {type(cache_root).__name__!r}"
-        )
-
     _validate_zip_location(zip_path, cache_root)
+    if type(start_member) is not int or start_member < 0:
+        raise ValueError("start_member must be a nonnegative integer")
+    if any(type(index) is not int or index < 0 for index in retry_members):
+        raise ValueError("retry_members must contain nonnegative integers")
 
-    try:
-        zf = zipfile.ZipFile(zip_path)
-    except zipfile.BadZipFile as exc:
-        raise SecBulkError(f"Not a valid ZIP archive: {zip_path.name}") from exc
-
-    with zf:
+    with _open_archive(zip_path) as zf:
         members = zf.infolist()
         _preflight_members(members, policy)
-
-        for info in members:
-            name = info.filename
-            m_main = _RE_MAIN.match(name)
-            m_cont = _RE_CONT.match(name)
-            if m_main:
-                cik_str = m_main.group(1)
-            elif m_cont:
-                cik_str = m_cont.group(1)
-            else:
-                continue  # stray member — preflighted, never read
-
-            cik = edgar.normalize_cik(cik_str)
-            if ciks is not None and cik not in ciks:
+        for member_index, info in enumerate(members):
+            if member_index < start_member and member_index not in retry_members:
                 continue
-            data = _read_member_json(zf, info, policy)
+            try:
+                yield from _iter_member(zf, info, policy, ciks, member_index)
+            except SecBulkSecurityError:
+                raise
+            except (
+                SecBulkError,
+                zipfile.BadZipFile,
+                EOFError,
+                OSError,
+                RuntimeError,
+                NotImplementedError,
+                zlib.error,
+            ) as error:
+                reason = type(error).__name__
+                _log.warning(
+                    "SEC bulk member skipped index=%s reason=%s", member_index, reason
+                )
+                if on_member_error is not None:
+                    on_member_error(member_index, reason)
+            if on_member_complete is not None:
+                on_member_complete(member_index)
 
-            if m_main:
-                rows = _extract_recent_rows(data)
-            else:
-                rows = _coerce_to_arrays_dict(data)
 
-            yield from _filter_ownership_rows(cik, rows)
+def _open_archive(zip_path: Path) -> zipfile.ZipFile:
+    try:
+        return zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError) as error:
+        raise SecBulkError("Unable to open SEC bulk ZIP archive") from error
+
+
+def _iter_member(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    policy: SecSecurityPolicy,
+    ciks: frozenset[str] | None,
+    member_index: int,
+) -> Iterator[BulkFilingMetadata]:
+    main = _RE_MAIN.match(info.filename)
+    continuation = _RE_CONT.match(info.filename)
+    match = main or continuation
+    if match is None:
+        return
+    cik = edgar.normalize_cik(match.group(1))
+    if ciks is not None and cik not in ciks:
+        return
+    data = _read_member_json(zf, info, policy)
+    rows = _extract_recent_rows(data) if main else _coerce_to_arrays_dict(data)
+    _validate_arrays(rows)
+    yield from _filter_ownership_rows(cik, rows, member_index=member_index)
 
 
 # ---------------------------------------------------------------------------
@@ -213,47 +256,64 @@ def iter_ownership_filings(
 # ---------------------------------------------------------------------------
 
 
-def _validate_zip_location(zip_path: Path, cache_root: Path) -> None:
-    """Reject archives outside the trusted cache root or reached via symlinks."""
-    if cache_root.is_symlink():
-        raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
-    if cache_root.exists() and not cache_root.is_dir():
-        raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
-    if not resolves_within(zip_path, cache_root):
-        raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
-    if zip_path.is_symlink():
-        raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+def _validate_zip_location(zip_path: Path, cache_root: Path | None) -> None:
+    """Validate an explicit local file, optionally constrained to a real root."""
+    if not isinstance(zip_path, Path):
+        raise TypeError("zip_path must be a pathlib.Path")
+    if cache_root is not None and not isinstance(cache_root, Path):
+        raise TypeError("cache_root must be a pathlib.Path or None")
+    try:
+        if zip_path.is_symlink():
+            raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+        if zip_path.exists() and not zip_path.is_file():
+            raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+        if cache_root is not None:
+            if cache_root.is_symlink():
+                raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+            if cache_root.exists() and not cache_root.is_dir():
+                raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+            if not resolves_within(zip_path, cache_root):
+                raise SecBulkSecurityError(SecSecurityReason.CACHE_PATH)
+    except OSError as error:
+        raise SecBulkError("Unable to inspect SEC bulk archive location") from error
 
 
 def _preflight_members(
     members: list[zipfile.ZipInfo], policy: SecSecurityPolicy
 ) -> None:
     """Validate every member from the central directory before any content read."""
-    if len(members) > policy.zip_max_entries:
-        raise SecBulkSecurityError()
+    _check_limit("zip_max_entries", len(members), policy.zip_max_entries)
     total = 0
     for info in members:
         _preflight_member(info, policy)
         total += info.file_size
-        if total > policy.zip_max_total_bytes:
-            raise SecBulkSecurityError()
+        _check_limit("zip_max_total_bytes", total, policy.zip_max_total_bytes)
 
 
 def _preflight_member(info: zipfile.ZipInfo, policy: SecSecurityPolicy) -> None:
     """Reject one member on unsafe name, entry type, size, or ratio."""
     name = info.filename
-    if len(name) > policy.zip_max_member_name_chars:
-        raise SecBulkSecurityError()
+    _check_limit(
+        "zip_max_member_name_chars", len(name), policy.zip_max_member_name_chars
+    )
     if info.is_dir() or name.endswith("/"):
         raise SecBulkSecurityError()
     if _is_symlink_entry(info):
         raise SecBulkSecurityError()
     if _is_unsafe_member_name(name):
         raise SecBulkSecurityError()
-    if info.file_size > policy.zip_max_member_bytes:
-        raise SecBulkSecurityError()
-    if _exceeds_compression_ratio(info, policy):
-        raise SecBulkSecurityError()
+    _check_limit("zip_max_member_bytes", info.file_size, policy.zip_max_member_bytes)
+    ratio = (
+        info.file_size / info.compress_size
+        if info.compress_size > 0
+        else (float("inf") if info.file_size > 0 else 0)
+    )
+    _check_limit("zip_max_compression_ratio", ratio, policy.zip_max_compression_ratio)
+
+
+def _check_limit(name: str, observed: float, allowed: float) -> None:
+    if observed > allowed:
+        raise SecBulkSecurityError(limit=name, observed=observed, allowed=allowed)
 
 
 def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
@@ -279,15 +339,6 @@ def _is_unsafe_member_name(name: str) -> bool:
     return any(part == ".." for part in pure.parts)
 
 
-def _exceeds_compression_ratio(
-    info: zipfile.ZipInfo, policy: SecSecurityPolicy
-) -> bool:
-    if info.compress_size <= 0:
-        # Non-empty output from zero compressed bytes is a decompression bomb.
-        return info.file_size > 0
-    return info.file_size / info.compress_size > policy.zip_max_compression_ratio
-
-
 def _read_member_json(
     zf: zipfile.ZipFile, info: zipfile.ZipInfo, policy: SecSecurityPolicy
 ) -> object:
@@ -301,11 +352,10 @@ def _read_member_json(
     # name lookup would resolve a duplicate name to a different central-dir row.
     with zf.open(info) as fp:
         raw = fp.read(limit + 1)
-    if len(raw) > limit:
-        raise SecBulkSecurityError()
+    _check_limit("zip_max_member_bytes", len(raw), limit)
     try:
         return json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise SecBulkError("Malformed JSON in bulk archive member") from exc
 
 
@@ -334,8 +384,14 @@ def _coerce_to_arrays_dict(data: object) -> dict[str, list[object]]:
     return data
 
 
+def _validate_arrays(rows: dict[str, list[object]]) -> None:
+    for key in ("accessionNumber", "form", "filingDate", "primaryDocument"):
+        if key in rows and not isinstance(rows[key], list):
+            raise SecBulkError("Malformed parallel arrays in bulk archive member")
+
+
 def _filter_ownership_rows(
-    cik: str, rows: dict[str, list[object]]
+    cik: str, rows: dict[str, list[object]], *, member_index: int | None = None
 ) -> Iterator[BulkFilingMetadata]:
     """Iterate over parallel arrays and yield ownership-form records."""
     accessions: list[object] = rows.get("accessionNumber") or []
@@ -372,6 +428,7 @@ def _filter_ownership_rows(
             filing_date=filing_date,
             accession_number=raw_acc,
             primary_document=primary_document,
+            member_index=member_index,
         )
 
 

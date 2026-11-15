@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 
 from insider_scanner.core import edgar
 from insider_scanner.core.sec_forms import TRANSACTION_FORM_TYPES as OWNERSHIP_FORMS
+
+_ACCESSION_FILENAME = re.compile(r"([0-9]{10}-[0-9]{2}-[0-9]{6})\.txt", re.IGNORECASE)
+
+
+def filing_accession(archive_path: str) -> str:
+    """Return the accession shared by an issuer's and reporting owners' paths."""
+    match = _ACCESSION_FILENAME.fullmatch(archive_path.rsplit("/", 1)[-1])
+    if match is None:
+        raise ValueError("filing archive path has no valid accession")
+    return match.group(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +37,7 @@ def parse_master_index(text: str) -> tuple[SecMasterIndexRow, ...]:
         raise TypeError("text must be a string")
 
     rows: list[SecMasterIndexRow] = []
-    seen_archive_paths: set[str] = set()
+    seen_accessions: set[str] = set()
 
     for line in text.splitlines():
         fields = line.split("|")
@@ -45,13 +56,14 @@ def parse_master_index(text: str) -> tuple[SecMasterIndexRow, ...]:
             normalized_cik = edgar.normalize_cik(cik)
             filing_date = date.fromisoformat(filing_date_text)
             edgar.build_filing_archive_url(archive_path)
+            accession = filing_accession(archive_path)
         except (TypeError, ValueError):
             continue
 
-        if archive_path in seen_archive_paths:
+        if accession in seen_accessions:
             continue
 
-        seen_archive_paths.add(archive_path)
+        seen_accessions.add(accession)
         rows.append(
             SecMasterIndexRow(
                 cik=normalized_cik,

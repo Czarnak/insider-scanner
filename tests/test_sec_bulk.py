@@ -20,6 +20,7 @@ from insider_scanner.core.sec_bulk import (
     BulkFilingMetadata,
     SecBulkError,
     SecBulkSecurityError,
+    bulk_archive_fingerprint,
     bulk_metadata_to_index_row,
     iter_ownership_filings,
 )
@@ -207,6 +208,7 @@ def test_continuation_skips_initial_holdings_and_retains_form5(tmp_path: Path) -
             filing_date=date(2024, 5, 1),
             accession_number="0000320193-24-000012",
             primary_document="form5.xml",
+            member_index=0,
         )
     ]
 
@@ -236,19 +238,28 @@ def test_all_cik_values_are_ten_digits() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. Malformed JSON → SecBulkError; raw body not in message
+# 7. Malformed JSON is isolated; raw body is never reported
 # ---------------------------------------------------------------------------
 
 
-def test_malformed_json_raises_sec_bulk_error(tmp_path: Path) -> None:
+def test_malformed_json_is_reported_without_payload(tmp_path: Path) -> None:
     bad_body = b"{not json"
     zip_path = _make_zip(tmp_path, {"CIK0000000001.json": bad_body})
-
-    with pytest.raises(SecBulkError) as exc_info:
-        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
-
-    exc_msg = str(exc_info.value)
-    assert bad_body.decode() not in exc_msg
+    errors = []
+    completed = []
+    assert (
+        list(
+            iter_ownership_filings(
+                zip_path,
+                on_member_error=lambda index, reason: errors.append((index, reason)),
+                on_member_complete=completed.append,
+            )
+        )
+        == []
+    )
+    assert errors == [(0, "SecBulkError")]
+    assert completed == [0]
+    assert bad_body.decode() not in str(errors)
 
 
 # ---------------------------------------------------------------------------
@@ -700,7 +711,7 @@ def test_unsafe_archives_fail_preflight_before_any_member_read(
 
 
 # ---------------------------------------------------------------------------
-# 17. Malformed fixture: SecBulkError raised; sentinel never leaks
+# 17. Malformed fixture: member error reported; sentinel never leaks
 # ---------------------------------------------------------------------------
 
 
@@ -708,12 +719,7 @@ def test_malformed_metadata_error_does_not_leak_payload_or_logs(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Malformed-metadata fixture raises SecBulkError without leaking the sentinel.
-
-    The fixture contains TASK6_METADATA_SENTINEL.  It must appear in neither
-    the exception message nor captured log output, confirming the production
-    code never echoes raw member content.
-    """
+    """Malformed metadata reports a stable member error without its payload."""
     malformed_bytes = (
         FIXTURE_DIR / "sec_submissions_malformed_metadata.json"
     ).read_bytes()
@@ -722,12 +728,21 @@ def test_malformed_metadata_error_does_not_leak_payload_or_logs(
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(_VALID_MEMBER_NAME, malformed_bytes)
 
-    with caplog.at_level(logging.DEBUG), pytest.raises(SecBulkError) as exc_info:
-        list(iter_ownership_filings(zip_path, cache_root=tmp_path))
-
-    assert TASK6_METADATA_SENTINEL not in str(exc_info.value), (
-        "Sentinel found in exception message — raw payload leaked"
-    )
+    errors = []
+    with caplog.at_level(logging.DEBUG):
+        assert (
+            list(
+                iter_ownership_filings(
+                    zip_path,
+                    on_member_error=lambda index, reason: errors.append(
+                        (index, reason)
+                    ),
+                )
+            )
+            == []
+        )
+    assert errors == [(0, "SecBulkError")]
+    assert TASK6_METADATA_SENTINEL not in str(errors)
     assert TASK6_METADATA_SENTINEL not in caplog.text, (
         "Sentinel found in log output — raw payload leaked"
     )
@@ -768,11 +783,17 @@ def test_missing_filing_date_is_rejected():
         bulk_metadata_to_index_row(_meta(d=None))
 
 
-def test_malformed_accession_is_rejected():
+@pytest.mark.parametrize(
+    "accession",
+    [
+        "../etc/passwd",
+        "not-an-accession",
+        "0000320193-26-000061\n",
+    ],
+)
+def test_malformed_accession_is_rejected(accession):
     with pytest.raises(SecBulkError):
-        bulk_metadata_to_index_row(_meta(acc="../etc/passwd"))
-    with pytest.raises(SecBulkError):
-        bulk_metadata_to_index_row(_meta(acc="not-an-accession"))
+        bulk_metadata_to_index_row(_meta(acc=accession))
 
 
 def test_cik_filter_limits_yielded_records():
@@ -782,3 +803,235 @@ def test_cik_filter_limits_yielded_records():
         )
     )
     assert [r.cik for r in results] == ["0001318605"]
+
+
+def _one_filing(cik: int) -> bytes:
+    return _cik_json_main(
+        str(cik).zfill(10),
+        [f"{cik:010d}-26-000001"],
+        ["2026-01-01"],
+        ["4"],
+        ["form4.xml"],
+    )
+
+
+def test_resume_opens_only_retry_members_and_unfinished_suffix(tmp_path, monkeypatch):
+    archive = _make_zip(
+        tmp_path,
+        {f"CIK{cik:010d}.json": _one_filing(cik) for cik in range(1, 5)},
+    )
+    original = zipfile.ZipFile.open
+    opened = []
+    completed = []
+
+    def track(self, member, *args, **kwargs):
+        opened.append(member.filename)
+        return original(self, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", track)
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            start_member=3,
+            retry_members=frozenset({1}),
+            on_member_complete=completed.append,
+        )
+    )
+    assert [row.member_index for row in rows] == [1, 3]
+    assert opened == ["CIK0000000002.json", "CIK0000000004.json"]
+    assert completed == [1, 3]
+
+
+def test_valid_bad_valid_members_continue_and_report_positions(tmp_path):
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": _one_filing(1),
+            "CIK0000000002.json": b"{not json",
+            "CIK0000000003.json": _one_filing(3),
+        },
+    )
+    errors = []
+    completed = []
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            on_member_error=lambda index, reason: errors.append((index, reason)),
+            on_member_complete=completed.append,
+        )
+    )
+    assert [row.member_index for row in rows] == [0, 2]
+    assert errors == [(1, "SecBulkError")]
+    assert completed == [0, 1, 2]
+
+
+@pytest.mark.parametrize(
+    "key", ["accessionNumber", "form", "filingDate", "primaryDocument"]
+)
+def test_invalid_parallel_array_type_isolated_per_member(tmp_path, key):
+    bad = json.loads(_one_filing(1))
+    bad["filings"]["recent"][key] = {"0": "untrusted"}
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": json.dumps(bad).encode(),
+            "CIK0000000002.json": _one_filing(2),
+        },
+    )
+    errors = []
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            on_member_error=lambda index, reason: errors.append((index, reason)),
+        )
+    )
+    assert [row.member_index for row in rows] == [1]
+    assert errors == [(0, "SecBulkError")]
+
+
+@pytest.mark.parametrize("error", [zipfile.BadZipFile, EOFError, OSError])
+def test_corrupt_member_read_does_not_abandon_later_members(
+    tmp_path, monkeypatch, error
+):
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": _one_filing(1),
+            "CIK0000000002.json": _one_filing(2),
+        },
+    )
+    original = zipfile.ZipFile.open
+    errors = []
+
+    def corrupt(self, member, *args, **kwargs):
+        if member.filename == "CIK0000000001.json":
+            raise error("SECRET_MEMBER_CONTENT")
+        return original(self, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", corrupt)
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            on_member_error=lambda index, reason: errors.append((index, reason)),
+        )
+    )
+    assert [row.member_index for row in rows] == [1]
+    assert errors == [(0, error.__name__)]
+    assert "SECRET_MEMBER_CONTENT" not in str(errors)
+
+
+def test_completed_callback_excludes_partially_consumed_member(tmp_path):
+    archive = _make_zip(tmp_path, {"CIK0000000001.json": _one_filing(1)})
+    completed = []
+    iterator = iter_ownership_filings(archive, on_member_complete=completed.append)
+    assert next(iterator).member_index == 0
+    iterator.close()
+    assert completed == []
+
+
+def test_empty_filtered_and_unrecognized_members_complete_without_open(
+    tmp_path, monkeypatch
+):
+    archive = _make_zip(
+        tmp_path,
+        {
+            "ignore.json": b"{}",
+            "CIK0000000001.json": _one_filing(1),
+            "CIK0000000002.json": b"{}",
+        },
+    )
+    original = zipfile.ZipFile.open
+    opened = []
+    completed = []
+
+    def track(self, member, *args, **kwargs):
+        opened.append(member.filename)
+        return original(self, member, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", track)
+    assert (
+        list(
+            iter_ownership_filings(
+                archive,
+                ciks=frozenset({"0000000002"}),
+                on_member_complete=completed.append,
+            )
+        )
+        == []
+    )
+    assert opened == ["CIK0000000002.json"]
+    assert completed == [0, 1, 2]
+
+
+def test_fingerprint_ignores_path_but_detects_content_and_order(tmp_path, monkeypatch):
+    members = {
+        "CIK0000000001.json": _one_filing(1),
+        "CIK0000000002.json": _one_filing(2),
+    }
+    archive = _make_zip(tmp_path, members)
+    original = bulk_archive_fingerprint(archive)
+    renamed = archive.rename(tmp_path / "renamed.zip")
+    assert bulk_archive_fingerprint(renamed) == original
+    changed = _make_zip(tmp_path, dict(reversed(list(members.items()))))
+    assert bulk_archive_fingerprint(changed) != original
+    changed = _make_zip(tmp_path, {**members, "CIK0000000002.json": _one_filing(3)})
+    assert bulk_archive_fingerprint(changed) != original
+
+    def no_content(*args, **kwargs):
+        pytest.fail("Fingerprint must not decompress a member")
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", no_content)
+    assert bulk_archive_fingerprint(renamed) == original
+
+
+@pytest.mark.parametrize(
+    "limit,allowed,observed",
+    [
+        ("zip_max_entries", 1, 2),
+        ("zip_max_total_bytes", 3, 4),
+        ("zip_max_member_bytes", 1, 2),
+        ("zip_max_member_name_chars", 1, 18),
+    ],
+)
+def test_limit_diagnostics_name_bound_without_member_content(
+    tmp_path, limit, allowed, observed
+):
+    archive = _make_zip(
+        tmp_path, {"CIK0000000001.json": b"{}", "CIK0000000002.json": b"{}"}
+    )
+    with pytest.raises(SecBulkSecurityError) as caught:
+        bulk_archive_fingerprint(archive, policy=_small_policy(**{limit: allowed}))
+    message = str(caught.value)
+    assert limit in message
+    assert f"observed={observed}" in message
+    assert f"allowed={allowed}" in message
+    assert "CIK0000000001" not in message
+
+
+def test_direct_local_archive_must_be_regular_file(tmp_path):
+    with pytest.raises(SecBulkSecurityError) as caught:
+        list(iter_ownership_filings(tmp_path))
+    assert caught.value.reason is SecSecurityReason.CACHE_PATH
+
+
+@pytest.mark.parametrize(
+    "payload", [b"\xff", b'{"invalid_integer":' + b"1" * 5_000 + b"}"]
+)
+def test_json_decoder_value_errors_are_isolated(tmp_path, payload):
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": payload,
+            "CIK0000000002.json": _one_filing(2),
+        },
+    )
+    errors = []
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            policy=_small_policy(zip_max_compression_ratio=10_000),
+            on_member_error=lambda index, reason: errors.append((index, reason)),
+        )
+    )
+    assert [row.member_index for row in rows] == [1]
+    assert errors == [(0, "SecBulkError")]

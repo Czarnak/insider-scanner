@@ -20,7 +20,7 @@ from tests.sec_stubs import (
 )
 
 
-@pytest.mark.parametrize("operation", ["stat", "read_bytes", "unlink", "resolve"])
+@pytest.mark.parametrize("operation", ["stat", "read_bytes", "unlink"])
 def test_cache_filesystem_failures_are_typed(tmp_path, monkeypatch, operation):
     row = parse_master_index(INDEX_TWO_ROWS)[0]
     transport = make_transport()
@@ -78,7 +78,7 @@ def test_cache_hit_promotion_stat_failure_is_typed(tmp_path, monkeypatch):
         sec_downloader.promote_validated_filing(cached, cache_root=tmp_path)
 
 
-@pytest.mark.parametrize("operation", ["stat", "unlink", "resolve"])
+@pytest.mark.parametrize("operation", ["stat", "unlink"])
 def test_purge_skips_locked_entry_and_removes_other_stale_files(
     tmp_path, monkeypatch, operation
 ):
@@ -89,14 +89,42 @@ def test_purge_skips_locked_entry_and_removes_other_stale_files(
     for path in (locked_path, removable):
         path.write_bytes(b"stale")
         os.utime(path, (0, 0))
-    original = getattr(Path, operation)
+    if operation == "unlink":
+        original_unlink = os.unlink
 
-    def locked(self, *args, **kwargs):
-        if self == locked_path:
-            raise PermissionError("cache entry locked")
-        return original(self, *args, **kwargs)
+        def locked_unlink(path, *args, **kwargs):
+            if Path(path) == locked_path:
+                raise PermissionError("cache entry locked")
+            return original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, operation, locked)
+        monkeypatch.setattr(os, "unlink", locked_unlink)
+    else:
+        original_scandir = os.scandir
+
+        class LockedEntry:
+            def __init__(self, entry):
+                self.path = entry.path
+                self._entry = entry
+
+            def is_symlink(self):
+                return self._entry.is_symlink()
+
+            def stat(self, **kwargs):
+                if Path(self.path) == locked_path:
+                    raise PermissionError("cache entry locked")
+                return self._entry.stat(**kwargs)
+
+        class LockedScan:
+            def __init__(self, path):
+                self._entries = original_scandir(path)
+
+            def __enter__(self):
+                return (LockedEntry(entry) for entry in self._entries)
+
+            def __exit__(self, *args):
+                self._entries.close()
+
+        monkeypatch.setattr(os, "scandir", LockedScan)
     assert sec_downloader.purge_stale_cache(tmp_path, max_age_seconds=1) == 1
     monkeypatch.undo()
     assert locked_path.read_bytes() == b"stale"
@@ -106,14 +134,14 @@ def test_purge_skips_locked_entry_and_removes_other_stale_files(
 def test_purge_namespace_enumeration_failure_is_nonfatal(tmp_path, monkeypatch):
     namespace = tmp_path / "validated-v1"
     namespace.mkdir()
-    original = Path.iterdir
+    original = os.scandir
 
-    def locked(self):
-        if self == namespace:
+    def locked(path):
+        if Path(path) == namespace:
             raise PermissionError("directory locked")
-        return original(self)
+        return original(path)
 
-    monkeypatch.setattr(Path, "iterdir", locked)
+    monkeypatch.setattr(os, "scandir", locked)
     assert sec_downloader.purge_stale_cache(tmp_path, max_age_seconds=1) == 0
 
 
@@ -127,6 +155,21 @@ def test_purge_root_inspection_failure_is_nonfatal(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "is_symlink", locked)
     assert sec_downloader.purge_stale_cache(tmp_path, max_age_seconds=1) == 0
+
+
+def test_purge_does_not_resolve_each_direct_child(tmp_path, monkeypatch):
+    namespace = tmp_path / "validated-v1"
+    namespace.mkdir()
+    for index in range(10):
+        path = namespace / f"{index}.filing"
+        path.write_bytes(b"stale")
+        os.utime(path, (0, 0))
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("verified namespace children need no resolution")
+
+    monkeypatch.setattr(Path, "resolve", unexpected)
+    assert sec_downloader.purge_stale_cache(tmp_path, max_age_seconds=1) == 10
 
 
 def test_purge_keeps_explicit_namespace_symlink_rejection(tmp_path, monkeypatch):

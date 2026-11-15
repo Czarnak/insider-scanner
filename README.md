@@ -311,8 +311,8 @@ insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-ba
 # Limit to specific CIKs (--cik is repeatable)
 insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --cik 0000320193 --cik 0001318605 --confirm-full-backfill
 
-# Keep the download cache after a clean run
-insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --no-cleanup
+# Override an archive-size limit after checking a trusted local archive
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --zip-max-total-bytes 34359738368
 ```
 
 `--confirm-full-backfill` is a required acknowledgement flag — it cannot be omitted.
@@ -323,6 +323,33 @@ retries transient fetch, mapping or persistence failures. Attempts and the lates
 failure reason remain in the ledger after a run finishes. A targeted `--cik` run
 cannot clear full-run progress; renamed or refreshed archives reuse known
 accessions. Removing a download cache does not remove ingestion progress.
+
+Migration 10 adds a member-position cursor and separate retry positions for each
+archive and CIK scope. Resume checks the central directory, then opens only
+unfinished members and earlier failed members. The cursor is published after
+filing batches are durable, at bounded member intervals; an interrupted member
+is parsed again while the accession ledger skips its committed filings. Archive
+identity comes from ordered central-directory metadata, so renaming preserves
+the cursor and replacing or reordering the archive starts discovery again.
+
+Malformed JSON, invalid parallel arrays and corrupt member reads are counted as
+`members` skipped and retained for later retry; valid members after them still
+run. Archive-level security violations remain fatal. Summary `discovered` counts
+unique accessions encountered in this invocation, `rows` counts source rows, and
+`duplicates` counts aliases under related CIKs. A completed prefix contributes
+none of these counters because it is not opened.
+
+Backfill parses downloaded bytes in memory without reading, writing or purging
+the validated download cache. `--no-cleanup` remains an accepted compatibility
+option. Daily downloads still use a validated cache keyed by accession; existing
+path-keyed cache entries remain readable.
+
+Default ZIP limits remain 2,000,000 entries, 16 GiB total uncompressed bytes and
+64 MiB per member. Limit errors report the bound, observed value and allowed
+value without exposing member content. For a trusted local archive, positive
+`--zip-max-entries`, `--zip-max-total-bytes` and `--zip-max-member-bytes` overrides
+change only those limits. Name, symlink and compression-ratio guards still apply.
+An explicitly supplied local ZIP need not live in the download cache.
 
 Daily and catch-up commands use this same ledger to skip committed filings in
 incomplete dates, while database coverage selects the dates still needed. Their

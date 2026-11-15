@@ -41,6 +41,8 @@ EXPECTED_TABLES = {
     "refresh_state",
     "price_history",
     "sec_ingested_filings",
+    "sec_archive_progress",
+    "sec_archive_retries",
 }
 
 EXPECTED_UNIQUE_CONSTRAINTS = {

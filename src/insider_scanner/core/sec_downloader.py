@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import stat
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +13,7 @@ from pathlib import Path
 from insider_scanner.core import edgar
 from insider_scanner.core._sec_paths import resolves_within
 from insider_scanner.core.sec_client import SecClient
-from insider_scanner.core.sec_index import SecMasterIndexRow
+from insider_scanner.core.sec_index import SecMasterIndexRow, filing_accession
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecResourceProfile,
@@ -80,22 +82,42 @@ def fetch_filing(
     *,
     client: SecClient,
     cache_root: Path,
+    cache: bool = True,
 ) -> PendingSecFiling:
-    """Return trusted cache bytes or bounded network bytes without writing them."""
-    _validate_inputs(row, client, cache_root)
+    """Return trusted cache bytes or bounded network bytes without writing them.
+
+    ``cache=False`` bypasses all cache filesystem work for durable bulk ingestion.
+    """
+    _validate_inputs(row, client, cache_root, cache=cache)
     archive_url = edgar.build_filing_archive_url(row.archive_path)
     content_path = _content_path(row, cache_root)
-    _validate_content_path(content_path, cache_root)
     limits = client.policy.limits_for(SecResourceProfile.FILING_DOCUMENT)
-    cached = _read_fresh_cache(
-        content_path,
-        client.policy.cache_freshness_seconds,
-        limits.max_bytes,
-    )
-    if cached is not None:
-        return PendingSecFiling(
-            row, archive_url, cached, content_path, True, limits.max_bytes
+    if cache:
+        _validate_content_path(content_path, cache_root)
+        cached = _read_fresh_cache(
+            content_path,
+            client.policy.cache_freshness_seconds,
+            limits.max_bytes,
         )
+        if cached is None:
+            # Existing installations used the entire CIK-specific archive path.
+            # Reuse those bytes, retaining the original user cache file.
+            legacy_path = _legacy_content_path(row, cache_root)
+            if legacy_path != content_path:
+                _validate_content_path(legacy_path, cache_root)
+                cached = _read_fresh_cache(
+                    legacy_path,
+                    client.policy.cache_freshness_seconds,
+                    limits.max_bytes,
+                )
+                if cached is not None:
+                    return PendingSecFiling(
+                        row, archive_url, cached, legacy_path, True, limits.max_bytes
+                    )
+        if cached is not None:
+            return PendingSecFiling(
+                row, archive_url, cached, content_path, True, limits.max_bytes
+            )
     content = client.fetch_bytes(
         archive_url, profile=SecResourceProfile.FILING_DOCUMENT
     )
@@ -120,13 +142,19 @@ def promote_validated_filing(
     expected_url = edgar.build_filing_archive_url(pending.row.archive_path)
     expected_path = _content_path(pending.row, cache_root)
     _validate_content_path(expected_path, cache_root)
-    if pending.archive_url != expected_url or pending.content_path != expected_path:
+    allowed_paths = {expected_path}
+    if pending.from_cache:
+        allowed_paths.add(_legacy_content_path(pending.row, cache_root))
+    if pending.archive_url != expected_url or pending.content_path not in allowed_paths:
         raise SecDownloadSecurityError()
     if pending.from_cache:
-        _require_regular_file(expected_path)
-        return DownloadedSecFiling(
-            pending.row, pending.archive_url, expected_path, True
-        )
+        if pending.content_path != expected_path:
+            _validate_content_path(pending.content_path, cache_root)
+        _require_regular_file(pending.content_path)
+        if pending.content_path == expected_path:
+            return DownloadedSecFiling(
+                pending.row, pending.archive_url, expected_path, True
+            )
     if (
         isinstance(pending.max_bytes, bool)
         or not isinstance(pending.max_bytes, int)
@@ -142,7 +170,9 @@ def promote_validated_filing(
         raise
     except OSError as exc:
         raise SecDownloadIoError() from exc
-    return DownloadedSecFiling(pending.row, pending.archive_url, expected_path, False)
+    return DownloadedSecFiling(
+        pending.row, pending.archive_url, expected_path, pending.from_cache
+    )
 
 
 def purge_stale_cache(
@@ -171,7 +201,7 @@ def purge_stale_cache(
         raise ValueError("max_age_seconds must not be negative")
     namespace = cache_root / _CACHE_NAMESPACE
     try:
-        if namespace.is_symlink():
+        if _is_link(namespace):
             raise SecDownloadSecurityError()
         if not namespace.is_dir():
             return 0
@@ -182,20 +212,21 @@ def purge_stale_cache(
     now = time.time()
     removed = 0
     try:
-        for entry in namespace.iterdir():
-            try:
-                if entry.is_symlink() or not resolves_within(entry, cache_root):
+        with os.scandir(namespace) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    metadata = entry.stat(follow_symlinks=False)
+                    if not stat.S_ISREG(metadata.st_mode):
+                        continue
+                    if now - metadata.st_mtime <= threshold:
+                        continue
+                    os.unlink(entry.path)
+                except OSError:
+                    # A locked or vanished entry must not abandon other files.
                     continue
-                metadata = entry.stat(follow_symlinks=False)
-                if not stat.S_ISREG(metadata.st_mode):
-                    continue
-                if now - metadata.st_mtime <= threshold:
-                    continue
-                entry.unlink()
-            except OSError:
-                # A locked or vanished entry must not abandon the other files.
-                continue
-            removed += 1
+                removed += 1
     except OSError:
         _log.warning("SEC cache cleanup could not enumerate the namespace")
     return removed
@@ -239,7 +270,7 @@ def quarantine_failed_download(
 
 
 def _validate_inputs(
-    row: SecMasterIndexRow, client: SecClient, cache_root: Path
+    row: SecMasterIndexRow, client: SecClient, cache_root: Path, *, cache: bool
 ) -> None:
     if type(row) is not SecMasterIndexRow:
         raise TypeError("row must be exactly SecMasterIndexRow")
@@ -247,7 +278,8 @@ def _validate_inputs(
         raise TypeError("client must be exactly SecClient")
     if not isinstance(cache_root, Path):
         raise TypeError("cache_root must be a pathlib.Path")
-    _validate_cache_root(cache_root)
+    if cache:
+        _validate_cache_root(cache_root)
 
 
 def _validate_cache_root(cache_root: Path) -> None:
@@ -261,19 +293,41 @@ def _validate_cache_root(cache_root: Path) -> None:
 
 
 def _content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
+    digest = hashlib.sha256(
+        filing_accession(row.archive_path).encode("ascii")
+    ).hexdigest()
+    return cache_root / _CACHE_NAMESPACE / f"{digest}{_CACHE_SUFFIX}"
+
+
+def _legacy_content_path(row: SecMasterIndexRow, cache_root: Path) -> Path:
     digest = hashlib.sha256(row.archive_path.encode("utf-8")).hexdigest()
     return cache_root / _CACHE_NAMESPACE / f"{digest}{_CACHE_SUFFIX}"
 
 
 def _validate_content_path(content_path: Path, cache_root: Path) -> None:
     try:
-        if not resolves_within(content_path, cache_root):
-            raise SecDownloadSecurityError()
         namespace = cache_root / _CACHE_NAMESPACE
-        if namespace.is_symlink() or content_path.is_symlink():
+        # The filename is a SHA-256 digest produced here. A lexical direct-child
+        # check plus link guards needs no per-filing root/path resolution.
+        if content_path.parent != namespace:
+            raise SecDownloadSecurityError()
+        if _is_link(namespace) or content_path.is_symlink():
             raise SecDownloadSecurityError()
     except OSError as exc:
         raise SecDownloadIoError() from exc
+
+
+def _is_link(path: Path) -> bool:
+    """Reject symlinks and Windows junction/reparse directories alike."""
+    if path.is_symlink():
+        return True
+    if sys.platform == "win32":
+        try:
+            attributes = path.lstat().st_file_attributes
+        except FileNotFoundError:
+            return False
+        return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    return False
 
 
 def _read_fresh_cache(
@@ -315,7 +369,7 @@ def _prepare_cache_directory(directory: Path, cache_root: Path) -> None:
     cache_root.mkdir(parents=True, exist_ok=True)
     _validate_cache_root(cache_root)
     directory.mkdir(parents=False, exist_ok=True)
-    if directory.is_symlink() or not directory.is_dir():
+    if _is_link(directory) or not directory.is_dir():
         raise SecDownloadSecurityError()
 
 
