@@ -44,6 +44,7 @@ from insider_scanner.core.sec_ownership_parser import (
     OwnershipFiling,
     ReportingOwner,
     category_for_code,
+    normalize_issuer_symbol,
 )
 from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
@@ -662,7 +663,9 @@ def _filing(
         remarks=row["REMARKS"] or None,
         document_sha256="",
         issuer=Issuer(
-            issuer_cik, row["ISSUERNAME"] or None, row["ISSUERTRADINGSYMBOL"] or None
+            issuer_cik,
+            row["ISSUERNAME"] or None,
+            normalize_issuer_symbol(row["ISSUERTRADINGSYMBOL"] or None),
         ),
         reporting_owner=owners[0],
         reporting_owners=owners,

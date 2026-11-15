@@ -37,6 +37,47 @@ def _read(path, **kwargs):
     return list(_module().iter_dataset_filings(path, **kwargs))
 
 
+@pytest.mark.parametrize(
+    "symbol,expected",
+    [
+        ("none", None),
+        ("n/a", None),
+        (" aapl msft ", "AAPL"),
+        ("brk.b", "BRK.B"),
+    ],
+)
+def test_dataset_issuer_symbol_uses_shared_sec_normalization(
+    tmp_path, symbol, expected
+):
+    (item,) = _read(
+        make_dataset(
+            tmp_path / "quarter.zip",
+            tables={
+                "SUBMISSION": [submission(ISSUERTRADINGSYMBOL=symbol)],
+            },
+        )
+    )
+    assert item.filing.issuer.trading_symbol == expected
+
+
+@pytest.mark.parametrize("derivative", [False, True])
+def test_documented_nullable_dataset_code_is_unknown_not_rejected(tmp_path, derivative):
+    rows = [transaction(derivative=derivative, TRANS_CODE="")]
+    (item,) = _read(
+        make_dataset(
+            tmp_path / "quarter.zip",
+            tables={
+                "NONDERIV_TRANS": [] if derivative else rows,
+                "DERIV_TRANS": rows if derivative else [],
+            },
+        )
+    )
+    assert not item.error
+    (trade,) = ownership_filing_to_trades(item.filing, item.index_row)
+    assert trade.transaction_code == ""
+    assert trade.trade_type == "Other"
+
+
 def test_dataset_uses_native_surrogate_identity_without_invented_xml_hash(tmp_path):
     (item,) = _read(make_dataset(tmp_path / "quarter.zip"))
     assert item.error == ""

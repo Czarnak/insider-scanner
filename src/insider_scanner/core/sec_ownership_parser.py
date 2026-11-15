@@ -300,7 +300,7 @@ def _parse_issuer(root: _Element, ctx: _ParseContext) -> Issuer:
     el = root.find("issuer")
     if el is None:
         return Issuer(cik=None, name=None, trading_symbol=None)
-    symbol = _normalize_symbol(_text(el, "issuerTradingSymbol", ctx))
+    symbol = normalize_issuer_symbol(_text(el, "issuerTradingSymbol", ctx))
     return Issuer(
         cik=_normalized_cik(_text(el, "issuerCik", ctx), ctx, "issuerCik"),
         name=_text(el, "issuerName", ctx),
@@ -344,7 +344,8 @@ def _normalized_cik(value: str | None, ctx: _ParseContext, field: str) -> str | 
         return None
 
 
-def _normalize_symbol(value: str | None) -> str | None:
+def normalize_issuer_symbol(value: str | None) -> str | None:
+    """Share SEC ticker case, placeholder and multiple-symbol normalization."""
     if value is None:
         return None
     normalized = _WHITESPACE_RE.sub(" ", value).strip().upper()
