@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from functools import cmp_to_key
 from math import isfinite
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Float,
@@ -19,6 +19,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    union_all,
 )
 from sqlalchemy.engine import Engine, RowMapping
 from sqlalchemy.exc import SQLAlchemyError
@@ -33,9 +34,13 @@ from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.schema import (
     congress_trades,
     european_trades,
+    feed_ingestion,
     refresh_state,
     us_trades,
 )
+
+if TYPE_CHECKING:
+    from insider_scanner.persistence.watchlists import WatchEntry
 
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 500
@@ -250,6 +255,7 @@ class FeedRecord:
     source: str
     source_url: str
     created_at: datetime | None = None
+    ingestion_sequence: int | None = None
 
     @property
     def direction(self) -> TransactionDirection:
@@ -575,6 +581,119 @@ class FeedRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
+    def query_alerts(
+        self,
+        criteria: FeedCriteria,
+        *,
+        after_sequence: int = 0,
+        created_after: datetime | None = None,
+        watch_entries: tuple[WatchEntry, ...] | None = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> FeedPage:
+        """Return the earliest unseen matches, filtering before the page limit.
+
+        Legacy timestamp acknowledgements conservatively recheck their entire
+        last second. Once acknowledged, a global insertion position replaces
+        that lossy timestamp; equal timestamps and older trade dates are safe.
+        Watchlist entries use exact market-scoped identifiers or person names.
+        """
+        if not isinstance(criteria, FeedCriteria):
+            raise TypeError("criteria must be FeedCriteria")
+        if type(after_sequence) is not int or after_sequence < 0:
+            raise ValueError("after_sequence must be a non-negative integer")
+        if type(limit) is not int or not 1 <= limit <= MAX_PAGE_SIZE:
+            raise ValueError(f"limit must be between 1 and {MAX_PAGE_SIZE}")
+        legacy_after = _aware_utc(created_after)
+        if legacy_after is not None:
+            legacy_after = legacy_after.replace(microsecond=0)
+        branches = []
+        for market in criteria.markets or tuple(_MARKET_TABLES):
+            feed = _branch(market, criteria.search)
+            conditions = [
+                *_filter_conditions(feed, criteria),
+                feed_ingestion.c.sequence > after_sequence,
+            ]
+            if legacy_after is not None:
+                # Historical CURRENT_TIMESTAMP has no fractional suffix. Bind
+                # seconds as text so both that form and Python's .000000 compare
+                # inclusively against the same complete second.
+                boundary = legacy_after.replace(tzinfo=None).isoformat(
+                    sep=" ", timespec="seconds"
+                )
+                conditions.append(feed.c.created_at >= literal(boundary, type_=String))
+            if watch_entries is not None:
+                matches = []
+                identifiers = {
+                    entry.identifier.casefold()
+                    for entry in watch_entries
+                    if entry.market == market
+                    and entry.kind == "company"
+                    and entry.identifier
+                }
+                people = {
+                    entry.person.casefold()
+                    for entry in watch_entries
+                    if entry.market == market
+                    and entry.kind == "insider"
+                    and entry.person
+                }
+                if identifiers:
+                    matches.append(
+                        func.casefold(feed.c.identifier).in_(sorted(identifiers))
+                    )
+                if people:
+                    matches.append(func.casefold(feed.c.person).in_(sorted(people)))
+                if not matches:
+                    continue
+                conditions.append(or_(*matches))
+            branches.append(
+                select(feed, feed_ingestion.c.sequence.label("ingestion_sequence"))
+                .select_from(
+                    feed.join(
+                        feed_ingestion,
+                        and_(
+                            feed_ingestion.c.market == market.value,
+                            feed_ingestion.c.record_id == feed.c.row_id,
+                        ),
+                    )
+                )
+                .where(*conditions)
+            )
+        if not branches:
+            return FeedPage(
+                records=(),
+                total_count=0,
+                freshness_at=None,
+                is_stale=False,
+                has_more=False,
+            )
+        candidates = union_all(*branches).subquery()
+        try:
+            with self._engine.connect() as connection:
+                count = int(
+                    connection.execute(
+                        select(func.count()).select_from(candidates)
+                    ).scalar_one()
+                )
+                rows = (
+                    connection.execute(
+                        select(candidates)
+                        .order_by(candidates.c.ingestion_sequence)
+                        .limit(limit)
+                    )
+                    .mappings()
+                    .all()
+                )
+        except SQLAlchemyError as exc:
+            raise PersistenceError("Failed to query new alert transactions") from exc
+        return FeedPage(
+            records=tuple(self._record_from_row(row) for row in rows),
+            total_count=count,
+            freshness_at=None,
+            is_stale=False,
+            has_more=count > len(rows),
+        )
+
     def query(
         self,
         query: FeedQuery,
@@ -705,6 +824,7 @@ class FeedRepository:
             source=row["source"] or "",
             source_url=row["source_url"] or "",
             created_at=_aware_utc(row["created_at"]),
+            ingestion_sequence=row.get("ingestion_sequence"),
         )
 
     def detail(self, key: str) -> FeedDetail | None:
