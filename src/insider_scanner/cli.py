@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
+from threading import Event, current_thread, main_thread
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from insider_scanner.core import edgar
@@ -23,7 +26,7 @@ from insider_scanner.services.application import (
 )
 from insider_scanner.services.sec_downloads import sec_today
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, ensure_dirs
-from insider_scanner.utils.logging import get_logger, setup_logging
+from insider_scanner.utils.logging import diagnostic_hint, get_logger, setup_logging
 from insider_scanner.utils.trade_display import format_reported_number
 
 if TYPE_CHECKING:
@@ -374,6 +377,74 @@ def _make_cli_progress(
     return _on_progress
 
 
+@contextmanager
+def _cooperative_interrupt() -> Iterator[Callable[[], bool]]:
+    """Let SEC services flush their batch on the first Ctrl+C."""
+    stopped = Event()
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        if stopped.is_set():
+            raise KeyboardInterrupt
+        stopped.set()
+        print(
+            "Stopping after the current filing; preserving committed progress...",
+            file=sys.stderr,
+        )
+
+    previous = signal.getsignal(signal.SIGINT)
+    install = current_thread() is main_thread()
+    if install:
+        signal.signal(signal.SIGINT, request_stop)
+    try:
+        yield stopped.is_set
+    finally:
+        if install:
+            signal.signal(signal.SIGINT, previous)
+
+
+def _make_backfill_progress(
+    quiet: bool,
+) -> Callable[[SecBackfillSummary], None] | None:
+    if quiet:
+        return None
+    last_report: float | None = None
+
+    def report(snapshot: SecBackfillSummary) -> None:
+        nonlocal last_report
+        now = monotonic()
+        if last_report is not None and now - last_report < 2 and not snapshot.cancelled:
+            return
+        last_report = now
+        eta = (
+            "unknown"
+            if snapshot.eta_seconds is None
+            else f"{snapshot.eta_seconds:.0f}s"
+        )
+        print(
+            f"members={snapshot.members_completed}/{snapshot.members_total} "
+            f"discovered={snapshot.filings_discovered} parsed={snapshot.filings_parsed} "
+            f"committed={snapshot.filings_committed} "
+            f"failed={snapshot.failures} skipped_resume={snapshot.skipped_resume} "
+            f"rate={snapshot.filings_per_second:.2f} filings/s ETA={eta}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return report
+
+
+def _sec_exit_status(summary: SecDailyIngestionSummary, interrupted: bool) -> int:
+    if summary.cancelled or interrupted:
+        print(
+            "Interrupted. Committed progress is preserved; rerun to resume.",
+            file=sys.stderr,
+        )
+        return 130
+    if summary.stopped_on_error or summary.dates_completed < summary.dates_total:
+        return 3
+    return 0
+
+
 def _comparison_targets_from_args(
     args: argparse.Namespace,
 ) -> tuple[SecComparisonTarget, ...]:
@@ -459,15 +530,17 @@ def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> in
     client = _build_sec_client()
     if client is None:
         return 1
-    with closing(client):
+    with closing(client), _cooperative_interrupt() as cancelled:
         service = services.make_sec_daily(
             client=client,
             cache_root=_sec_cache_root(),
             cleanup=not args.no_cleanup,
         )
-        summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
+        summary = service.ingest_date(
+            day, cancelled=cancelled, on_progress=_make_cli_progress(args.quiet)
+        )
         _print_sec_summary(summary)
-        return 0
+        return _sec_exit_status(summary, cancelled())
 
 
 def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> int:
@@ -484,17 +557,20 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
     client = _build_sec_client()
     if client is None:
         return 1
-    with closing(client):
+    with closing(client), _cooperative_interrupt() as cancelled:
         service = services.make_sec_daily(
             client=client,
             cache_root=_sec_cache_root(),
             cleanup=not args.no_cleanup,
         )
         summary = service.ingest_range(
-            args.since, args.until, on_progress=_make_cli_progress(args.quiet)
+            args.since,
+            args.until,
+            cancelled=cancelled,
+            on_progress=_make_cli_progress(args.quiet),
         )
         _print_sec_summary(summary)
-        return 0
+        return _sec_exit_status(summary, cancelled())
 
 
 def _print_backfill_summary(summary: SecBackfillSummary) -> None:
@@ -512,6 +588,11 @@ def _print_backfill_summary(summary: SecBackfillSummary) -> None:
         f"metadata={summary.skipped_metadata} members={summary.skipped_members}"
     )
     print(f"  failures:     {summary.failures}")
+    print(
+        f"  archive:      members={summary.members_completed}/{summary.members_total} "
+        f"(durable position); this run elapsed={summary.elapsed_seconds:.1f}s "
+        f"rate={summary.filings_per_second:.2f} filings/s"
+    )
 
 
 def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) -> int:
@@ -545,7 +626,7 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
     client = _build_sec_client()
     if client is None:
         return 1
-    with closing(client):
+    with closing(client), _cooperative_interrupt() as cancelled:
         service = services.make_sec_backfill(
             client=client,
             cache_root=_sec_cache_root(),
@@ -554,11 +635,29 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
         )
         print(f"Starting full bulk backfill from {zip_path} (resumable).")
         try:
-            summary = service.run(zip_path, confirm=True, ciks=ciks)
+            summary = service.run(
+                zip_path,
+                confirm=True,
+                ciks=ciks,
+                cancelled=cancelled,
+                on_progress=_make_backfill_progress(getattr(args, "quiet", False)),
+            )
         except SecBulkError as error:
             print(f"SEC backfill archive error: {error}", file=sys.stderr)
             return 1
         _print_backfill_summary(summary)
+        if summary.cancelled or cancelled():
+            print(
+                "Interrupted. Committed progress is preserved; rerun to resume.",
+                file=sys.stderr,
+            )
+            return 130
+        if summary.skipped_members:
+            print(
+                "Warning: some archive members could not be read and remain available for retry.",
+                file=sys.stderr,
+            )
+            return 3
         return 0
 
 
@@ -566,6 +665,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="insider-scanner-cli",
         description="Scan insider trades from secform4.com, openinsider.com, SEC EDGAR, and European regulators.",
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+        default=None,
+        help="Diagnostic level (default: INSIDER_SCANNER_LOG_LEVEL or INFO)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -779,6 +884,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required: acknowledge the heavy, network-intensive full backfill",
     )
     p_sec_backfill.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress live progress on stderr; keep the final summary and errors",
+    )
+    p_sec_backfill.add_argument(
         "--no-cleanup",
         action="store_true",
         help="Compatibility option; bulk ingestion no longer uses the download cache",
@@ -872,9 +982,9 @@ def run(
     service_factory: Callable[[], ApplicationServices] = open_application_services,
 ) -> int:
     """Run one CLI command and return a process exit code."""
-    setup_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+    setup_logging(getattr(args, "log_level", None))
     try:
         _validate_cli_range(args)
     except ValueError as error:
@@ -884,23 +994,37 @@ def run(
     if args.func is cmd_init_congress:
         try:
             cmd_init_congress(args, None)
+        except KeyboardInterrupt:
+            print("Interrupted.", file=sys.stderr)
+            return 130
         except OSError:
             log.exception("Congress member list initialization failed")
-            print("Could not initialize Congress member list.", file=sys.stderr)
+            print(
+                f"Could not initialize Congress member list. {diagnostic_hint()}",
+                file=sys.stderr,
+            )
             return 1
         return 0
     try:
         ensure_dirs()
         services = service_factory()
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
     except Exception:
         log.exception("Persistence startup failed")
-        print("Could not initialize local database.", file=sys.stderr)
+        print(
+            f"Could not initialize local database. {diagnostic_hint()}", file=sys.stderr
+        )
         return 1
     result = 0
     try:
         command_result = args.func(args, services)
         if isinstance(command_result, int):
             result = command_result
+    except KeyboardInterrupt:
+        print("Interrupted. Committed progress is preserved.", file=sys.stderr)
+        result = 130
     except SecBlockedError as error:
         print(str(error), file=sys.stderr)
         result = 1
@@ -909,7 +1033,7 @@ def run(
         result = 2
     except Exception:
         log.exception("CLI command failed")
-        print("Command failed. See logs for details.", file=sys.stderr)
+        print(f"Command failed. {diagnostic_hint()}", file=sys.stderr)
         result = 1
     finally:
         if services is not None:
@@ -920,7 +1044,10 @@ def run(
                     "CLI service shutdown failed: exception=%s",
                     type(error).__name__,
                 )
-                print("Could not close local database cleanly.", file=sys.stderr)
+                print(
+                    f"Could not close local database cleanly. {diagnostic_hint()}",
+                    file=sys.stderr,
+                )
                 if result == 0:
                     result = 1
     return result

@@ -50,7 +50,9 @@ def test_unresolved_cik_is_failure_on_stderr(monkeypatch, capsys):
 
 
 def test_resolved_cik_is_success(monkeypatch, capsys):
-    monkeypatch.setattr("insider_scanner.core.edgar.resolve_cik", lambda *a, **k: "320193")
+    monkeypatch.setattr(
+        "insider_scanner.core.edgar.resolve_cik", lambda *a, **k: "320193"
+    )
     args = cli.build_parser().parse_args(["cik", "aapl"])
     assert cli.cmd_resolve_cik(args, None) == 0
     assert "AAPL" in capsys.readouterr().out

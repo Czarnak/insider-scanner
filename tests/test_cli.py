@@ -583,7 +583,7 @@ class TestCmdSecDaily:
         seen: dict[str, object] = {}
 
         class FakeService:
-            def ingest_date(self, day, *, on_progress=None):
+            def ingest_date(self, day, *, cancelled=None, on_progress=None):
                 seen["ingest_date"] = (day, on_progress)
                 return _sec_summary()
 
@@ -611,7 +611,7 @@ class TestCmdSecDaily:
         seen: dict[str, object] = {}
 
         class FakeService:
-            def ingest_date(self, day, *, on_progress=None):
+            def ingest_date(self, day, *, cancelled=None, on_progress=None):
                 return _sec_summary()
 
         class FakeServices:
@@ -655,7 +655,7 @@ class TestCmdSecCatchup:
         seen: dict[str, object] = {}
 
         class FakeService:
-            def ingest_range(self, since, until, *, on_progress=None):
+            def ingest_range(self, since, until, *, cancelled=None, on_progress=None):
                 seen["range"] = (since, until)
                 return _sec_summary()
 
@@ -794,6 +794,8 @@ class TestCmdSecBackfill:
             "  transactions: inserted=5 updated=1 skipped=2\n"
             "  skipped:      resume=1 metadata=0 members=0\n"
             "  failures:     0\n"
+            "  archive:      members=0/0 (durable position); this run elapsed=0.0s "
+            "rate=0.00 filings/s\n"
         )
         assert "checkpoint_path" not in seen["make"]
 
@@ -893,8 +895,7 @@ def test_run_closes_services_on_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(cli, "build_parser", lambda: parser)
     monkeypatch.setattr(cli, "ensure_dirs", lambda: None)
 
-    with pytest.raises(KeyboardInterrupt):
-        cli.run([], service_factory=lambda: services)
+    assert cli.run([], service_factory=lambda: services) == 130
 
     services.close.assert_called_once_with()
 
