@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from insider_scanner.core.fetch_outcome import FetchIssue, FetchResult, as_fetch_result
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.sources import SEC_EDGAR_SOURCE
 from insider_scanner.persistence.refresh import is_fresh
 from insider_scanner.services.adapters import (
     default_us_adapters,
@@ -32,7 +33,6 @@ from insider_scanner.services.common import (
     validate_sources,
 )
 from insider_scanner.services.context import PersistenceContext
-from insider_scanner.services.sec_comparison import SEC_EDGAR_SOURCE
 
 
 class UsScanService:

@@ -38,6 +38,7 @@ from insider_scanner.core.sec_ownership_parser import (
     OwnershipFiling,
     ReportingOwner,
 )
+from insider_scanner.core.sources import SEC_EDGAR_SOURCE
 from insider_scanner.utils.logging import get_logger
 
 # ---------------------------------------------------------------------------
@@ -280,7 +281,7 @@ def _build_trade(
         price_missing=txn.price_per_share is None,
         value_missing=value is None,
         shares_owned_after_missing=txn.shares_owned_following is None,
-        source="sec_edgar",
+        source=SEC_EDGAR_SOURCE,
         edgar_url=ctx.edgar_url,
         accession_number=filing.accession_number or "",
         sec_row_id=txn.row_id,

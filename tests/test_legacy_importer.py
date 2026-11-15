@@ -12,6 +12,7 @@ from insider_scanner.persistence.repositories import UpsertResult
 from insider_scanner.services import importer
 from insider_scanner.services.context import open_persistence
 from insider_scanner.services.importer import import_legacy_path
+from insider_scanner.services.us import UsScanService
 
 DEFAULT_MAX_LEGACY_FILE_SIZE_BYTES = 50 * 1024 * 1024
 
@@ -267,13 +268,40 @@ def test_import_normalizes_supported_sources_tickers_and_domain_enums(tmp_path):
 
     assert report.errors == 0
     assert us_trade.ticker == "BRK.B"
-    assert us_trade.source == "edgar"
+    assert us_trade.source == "sec_edgar"
     assert congress_trade.ticker == "MSFT"
     assert congress_trade.source == "senate"
     assert congress_trade.chamber == "Senate"
     assert european_trade.country == "FR"
     assert european_trade.regulatory_body == "AMF"
     assert european_trade.source == "amf"
+
+
+@pytest.mark.parametrize("source", ("sec_edgar", "edgar", " EDGAR ", " SEC_EDGAR "))
+def test_imported_edgar_exports_are_queryable_and_roundtrip(
+    tmp_path, persistence, source
+):
+    path = tmp_path / "sec.json"
+    path.write_text(json.dumps([{**_us_record(), "source": source}]), encoding="utf-8")
+
+    report = import_legacy_path(path, persistence)
+
+    assert report.inserted == 1
+    assert report.errors == 0
+    service = UsScanService(persistence, adapters={}, latest_adapters={})
+    trades = service.scan(
+        "AAPL",
+        sources=("sec_edgar",),
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 31),
+    )
+    assert len(trades) == 1
+    assert trades[0].source == "sec_edgar"
+    assert list(service.latest(count=10, sources=("sec_edgar",))) == list(trades)
+    path.write_text(json.dumps([trades[0].to_dict()]), encoding="utf-8")
+    repeated = import_legacy_path(path, persistence)
+    assert repeated.skipped == 1
+    assert repeated.errors == 0
 
 
 def test_import_rejects_unreachable_sources_tickers_and_mismatched_eu_enums(tmp_path):

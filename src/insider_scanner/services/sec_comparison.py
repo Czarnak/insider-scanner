@@ -11,9 +11,9 @@ from math import fsum, isclose
 from typing import Literal, cast
 
 from insider_scanner.core.models import InsiderTrade
+from insider_scanner.core.sources import SEC_EDGAR_SOURCE
 from insider_scanner.services.context import PersistenceContext
 
-SEC_EDGAR_SOURCE = "sec_edgar"
 DEFAULT_LEGACY_SOURCES = ("secform4", "openinsider")
 ReportFormat = Literal["text", "markdown", "json"]
 
