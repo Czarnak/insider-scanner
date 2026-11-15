@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,7 +14,9 @@ from typing import TYPE_CHECKING
 from insider_scanner.core import edgar
 from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.core.prices import get_price_history
+from insider_scanner.core.sec_bulk import SecBulkError
 from insider_scanner.core.sec_client import SecBlockedError
+from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
 from insider_scanner.services.application import (
     ApplicationServices,
     open_application_services,
@@ -492,7 +495,8 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
 def _print_backfill_summary(summary: SecBackfillSummary) -> None:
     print(
         f"SEC backfill: discovered={summary.filings_discovered} "
-        f"parsed={summary.filings_parsed} unsupported={summary.unsupported}"
+        f"parsed={summary.filings_parsed} unsupported={summary.unsupported} "
+        f"rows={summary.discovered_rows} duplicates={summary.duplicates}"
     )
     print(
         f"  transactions: inserted={summary.transactions_inserted} "
@@ -500,7 +504,7 @@ def _print_backfill_summary(summary: SecBackfillSummary) -> None:
     )
     print(
         f"  skipped:      resume={summary.skipped_resume} "
-        f"metadata={summary.skipped_metadata}"
+        f"metadata={summary.skipped_metadata} members={summary.skipped_members}"
     )
     print(f"  failures:     {summary.failures}")
 
@@ -527,6 +531,12 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
         print(f"Invalid --cik value: {error}", file=sys.stderr)
         return 2
 
+    limits = {
+        name: value
+        for name in ("zip_max_entries", "zip_max_total_bytes", "zip_max_member_bytes")
+        if (value := getattr(args, name, None)) is not None
+    }
+    policy = replace(DEFAULT_SEC_SECURITY_POLICY, **limits)
     client = _build_sec_client()
     if client is None:
         return 1
@@ -534,10 +544,15 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
         service = services.make_sec_backfill(
             client=client,
             cache_root=_sec_cache_root(),
+            policy=policy,
             cleanup=not args.no_cleanup,
         )
         print(f"Starting full bulk backfill from {zip_path} (resumable).")
-        summary = service.run(zip_path, confirm=True, ciks=ciks)
+        try:
+            summary = service.run(zip_path, confirm=True, ciks=ciks)
+        except SecBulkError as error:
+            print(f"SEC backfill archive error: {error}", file=sys.stderr)
+            return 1
         _print_backfill_summary(summary)
         return 0
 
@@ -759,8 +774,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_sec_backfill.add_argument(
         "--no-cleanup",
         action="store_true",
-        help="Keep the download cache after a clean run",
+        help="Compatibility option; bulk ingestion no longer uses the download cache",
     )
+    for limit, description in (
+        ("entries", "archive entry count"),
+        ("total-bytes", "total uncompressed archive bytes"),
+        ("member-bytes", "uncompressed bytes per member"),
+    ):
+        p_sec_backfill.add_argument(
+            f"--zip-max-{limit}",
+            type=_parse_positive_int,
+            default=None,
+            help=f"Override the {description} limit for a trusted local archive",
+        )
     p_sec_backfill.set_defaults(func=cmd_sec_backfill)
 
     # sec-compare (local validation report, no live network fetches)

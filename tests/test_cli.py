@@ -790,9 +790,9 @@ class TestCmdSecBackfill:
         out = capsys.readouterr().out
         assert out == (
             f"Starting full bulk backfill from {zip_path} (resumable).\n"
-            "SEC backfill: discovered=10 parsed=8 unsupported=0\n"
+            "SEC backfill: discovered=10 parsed=8 unsupported=0 rows=0 duplicates=0\n"
             "  transactions: inserted=5 updated=1 skipped=2\n"
-            "  skipped:      resume=1 metadata=0\n"
+            "  skipped:      resume=1 metadata=0 members=0\n"
             "  failures:     0\n"
         )
         assert "checkpoint_path" not in seen["make"]
