@@ -315,7 +315,7 @@ def test_sec_added_transaction_does_not_replace_same_day_original(engine):
     original = native()
     addition = amended(
         original,
-        sec_detail_json='{"security_title":"Common Stock","remarks":"Adds a previously omitted transaction."}',
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Adds a previously omitted transaction.","narrative_complete":true}',
     )
     repo.upsert([original, addition])
     assert len(repo.query("AAPL")) == 2
@@ -333,7 +333,10 @@ def test_sec_identical_restatement_replaces_only_one_repeated_lot(engine):
 def test_sec_unknown_changed_line_remains_visible_without_correction_evidence(engine):
     repo = UsTradeRepository(engine)
     original = native()
-    unknown = amended(original, sec_detail_json='{"security_title":"Common Stock"}')
+    unknown = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","narrative_complete":true}',
+    )
     repo.upsert([original, unknown])
     assert len(repo.query("AAPL")) == 2
 
@@ -354,7 +357,7 @@ def test_sec_nonfinancial_correction_cannot_authorize_changed_quantity(engine):
     original = native()
     amendment = amended(
         original,
-        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address."}',
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address.","narrative_complete":true}',
     )
     repo.upsert([original, amendment])
     assert len(repo.query("AAPL")) == 2
@@ -428,7 +431,7 @@ def test_unrelated_correction_text_cannot_authorize_unchanged_share_count(engine
     original = native()
     amendment = amended(
         original,
-        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address. The share count is unchanged."}',
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address. The share count is unchanged.","narrative_complete":true}',
     )
     repo.upsert([original, amendment])
     assert len(repo.query("AAPL")) == 2
