@@ -5,13 +5,14 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-from sqlalchemy import event, inspect, select
+from sqlalchemy import MetaData, Table, event, insert, inspect, select
 from sqlalchemy.exc import OperationalError
 
 from insider_scanner.core.sec_ingestion import SecFilingOutcome, SecFilingStatus
 from insider_scanner.persistence.bootstrap import bootstrap_database
 from insider_scanner.persistence.engine import create_sqlite_engine
 from insider_scanner.persistence.errors import PersistenceError
+from insider_scanner.persistence.mappings import us_to_values
 from insider_scanner.persistence.migrations import MIGRATIONS
 from insider_scanner.persistence.repositories import UsTradeRepository
 from insider_scanner.persistence.schema import schema_version
@@ -185,7 +186,9 @@ def test_migration_adds_ledger_without_guessing_legacy_completion(tmp_path):
     engine = create_sqlite_engine(tmp_path / "legacy.db")
     try:
         bootstrap_database(engine, migrations=MIGRATIONS[:8])
-        UsTradeRepository(engine).upsert([sec_trade()])
+        historical = Table("us_trades", MetaData(), autoload_with=engine)
+        with engine.begin() as connection:
+            connection.execute(insert(historical), us_to_values(sec_trade()))
         assert "sec_ingested_filings" not in inspect(engine).get_table_names()
 
         bootstrap_database(engine)
