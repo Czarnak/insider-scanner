@@ -6,13 +6,13 @@ from sqlalchemy.engine import Engine
 
 from insider_scanner.core.prices import repository as repo
 from insider_scanner.core.prices.model import PriceBar
-from insider_scanner.persistence.schema import metadata, price_history
+from insider_scanner.persistence.schema import price_history
 
 
 @pytest.fixture
 def e() -> Engine:
     engine = create_engine("sqlite://")  # in-memory
-    metadata.create_all(engine)
+    price_history.create(engine)
     yield engine
     engine.dispose()
 
