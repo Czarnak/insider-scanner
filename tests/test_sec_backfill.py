@@ -86,14 +86,9 @@ def test_cik_filter_limits_scope(persistence, tmp_path):
 
 
 def test_cleanup_can_be_disabled(persistence, tmp_path, monkeypatch):
-    calls: list[object] = []
-    monkeypatch.setattr(
-        "insider_scanner.services.sec_backfill.purge_stale_cache",
-        lambda *a, **k: calls.append(1) or 0,
-    )
     svc = _service(persistence, tmp_path, cleanup=False)
     svc.run(FIXTURE_ZIP, confirm=True)
-    assert calls == []
+    assert not (tmp_path / "cache").exists()
 
 
 def test_persistence_error_is_not_marked_complete_and_is_retried(
@@ -207,7 +202,7 @@ def test_partial_backfill_keeps_successful_ledger_entries_for_retry(
         persistence.sec_ingestion.is_terminal(accession) for accession in ACCESSIONS
     ] == [True, True, False]
     second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
-    assert second.skipped_resume == 2
+    assert second.skipped_resume == 0  # successful members are not reopened
     assert second.filings_parsed == 1
     assert second.failures == 0
 
