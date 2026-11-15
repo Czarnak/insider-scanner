@@ -1006,3 +1006,26 @@ def test_direct_local_archive_must_be_regular_file(tmp_path):
     with pytest.raises(SecBulkSecurityError) as caught:
         list(iter_ownership_filings(tmp_path))
     assert caught.value.reason is SecSecurityReason.CACHE_PATH
+
+
+@pytest.mark.parametrize(
+    "payload", [b"\xff", b'{"invalid_integer":' + b"1" * 5_000 + b"}"]
+)
+def test_json_decoder_value_errors_are_isolated(tmp_path, payload):
+    archive = _make_zip(
+        tmp_path,
+        {
+            "CIK0000000001.json": payload,
+            "CIK0000000002.json": _one_filing(2),
+        },
+    )
+    errors = []
+    rows = list(
+        iter_ownership_filings(
+            archive,
+            policy=_small_policy(zip_max_compression_ratio=10_000),
+            on_member_error=lambda index, reason: errors.append((index, reason)),
+        )
+    )
+    assert [row.member_index for row in rows] == [1]
+    assert errors == [(0, "SecBulkError")]

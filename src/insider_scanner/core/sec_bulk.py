@@ -355,7 +355,7 @@ def _read_member_json(
     _check_limit("zip_max_member_bytes", len(raw), limit)
     try:
         return json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise SecBulkError("Malformed JSON in bulk archive member") from exc
 
 
