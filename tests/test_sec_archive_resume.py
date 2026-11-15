@@ -3,10 +3,9 @@
 import json
 import zipfile
 
-from insider_scanner.persistence.errors import PersistenceError
-
 from insider_scanner.core.sec_bulk import bulk_archive_fingerprint
 from insider_scanner.core.sec_ingestion import SecFilingStatus
+from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.services.sec_backfill import SecBackfillService
 from tests.sec_stubs import StubResponse, make_client, make_transport
 
