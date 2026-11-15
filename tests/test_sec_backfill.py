@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from insider_scanner.core.sec_bulk import iter_ownership_filings
+from insider_scanner.core.sec_ingestion import SecFilingStatus
 from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.services.sec_backfill import (
@@ -16,6 +18,11 @@ from tests.sec_stubs import (
     make_transport,
 )
 
+ACCESSIONS = tuple(
+    meta.accession_number
+    for meta in iter_ownership_filings(FIXTURE_ZIP, cache_root=FIXTURE_ZIP.parent)
+)
+
 BACKFILL_FILING = VALID_FILING.replace(b"2026-06-12", b"2024-01-01")
 
 
@@ -26,7 +33,6 @@ def _service(persistence, tmp_path, transport=None, **kw) -> SecBackfillService:
         persistence,
         client=make_client(transport),
         cache_root=tmp_path / "cache",
-        checkpoint_path=tmp_path / "backfill.json",
         **kw,
     )
 
@@ -52,7 +58,7 @@ def test_run_processes_all_fixture_records(persistence, tmp_path):
     assert not (tmp_path / "backfill.json").exists()
 
 
-def test_rerun_skips_completed_accessions_via_checkpoint(persistence, tmp_path):
+def test_rerun_skips_exactly_the_committed_accessions(persistence, tmp_path):
     seen = {"n": 0}
 
     def cancel_after_one() -> bool:
@@ -61,11 +67,16 @@ def test_rerun_skips_completed_accessions_via_checkpoint(persistence, tmp_path):
 
     svc = _service(persistence, tmp_path)
     svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
-    assert (tmp_path / "backfill.json").exists()
+    assert persistence.sec_ingestion.is_terminal(ACCESSIONS[0])
+    assert persistence.sec_ingestion.get(ACCESSIONS[1]) is None
+    assert persistence.sec_ingestion.get(ACCESSIONS[2]) is None
     resume = _service(persistence, tmp_path)
     second = resume.run(FIXTURE_ZIP, confirm=True)
-    assert second.skipped_resume >= 1
-    assert second.filings_parsed >= 1
+    assert second.skipped_resume == 1
+    assert second.filings_parsed == 2
+    assert second.transactions_inserted == 2
+    assert second.failures == 0
+    assert len(persistence.us_trades.query_latest(10)) == 3
 
 
 def test_cik_filter_limits_scope(persistence, tmp_path):
@@ -85,19 +96,21 @@ def test_cleanup_can_be_disabled(persistence, tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_persistence_error_is_not_checkpointed_and_is_retried(
+def test_persistence_error_is_not_marked_complete_and_is_retried(
     persistence, tmp_path, monkeypatch
 ):
     def _boom(trades):
         raise PersistenceError("transient db failure")
 
     # Run 1: every upsert fails -> no accession is retired.
-    monkeypatch.setattr(persistence.us_trades, "upsert", _boom)
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", _boom)
     svc = _service(persistence, tmp_path)
     summary1 = svc.run(FIXTURE_ZIP, confirm=True)
     assert summary1.failures == 3
     assert summary1.transactions_inserted == 0
-    assert not (tmp_path / "backfill.json").exists()  # nothing checkpointed
+    assert all(
+        persistence.sec_ingestion.get(accession) is None for accession in ACCESSIONS
+    )
 
     # Run 2: upsert restored -> nothing skipped via resume; trades now persist.
     monkeypatch.undo()
@@ -107,14 +120,14 @@ def test_persistence_error_is_not_checkpointed_and_is_retried(
     assert summary2.transactions_inserted > 0
 
 
-def test_mapping_error_is_not_checkpointed_and_recovers_after_mapper_fix(
+def test_mapping_failure_is_durable_and_recovers_after_mapper_fix(
     persistence, tmp_path, monkeypatch
 ):
     def _raise(filing, row):
         raise SecTradeMappingError("unmappable")
 
     monkeypatch.setattr(
-        "insider_scanner.services.sec_backfill.ownership_filing_to_trades", _raise
+        "insider_scanner.services.sec_persistence.ownership_filing_to_trades", _raise
     )
     seen = {"n": 0}
 
@@ -125,8 +138,11 @@ def test_mapping_error_is_not_checkpointed_and_recovers_after_mapper_fix(
     # Run 1: process one mapping failure, then interrupt without retiring it.
     svc = _service(persistence, tmp_path)
     first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
-    assert first.failures >= 1
-    assert not (tmp_path / "backfill.json").exists()
+    assert first.failures == 1
+    record = persistence.sec_ingestion.get(ACCESSIONS[0])
+    assert record.status is SecFilingStatus.RETRYABLE_FAILURE
+    assert record.attempts == 1
+    assert record.stage == "mapping"
     assert first.outcomes[0].stage == "mapping"
     assert first.outcomes[0].accession
 
@@ -138,10 +154,7 @@ def test_mapping_error_is_not_checkpointed_and_recovers_after_mapper_fix(
     assert second.transactions_inserted > 0
 
 
-def test_blocked_backfill_stops_and_preserves_completed_checkpoint(
-    persistence, tmp_path
-):
-    import json
+def test_blocked_backfill_stops_and_preserves_committed_ledger(persistence, tmp_path):
     import shutil
 
     from insider_scanner.core.sec_client import SecBlockedError
@@ -164,13 +177,19 @@ def test_blocked_backfill_stops_and_preserves_completed_checkpoint(
     with pytest.raises(SecBlockedError):
         service.run(archive, confirm=True)
 
-    checkpoint = json.loads((tmp_path / "backfill.json").read_text(encoding="utf-8"))
-    assert len(checkpoint["completed_accessions"]) == 1
+    assert persistence.sec_ingestion.is_terminal(ACCESSIONS[0])
+    assert (
+        persistence.sec_ingestion.get(ACCESSIONS[1]).status
+        is SecFilingStatus.RETRYABLE_FAILURE
+    )
+    assert persistence.sec_ingestion.get(ACCESSIONS[2]) is None
     assert len(fetched) == 3
     archive.rename(tmp_path / "closed-archive.zip")  # ZIP handle closed on abort
 
 
-def test_partial_backfill_keeps_successful_checkpoint_for_retry(persistence, tmp_path):
+def test_partial_backfill_keeps_successful_ledger_entries_for_retry(
+    persistence, tmp_path
+):
     from tests.sec_stubs import StubResponse
 
     transport = make_transport(filing_bytes=BACKFILL_FILING)
@@ -184,7 +203,9 @@ def test_partial_backfill_keeps_successful_checkpoint_for_retry(persistence, tmp
     transport.get.side_effect = get
     first = _service(persistence, tmp_path, transport).run(FIXTURE_ZIP, confirm=True)
     assert first.failures == 1
-    assert (tmp_path / "backfill.json").exists()
+    assert [
+        persistence.sec_ingestion.is_terminal(accession) for accession in ACCESSIONS
+    ] == [True, True, False]
     second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
     assert second.skipped_resume == 2
     assert second.filings_parsed == 1

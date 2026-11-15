@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 
 import pytest
@@ -27,14 +26,13 @@ from tests.sec_stubs import (
 
 def test_batch_buffers_with_filing_and_row_limits(persistence, monkeypatch):
     calls = []
-    original = persistence.us_trades.upsert
+    original = persistence.sec_ingestion.commit
 
-    def upsert(trades):
-        rows = list(trades)
-        calls.append(len(rows))
-        return original(rows)
+    def commit(entries):
+        calls.append(sum(len(entry.trades) for entry in entries))
+        return original(entries)
 
-    batch = SecTradeBatch(upsert, max_filings=2, max_rows=3)
+    batch = SecTradeBatch(commit, max_filings=2, max_rows=3)
     batch.add("first", [sec_trade(sec_row_id="0"), sec_trade(sec_row_id="1")])
     assert calls == []
     assert batch.take_outcomes() == ()
@@ -64,7 +62,7 @@ def test_batch_failed_transaction_retries_every_filing():
 
 
 def test_bad_row_keeps_its_filing_retryable_across_flushes(persistence):
-    batch = SecTradeBatch(persistence.us_trades.upsert, max_filings=1)
+    batch = SecTradeBatch(persistence.sec_ingestion.commit, max_filings=1)
     batch.add("first", [sec_trade(sec_row_id="0", price=-1), sec_trade(sec_row_id="1")])
     batch.add(
         "second", [sec_trade(sec_row_id="2", price=-1), sec_trade(sec_row_id="3")]
@@ -84,23 +82,24 @@ def test_services_commit_batches_before_progress(
     persistence, tmp_path, monkeypatch, kind
 ):
     calls = []
-    original = persistence.us_trades.upsert
+    original = persistence.sec_ingestion.commit
 
-    def upsert(trades):
-        rows = list(trades)
-        calls.append(len(rows))
-        # Neither coverage nor checkpoint may claim this batch yet.
+    def commit(entries):
+        calls.append(sum(len(entry.trades) for entry in entries))
+        # Coverage and ledger cannot claim an uncommitted batch.
         assert persistence.coverage.get("us", SEC_DAILY_IDENTIFIER, "sec_edgar") == ()
-        assert not (tmp_path / "checkpoint.json").exists()
-        return original(rows)
+        assert all(
+            persistence.sec_ingestion.get(entry.outcome.accession) is None
+            for entry in entries
+        )
+        return original(entries)
 
-    monkeypatch.setattr(persistence.us_trades, "upsert", upsert)
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", commit)
     if kind == "daily":
         service = SecDailyIngestionService(
             persistence,
             client=make_client(make_transport(index_text=INDEX_TWO_ROWS)),
             cache_root=tmp_path / "cache",
-            checkpoint_path=tmp_path / "checkpoint.json",
         )
         snapshots = []
 
@@ -121,7 +120,6 @@ def test_services_commit_batches_before_progress(
                 )
             ),
             cache_root=tmp_path / "cache",
-            checkpoint_path=tmp_path / "checkpoint.json",
         )
         summary = service.run(FIXTURE_ZIP, confirm=True)
         assert calls == [3]
@@ -133,9 +131,7 @@ def test_services_commit_batches_before_progress(
 def test_row_rejection_retries_its_filing_and_retains_good_rows(
     persistence, tmp_path, monkeypatch, kind
 ):
-    module = (
-        f"insider_scanner.services.sec_{'daily' if kind == 'daily' else 'backfill'}"
-    )
+    module = "insider_scanner.services.sec_persistence"
     from insider_scanner.core.sec_trade_mapping import ownership_filing_to_trades
 
     first_accession = None
@@ -155,7 +151,6 @@ def test_row_rejection_retries_its_filing_and_retains_good_rows(
             persistence,
             client=make_client(make_transport(index_text=INDEX_TWO_ROWS)),
             cache_root=tmp_path / "cache",
-            checkpoint_path=checkpoint,
         )
         summary = service.ingest_date(DAY)
         assert summary.dates_completed == 0
@@ -171,12 +166,10 @@ def test_row_rejection_retries_its_filing_and_retains_good_rows(
                 )
             ),
             cache_root=tmp_path / "cache",
-            checkpoint_path=checkpoint,
         )
         summary = service.run(FIXTURE_ZIP, confirm=True)
-        completed = json.loads(checkpoint.read_text())["completed_accessions"]
-        assert len(completed) == 2
-        assert first_accession not in completed
+        assert not persistence.sec_ingestion.is_terminal(first_accession)
+        assert persistence.sec_ingestion.get(first_accession).stage == "persist"
         assert summary.transactions_inserted == 2
     assert summary.failures == 1
     assert summary.outcomes[0].stage == "persist"
