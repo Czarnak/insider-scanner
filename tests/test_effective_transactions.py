@@ -420,3 +420,14 @@ def test_original_submission_date_does_not_disambiguate_same_day_originals(engin
         ]
     )
     assert len(repo.query("AAPL")) == 3
+
+
+def test_unrelated_correction_text_cannot_authorize_unchanged_share_count(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    amendment = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the reporting owner address. The share count is unchanged."}',
+    )
+    repo.upsert([original, amendment])
+    assert len(repo.query("AAPL")) == 2

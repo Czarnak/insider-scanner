@@ -218,8 +218,17 @@ def _corrects_financial_fields(old: Mapping[str, Any], new: Mapping[str, Any]) -
         if (old[name], old[f"{name}_missing"]) != (new[name], new[f"{name}_missing"])
     ]
     if not changed:
-        return bool(re.search(r"\b(?:value|amount|proceeds)\b", text))
-    return all(re.search(field_words[name], text) for name in changed)
+        field_words["value"] = r"\b(?:value|amount|proceeds)\b"
+        changed = ["value"]
+    correction_prefix = (
+        r"\bcorrect(?:s|ed|ing|ion|ions)?\s+(?:(?:to|of|in)\s+)?(?:the\s+)?"
+    )
+    corrected_suffix = r"(?:\s+(?:was|were|is|are|has been|have been))?\s+corrected\b"
+    return all(
+        re.search(correction_prefix + field_words[name], text)
+        or re.search(field_words[name] + corrected_suffix, text)
+        for name in changed
+    )
 
 
 def _replace_sec_lines(
