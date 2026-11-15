@@ -1143,3 +1143,103 @@ def test_structured_senate_member_uses_surname_search_and_local_first_name_filte
     assert search.call_args.kwargs["first_name"] == ""
     assert search.call_args.kwargs["last_name"] == "Britt"
     session.fetch_page.assert_called_once_with("/correct")
+
+
+@pytest.mark.parametrize(
+    ("title", "period", "amendment"),
+    [
+        ("Periodic Transaction Report for 09/01/2022", date(2022, 9, 1), False),
+        (
+            "Periodic Transaction Report (Amendment) for 09/01/2022",
+            date(2022, 9, 1),
+            True,
+        ),
+        (
+            "Periodic Transaction Report for 09/01/2022 (AMENDMENT)",
+            date(2022, 9, 1),
+            True,
+        ),
+        ("Periodic Transaction Report (Amendment)", None, True),
+        ("Periodic Transaction Report for 02/30/2022 (Amendment)", None, True),
+        ("Periodic Transaction Report", None, False),
+    ],
+)
+def test_search_preserves_explicit_amendment_metadata(title, period, amendment):
+    result = parse_search_results(
+        {
+            "data": [
+                [
+                    "Tommy",
+                    "Tuberville",
+                    "Senator",
+                    f'<a href="/search/view/ptr/abc12345/">{title}</a>',
+                    "09/15/2022",
+                ]
+            ]
+        }
+    )[0]
+
+    # A missing or malformed report period must never use the filing date.
+    assert result.get("is_amendment") is amendment
+    assert result.get("period_of_report") == period
+    assert result["report_title"] == title
+
+
+def test_scrape_retains_original_and_amendment_with_linkage_metadata():
+    original = parse_search_results(SEARCH_RESPONSE_JSON)[0]
+    amended = {
+        **original,
+        "report_uuid": "amended-uuid",
+        "report_url": "/search/view/ptr/amended-uuid/",
+        "report_title": "Periodic Transaction Report for 09/01/2022 (Amendment)",
+        "filing_date": date(2022, 9, 20),
+    }
+    session = MagicMock(spec=EFDSession)
+    session.fetch_page.return_value = PTR_PAGE_HTML
+
+    with patch(
+        "insider_scanner.core.congress_senate.search_senate_filings",
+        # Newer reports arriving first must not remove raw original evidence.
+        return_value=[amended, original],
+    ):
+        result = scrape_senate_trades(session=session)
+
+    assert len(result) == 6
+    assert {trade.doc_id for trade in result} == {
+        "amended-uuid",
+        original["report_uuid"],
+    }
+    assert all(
+        getattr(trade, "period_of_report", None) == date(2022, 9, 1) for trade in result
+    )
+    assert [getattr(trade, "is_amendment", False) for trade in result] == [
+        True,
+        True,
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert result[0].report_title == amended["report_title"]
+    assert result[3].report_title == original["report_title"]
+
+
+def test_scrape_marks_partial_amendment_unsafe_for_filing_supersession():
+    filing = {
+        **parse_search_results(SEARCH_RESPONSE_JSON)[0],
+        "report_title": "Periodic Transaction Report for 09/01/2022 (Amendment)",
+    }
+    session = MagicMock(spec=EFDSession)
+    session.fetch_page.return_value = PTR_PAGE_HTML.replace(
+        "Apple Inc - Common Stock", ""
+    )
+
+    with patch(
+        "insider_scanner.core.congress_senate.search_senate_filings",
+        return_value=[filing],
+    ):
+        result = scrape_senate_trades(session=session)
+
+    assert result.status is FetchStatus.PARTIAL
+    assert len(result) == 2
+    assert all(getattr(trade, "filing_complete", True) is False for trade in result)

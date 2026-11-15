@@ -7,11 +7,12 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import delete, literal, select
+from sqlalchemy import MetaData, Table, delete, literal, select
 from sqlalchemy.engine import Connection
 
 from insider_scanner.core.congress_common import parse_amount_range
 from insider_scanner.core.merger import merge_trade_pair
+from insider_scanner.persistence.effective import rebuild_replacements
 from insider_scanner.persistence.mappings import (
     us_canonical_key,
     us_from_row,
@@ -25,6 +26,7 @@ from insider_scanner.persistence.schema import (
     sec_archive_progress,
     sec_archive_retries,
     sec_ingested_filings,
+    trade_replacements,
     us_trades,
     v1_metadata,
 )
@@ -224,13 +226,19 @@ def _unify_transaction_identity(connection: Connection) -> None:
             canonical_key=literal("pr11:") + us_trades.c.canonical_key
         )
     )
-    rows = connection.execute(select(us_trades).order_by(us_trades.c.id)).mappings()
+    historical_us = Table("us_trades", MetaData(), autoload_with=connection)
+    historical_columns = [
+        column for column in us_trades.c if column.name in historical_us.c
+    ]
+    rows = connection.execute(
+        select(*historical_columns).order_by(us_trades.c.id)
+    ).mappings()
     for row in rows:
         trade = us_from_row(row)
         key = us_canonical_key(trade)
         existing_row = (
             connection.execute(
-                select(us_trades).where(us_trades.c.canonical_key == key)
+                select(*historical_columns).where(us_trades.c.canonical_key == key)
             )
             .mappings()
             .one_or_none()
@@ -247,6 +255,9 @@ def _unify_transaction_identity(connection: Connection) -> None:
         values = us_to_values(
             merged, set(us_provenance(existing_row) | us_provenance(row))
         )
+        values = {
+            name: value for name, value in values.items() if name in historical_us.c
+        }
         values["created_at"] = min(existing_row["created_at"], row["created_at"])
         values["updated_at"] = max(existing_row["updated_at"], row["updated_at"])
         connection.execute(
@@ -279,6 +290,36 @@ def _add_sec_ingestion_ledger(connection: Connection) -> None:
 def _add_sec_archive_progress(connection: Connection) -> None:
     sec_archive_progress.create(connection)
     sec_archive_retries.create(connection)
+
+
+def _add_effective_transactions(connection: Connection) -> None:
+    """Retain raw keys/timestamps and derive replacement links from evidence."""
+    connection.exec_driver_sql(
+        "ALTER TABLE us_trades ADD COLUMN original_submission_date DATE"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN report_title TEXT NOT NULL DEFAULT ''"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN period_of_report DATE"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN is_amendment BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN filing_complete BOOLEAN NOT NULL DEFAULT 1"
+    )
+    trade_replacements.create(connection)
+    rebuild_replacements(connection, us_trades)
+    rebuild_replacements(connection, congress_trades)
+    # Historical Senate rows never retained report titles. Refetch metadata
+    # rather than guessing amendment chains from similar transaction contents.
+    for table in (scan_coverage, refresh_state):
+        connection.execute(
+            delete(table).where(
+                table.c.domain == "congress", table.c.source == "senate"
+            )
+        )
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -331,5 +372,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=10,
         name="add_sec_archive_progress",
         upgrade=_add_sec_archive_progress,
+    ),
+    Migration(
+        version=11,
+        name="add_effective_transactions",
+        upgrade=_add_effective_transactions,
     ),
 )

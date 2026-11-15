@@ -13,6 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from insider_scanner.core.models import InsiderTrade
 from insider_scanner.core.sec_ingestion import SecFilingOutcome, SecFilingStatus
+from insider_scanner.persistence.effective import rebuild_replacements
 from insider_scanner.persistence.engine import immediate_transaction
 from insider_scanner.persistence.repositories import (
     UpsertResult,
@@ -23,6 +24,7 @@ from insider_scanner.persistence.schema import (
     sec_archive_progress,
     sec_archive_retries,
     sec_ingested_filings,
+    us_trades,
 )
 
 
@@ -258,6 +260,23 @@ class SecIngestionRepository:
                     ),
                     values,
                 )
+                if trades:
+                    # Status is now final for this transaction. A partly
+                    # rejected amendment must not replace a complete original.
+                    rebuild_replacements(
+                        connection,
+                        us_trades,
+                        tickers={
+                            trade.ticker.strip().upper()
+                            for trade in trades
+                            if isinstance(trade.ticker, str)
+                        },
+                        issuers={
+                            trade.cik_issuer
+                            for trade in trades
+                            if isinstance(trade.cik_issuer, str) and trade.cik_issuer
+                        },
+                    )
         except SQLAlchemyError as error:
             raise _wrap("SEC ingestion commit", error) from error
         return SecIngestionCommit(upserts, tuple(outcomes))

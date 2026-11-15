@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import date
+from math import fsum, isclose
 from typing import Literal, cast
 
 from insider_scanner.core.models import InsiderTrade
@@ -51,6 +52,7 @@ class ComparisonRow:
     edgar_url: str
     shares_missing: bool = False
     value_missing: bool = False
+    security_title: str = ""
 
     @classmethod
     def from_trade(cls, trade: InsiderTrade) -> ComparisonRow:
@@ -68,6 +70,7 @@ class ComparisonRow:
             edgar_url=trade.edgar_url,
             shares_missing=trade.shares_missing,
             value_missing=trade.value_missing,
+            security_title=_security_title(trade.sec_detail_json),
         )
 
 
@@ -153,15 +156,20 @@ class SecComparisonService:
         target: SecComparisonTarget,
         source: str,
     ) -> tuple[ComparisonRow, ...]:
-        trades = self._persistence.us_trades.query(
+        trades = self._persistence.us_trades.query_raw(
             target.ticker,
             sources=(source,),
             start_date=target.start_date,
             end_date=target.end_date,
+            include_superseded=False,
         )
         return tuple(
             sorted(
-                (ComparisonRow.from_trade(trade) for trade in trades),
+                (
+                    ComparisonRow.from_trade(trade)
+                    for trade in trades
+                    if source != SEC_EDGAR_SOURCE or _comparable_sec_trade(trade)
+                ),
                 key=_row_sort_key,
             )
         )
@@ -191,12 +199,54 @@ def _compare_sources(
     sec_only: list[ComparisonRow] = []
     legacy_only: list[ComparisonRow] = []
     for key in sorted(set(sec_buckets) | set(legacy_buckets)):
-        sec_bucket = sec_buckets.get(key, ())
+        sec_bucket = list(sec_buckets.get(key, ()))
+        unmatched_legacy: list[ComparisonRow] = []
         legacy_bucket = legacy_buckets.get(key, ())
-        matched = min(len(sec_bucket), len(legacy_bucket))
-        matched_count += matched
-        sec_only.extend(sec_bucket[matched:])
-        legacy_only.extend(legacy_bucket[matched:])
+        for legacy_index, legacy_row in enumerate(legacy_bucket):
+            candidates = [
+                (index, row)
+                for index, row in enumerate(sec_bucket)
+                if _numbers_match(row, legacy_row)
+            ]
+            if candidates:
+                # Prefer an interchangeable singleton from a filing that is not
+                # needed by a remaining weighted-price observation. Recompute
+                # after each choice because an already-broken aggregate should
+                # not push the next match into another still-intact filing.
+                pending_legacy = (
+                    *unmatched_legacy,
+                    *legacy_bucket[legacy_index + 1 :],
+                )
+                pressure = Counter(
+                    row
+                    for pending in pending_legacy
+                    for aggregate in _aggregate_options(sec_bucket, pending)
+                    for row in aggregate
+                )
+                index, _ = min(
+                    candidates,
+                    key=lambda item: (
+                        pressure[item[1]],
+                        abs(item[1].value - legacy_row.value),
+                        item[1].accession_number,
+                        item[1].sec_row_id,
+                    ),
+                )
+                sec_bucket.pop(index)
+                matched_count += 1
+            else:
+                unmatched_legacy.append(legacy_row)
+        # Scrapers can publish one weighted-price line for several SEC rows.
+        # Keep every unmatched SEC row intact so diagnostics retain row evidence.
+        for legacy_row in unmatched_legacy:
+            options = _aggregate_options(sec_bucket, legacy_row)
+            if options:
+                aggregate = options[0]
+                matched_count += 1
+                sec_bucket = [row for row in sec_bucket if row not in aggregate]
+            else:
+                legacy_only.append(legacy_row)
+        sec_only.extend(sec_bucket)
     return SourceComparisonSummary(
         legacy_source=legacy_source,
         sec_count=len(sec_rows),
@@ -209,25 +259,86 @@ def _compare_sources(
 
 def _bucket_rows(
     rows: tuple[ComparisonRow, ...],
-) -> dict[tuple[str, str, str, str, str, str, str], tuple[ComparisonRow, ...]]:
-    buckets: dict[tuple[str, str, str, str, str, str, str], list[ComparisonRow]] = (
-        defaultdict(list)
+) -> dict[tuple[str, str, str, str, str], tuple[ComparisonRow, ...]]:
+    buckets: dict[tuple[str, str, str, str, str], list[ComparisonRow]] = defaultdict(
+        list
     )
     for row in rows:
         buckets[_fingerprint(row)].append(row)
     return {key: tuple(value) for key, value in buckets.items()}
 
 
-def _fingerprint(row: ComparisonRow) -> tuple[str, str, str, str, str, str, str]:
+def _fingerprint(row: ComparisonRow) -> tuple[str, str, str, str, str]:
     return (
         row.ticker.strip().upper(),
         " ".join(row.insider_name.casefold().split()),
         row.filing_date.isoformat() if row.filing_date else "",
         row.trade_date.isoformat() if row.trade_date else "",
         row.trade_type.strip().casefold(),
-        "" if row.shares_missing else f"{row.shares:.6f}",
-        "" if row.value_missing else f"{row.value:.2f}",
     )
+
+
+def _comparable_sec_trade(trade: InsiderTrade) -> bool:
+    return (
+        not trade.is_derivative
+        and trade.trade_type in {"Buy", "Sell", "Exercise"}
+        and trade.transaction_code.strip().upper() in {"", "P", "S", "M"}
+    )
+
+
+def _security_title(detail_json: str) -> str:
+    try:
+        detail = json.loads(detail_json)
+    except (ValueError, TypeError):
+        return ""
+    title = detail.get("security_title", "") if isinstance(detail, dict) else ""
+    return " ".join(title.casefold().split()) if isinstance(title, str) else ""
+
+
+def _numbers_match(sec_row: ComparisonRow, legacy_row: ComparisonRow) -> bool:
+    if (
+        sec_row.shares_missing != legacy_row.shares_missing
+        or sec_row.value_missing != legacy_row.value_missing
+    ):
+        return False
+    return (
+        sec_row.shares_missing
+        or isclose(abs(sec_row.shares), abs(legacy_row.shares), rel_tol=0, abs_tol=1e-6)
+    ) and (
+        sec_row.value_missing or abs(abs(sec_row.value) - abs(legacy_row.value)) <= 1.0
+    )
+
+
+def _aggregate_options(
+    sec_rows: list[ComparisonRow], legacy_row: ComparisonRow
+) -> tuple[tuple[ComparisonRow, ...], ...]:
+    if legacy_row.shares_missing or legacy_row.value_missing:
+        return ()
+    filings: dict[tuple[str, str], list[ComparisonRow]] = defaultdict(list)
+    for row in sec_rows:
+        if row.accession_number:
+            filings[(row.accession_number, row.security_title)].append(row)
+    options: list[tuple[ComparisonRow, ...]] = []
+    # debt: Match only complete remaining filing/security groups. Greedy pressure
+    # scoring does not solve arbitrary overlapping lot allocations; revisit if
+    # a verified scraper report splits one group into several aggregate lines.
+    for key in sorted(filings):
+        rows = filings[key]
+        if len(rows) < 2 or any(
+            row.shares_missing or row.value_missing for row in rows
+        ):
+            continue
+        if (
+            isclose(
+                fsum(abs(row.shares) for row in rows),
+                abs(legacy_row.shares),
+                rel_tol=0,
+                abs_tol=1e-6,
+            )
+            and abs(fsum(abs(row.value) for row in rows) - abs(legacy_row.value)) <= 1.0
+        ):
+            options.append(tuple(rows))
+    return tuple(options)
 
 
 def _row_sort_key(row: ComparisonRow) -> tuple[str, str, str, str, str, str]:

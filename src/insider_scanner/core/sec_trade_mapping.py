@@ -175,6 +175,7 @@ def _amends_key(
     period_of_report: date | None,
     security_title: str | None,
 ) -> str:
+    """Legacy display hint; dated columns and transaction evidence own linkage."""
     period_str = period_of_report.isoformat() if period_of_report is not None else ""
     title_str = security_title or ""
     return f"{cik_issuer}|{cik_insider}|{period_str}|{title_str}"
@@ -187,7 +188,17 @@ def _build_detail(
     capped_ids = tuple(dict.fromkeys((*price_ids, *txn.footnote_ids)))[
         :_MAX_EMBEDDED_FOOTNOTES
     ]
+    all_ids = tuple(dict.fromkeys((*txn.price_footnote_ids, *txn.footnote_ids)))
     detail: dict[str, object] = {
+        "narrative_complete": (
+            len(ctx.filing.remarks or "") <= _MAX_FOOTNOTE_CHARS
+            and len(all_ids) <= _MAX_EMBEDDED_FOOTNOTES
+            and all(
+                fid in ctx.footnotes and len(ctx.footnotes[fid]) < _MAX_FOOTNOTE_CHARS
+                for fid in all_ids
+            )
+        ),
+        "remarks": (ctx.filing.remarks or "")[:_MAX_FOOTNOTE_CHARS],
         "footnote_ids": list(capped_ids),
         "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},
         "security_title": txn.security_title,
@@ -277,6 +288,7 @@ def _build_trade(
         cik_issuer=ctx.cik_issuer,
         cik_insider=ctx.cik_insider,
         period_of_report=filing.period_of_report,
+        original_submission_date=filing.original_submission_date,
         is_amendment=filing.is_amendment,
         is_derivative=isinstance(txn, DerivativeTransaction),
         document_sha256=filing.document_sha256,

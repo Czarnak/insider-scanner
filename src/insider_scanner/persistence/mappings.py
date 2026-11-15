@@ -142,7 +142,7 @@ def european_to_values(
 
 
 def us_from_row(row: Any) -> InsiderTrade:
-    return InsiderTrade(**{field: row[field] for field in _US_FIELDS})
+    return InsiderTrade(**{field: row[field] for field in _US_FIELDS if field in row})
 
 
 def congress_from_row(row: Any) -> CongressTrade:
@@ -187,7 +187,12 @@ def coalesce_congress_trades(
     # Select the complete range so a correction cannot create inverted bounds.
     amounts = right if right.amount_low or right.amount_high else left
     return replace(
-        merged, amount_low=amounts.amount_low, amount_high=amounts.amount_high
+        merged,
+        amount_low=amounts.amount_low,
+        amount_high=amounts.amount_high,
+        filing_complete=right.filing_complete
+        if right.report_title
+        else left.filing_complete,
     )
 
 

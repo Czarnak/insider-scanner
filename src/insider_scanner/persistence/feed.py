@@ -288,7 +288,9 @@ class InvestigationBundle:
     by_issuer: tuple[FeedRecord, ...]
 
 
-def _projection():
+def _projection(sources: tuple[str, ...] = ()):
+    from insider_scanner.persistence.effective import visible_condition
+
     us = select(
         (literal("us:") + cast(us_trades.c.id, String)).label("key"),
         literal(FeedMarket.US.value).label("market"),
@@ -311,7 +313,7 @@ def _projection():
         us_trades.c.source.label("source"),
         us_trades.c.edgar_url.label("source_url"),
         us_trades.c.created_at.label("created_at"),
-    )
+    ).where(visible_condition(us_trades, sources=sources))
     congress = select(
         (literal("congress:") + cast(congress_trades.c.id, String)).label("key"),
         literal(FeedMarket.CONGRESS.value).label("market"),
@@ -330,7 +332,7 @@ def _projection():
         congress_trades.c.source.label("source"),
         congress_trades.c.source_url.label("source_url"),
         congress_trades.c.created_at.label("created_at"),
-    )
+    ).where(visible_condition(congress_trades))
     european = select(
         (literal("europe:") + cast(european_trades.c.id, String)).label("key"),
         literal(FeedMarket.EUROPE.value).label("market"),

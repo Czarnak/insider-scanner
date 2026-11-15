@@ -198,6 +198,7 @@ class OwnershipFiling:
     footnotes: tuple[Footnote, ...]
     warnings: tuple[str, ...] = ()
     reporting_owners: tuple[ReportingOwner, ...] = ()
+    original_submission_date: date | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +250,9 @@ def parse_ownership_document(
     base = acc if acc else f"sha256:{sha256}"
 
     period_of_report = _parse_date_elem(root, "periodOfReport", ctx, "periodOfReport")
+    original_submission_date = _parse_date_elem(
+        root, "dateOfOriginalSubmission", ctx, "dateOfOriginalSubmission"
+    )
     remarks = _remarks(root, ctx)
 
     issuer = _parse_issuer(root, ctx)
@@ -283,6 +287,7 @@ def parse_ownership_document(
         footnotes=footnotes,
         warnings=tuple(ctx.warnings),
         reporting_owners=reporting_owners,
+        original_submission_date=original_submission_date,
     )
 
 

@@ -85,6 +85,7 @@ class InsiderTrade:
     cik_issuer: str = ""
     cik_insider: str = ""
     period_of_report: date | None = None
+    original_submission_date: date | None = None
     is_amendment: bool = False
     is_derivative: bool = False
     document_sha256: str = ""
@@ -148,6 +149,10 @@ class CongressTrade:
     source: str = ""  # "house", "senate"
     # Filing-local row identity preserves repeated transactions or account lots.
     source_row_id: str = ""
+    report_title: str = ""
+    period_of_report: date | None = None
+    is_amendment: bool = False
+    filing_complete: bool = True
 
     @property
     def direction(self) -> TransactionDirection:

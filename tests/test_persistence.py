@@ -33,6 +33,7 @@ from insider_scanner.persistence.schema import (
 from insider_scanner.persistence.types import UTCDateTime
 
 EXPECTED_TABLES = {
+    "trade_replacements",
     "schema_version",
     "us_trades",
     "congress_trades",

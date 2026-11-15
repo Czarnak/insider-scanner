@@ -20,6 +20,14 @@ _MISSING_FLAGS = (
 )
 
 
+def _historical_rows(connection):
+    names = {column["name"] for column in inspect(connection).get_columns("us_trades")}
+    columns = [column for column in us_trades.c if column.name in names]
+    return (
+        connection.execute(select(*columns).order_by(us_trades.c.id)).mappings().all()
+    )
+
+
 @pytest.mark.parametrize("flag", _MISSING_FLAGS)
 def test_missing_flag_survives_json_and_row_mapping(flag):
     trade = InsiderTrade(ticker="TEST", source="sec_edgar", **{flag: True})
@@ -74,11 +82,7 @@ def test_version_five_upgrade_preserves_numbers_keys_and_unknown_legacy_zeros(tm
         bootstrap_database(engine, migrations=MIGRATIONS[:6])
         bootstrap_database(engine, migrations=MIGRATIONS[:6])
         with engine.connect() as connection:
-            rows = (
-                connection.execute(select(us_trades).order_by(us_trades.c.id))
-                .mappings()
-                .all()
-            )
+            rows = _historical_rows(connection)
 
         assert [row["id"] for row in rows] == [1, 2]
         assert [row["canonical_key"] for row in rows] == ["zero", "known"]
@@ -114,11 +118,7 @@ def test_version_five_upgrade_repairs_sec_semantics_without_changing_identity(tm
 
         bootstrap_database(engine, migrations=MIGRATIONS[:6])
         with engine.connect() as connection:
-            rows = (
-                connection.execute(select(us_trades).order_by(us_trades.c.id))
-                .mappings()
-                .all()
-            )
+            rows = _historical_rows(connection)
 
         assert [row["trade_type"] for row in rows] == [
             "Other",

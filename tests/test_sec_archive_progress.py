@@ -1,14 +1,16 @@
 """Archive positions retain retries without changing the accession ledger."""
 
 import sqlite3
+from dataclasses import replace
 
 import pytest
-from sqlalchemy import event, inspect
+from sqlalchemy import MetaData, Table, event, insert, inspect
 from sqlalchemy.exc import OperationalError
 
 from insider_scanner.persistence.bootstrap import bootstrap_database
 from insider_scanner.persistence.engine import create_sqlite_engine
 from insider_scanner.persistence.errors import PersistenceError
+from insider_scanner.persistence.mappings import us_to_values
 from insider_scanner.persistence.migrations import MIGRATIONS
 from insider_scanner.persistence.sec_ingestion import SecArchiveProgress
 from insider_scanner.services.context import open_persistence
@@ -62,11 +64,15 @@ def test_archive_retry_and_cursor_write_roll_back_together(persistence):
 def test_upgrade_adds_archive_progress_without_losing_existing_filings(tmp_path):
     engine = create_sqlite_engine(tmp_path / "upgrade.db")
     try:
-        bootstrap_database(engine, migrations=MIGRATIONS[:-1])
+        bootstrap_database(engine, migrations=MIGRATIONS[:9])
         from insider_scanner.persistence.sec_ingestion import SecIngestionRepository
 
         repository = SecIngestionRepository(engine)
-        repository.commit([successful_write()])
+        historical = Table("us_trades", MetaData(), autoload_with=engine)
+        write = successful_write()
+        with engine.begin() as connection:
+            connection.execute(insert(historical), us_to_values(write.trades[0]))
+        repository.commit([replace(write, trades=())])
         bootstrap_database(engine)
         assert {"sec_archive_progress", "sec_archive_retries"} <= set(
             inspect(engine).get_table_names()

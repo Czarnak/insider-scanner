@@ -70,6 +70,8 @@ _SENATE_RATE_LIMITER = RateLimiter(min_interval_seconds=1.0)
 # Regex for extracting PTR UUID links from search results
 _PTR_LINK_RE = re.compile(r"/search/view/ptr/([a-f0-9-]+)/")
 _PAPER_LINK_RE = re.compile(r"/search/view/paper/")
+_AMENDMENT_RE = re.compile(r"\(\s*amendment\s*\)", re.IGNORECASE)
+_REPORT_PERIOD_RE = re.compile(r"\bfor\s+(\d{2}/\d{2}/\d{4})\s*$", re.IGNORECASE)
 
 
 # -----------------------------------------------------------------------
@@ -335,13 +337,22 @@ def create_efd_session() -> EFDSession:
 # -----------------------------------------------------------------------
 
 
+def _report_metadata(title: str) -> tuple[date | None, bool]:
+    """Read only an explicit report period; submission dates do not link reports."""
+    is_amendment = bool(_AMENDMENT_RE.search(title))
+    period_match = _REPORT_PERIOD_RE.search(_AMENDMENT_RE.sub("", title).strip())
+    period = _parse_date(period_match.group(1)) if period_match else None
+    return period, is_amendment
+
+
 def parse_search_results(data: dict) -> list[dict]:
     """Parse the JSON response from the EFD search API.
 
     Each result row is: [first_name, last_name, filer_type, report_html, date]
 
     Returns a list of dicts with: first_name, last_name, filer_type,
-    report_title, report_url, report_uuid, filing_date, is_paper.
+    report_title, report_url, report_uuid, filing_date, is_paper,
+    period_of_report and is_amendment. All versions remain available as evidence.
     """
     results = []
 
@@ -365,6 +376,7 @@ def parse_search_results(data: dict) -> list[dict]:
         if not isinstance(href, str):
             continue
         title = link.get_text(strip=True)
+        period_of_report, is_amendment = _report_metadata(title)
 
         # Check if it's a paper filing (scanned PDF — skip these)
         is_paper = bool(_PAPER_LINK_RE.search(href))
@@ -387,6 +399,8 @@ def parse_search_results(data: dict) -> list[dict]:
                 "last_name": last_name,
                 "filer_type": filer_type,
                 "report_title": title,
+                "period_of_report": period_of_report,
+                "is_amendment": is_amendment,
                 "report_url": href,
                 "report_uuid": report_uuid,
                 "filing_date": filing_date,
@@ -759,6 +773,8 @@ def scrape_senate_trades(
             source_url = (
                 BASE_URL + ptr_url if not ptr_url.startswith("http") else ptr_url
             )
+            report_title = filing.get("report_title", "")
+            period_of_report, is_amendment = _report_metadata(report_title)
 
             for tx in raw_transactions:
                 ticker = tx.get("ticker", "")
@@ -774,6 +790,10 @@ def scrape_senate_trades(
                     filing_date=filing.get("filing_date"),
                     doc_id=filing["report_uuid"],
                     source_url=source_url,
+                    report_title=report_title,
+                    period_of_report=period_of_report,
+                    is_amendment=is_amendment,
+                    filing_complete=raw_transactions.complete,
                     trade_date=_parse_date(tx.get("tx_date", "")),
                     asset_description=tx.get("asset_name", ""),
                     ticker=ticker,
