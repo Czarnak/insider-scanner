@@ -101,12 +101,19 @@ class AnalysisTab(QWidget):
 
     def _refresh_symbols(self) -> None:
         current = self.symbol_combo.currentText()
-        self.symbol_combo.clear()
-        self.symbol_combo.addItems(self._watchlists.us_symbols())
-        if current:
-            idx = self.symbol_combo.findText(current)
-            if idx >= 0:
-                self.symbol_combo.setCurrentIndex(idx)
+        signals_blocked = self.symbol_combo.blockSignals(True)
+        try:
+            self.symbol_combo.clear()
+            self.symbol_combo.addItems(self._watchlists.us_symbols())
+            if current:
+                idx = self.symbol_combo.findText(current)
+                if idx >= 0:
+                    self.symbol_combo.setCurrentIndex(idx)
+        finally:
+            self.symbol_combo.blockSignals(signals_blocked)
+        selected = self.symbol_combo.currentText()
+        if selected != current:
+            self._on_symbol_changed(selected)
 
     def _load_selected(self) -> None:
         if self._services is None:
