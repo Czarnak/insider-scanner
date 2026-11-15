@@ -409,3 +409,22 @@ for _missing_field in (
 congress_trades.append_column(
     Column("source_row_id", String(128), nullable=False, server_default="")
 )
+
+
+# Migration nine makes committed SEC data and resume progress one transaction.
+sec_ingested_filings = Table(
+    "sec_ingested_filings",
+    metadata,
+    Column("accession", String(64), primary_key=True),
+    Column("status", String(32), nullable=False),
+    Column("attempts", Integer, nullable=False),
+    Column("stage", String(32), nullable=False, server_default=""),
+    Column("reason", Text, nullable=False, server_default=""),
+    Column("updated_at", UTCDateTime(), nullable=False),
+    CheckConstraint("attempts > 0", name="ck_sec_ingested_filings_attempts"),
+    CheckConstraint(
+        "status IN ('success', 'retryable_failure', 'permanent_failure', 'unsupported')",
+        name="ck_sec_ingested_filings_status",
+    ),
+)
+Index("ix_sec_ingested_filings_status", sec_ingested_filings.c.status)
