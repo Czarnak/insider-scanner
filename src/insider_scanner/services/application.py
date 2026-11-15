@@ -16,6 +16,7 @@ from insider_scanner.services.european import EuropeanScanService
 from insider_scanner.services.sec_backfill import SecBackfillService
 from insider_scanner.services.sec_comparison import SecComparisonService
 from insider_scanner.services.sec_daily import SecDailyIngestionService
+from insider_scanner.services.sec_dataset import SecDatasetService
 from insider_scanner.services.us import UsScanService
 from insider_scanner.utils.http import close_http_sessions
 
@@ -62,6 +63,10 @@ class ApplicationServices:
     def make_sec_comparison(self) -> SecComparisonService:
         """Construct a local DB comparison service for SEC validation reports."""
         return SecComparisonService(self.persistence)
+
+    def make_sec_dataset(self) -> SecDatasetService:
+        """Construct local quarterly ingestion using the shared persistence."""
+        return SecDatasetService(self.persistence)
 
     def make_sec_backfill(
         self,
