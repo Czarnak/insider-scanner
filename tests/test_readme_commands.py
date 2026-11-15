@@ -1,7 +1,39 @@
+import argparse
+import re
+import shlex
 from pathlib import Path
+
+from insider_scanner.cli import build_parser
 
 README = Path(__file__).resolve().parents[1] / "README.md"
 RELEASING = Path(__file__).resolve().parents[1] / "docs" / "RELEASING.md"
+
+
+def test_readme_documents_every_cli_command_and_alias():
+    content = README.read_text(encoding="utf-8")
+    parser = build_parser()
+    commands = next(
+        action.choices
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    missing = [
+        name for name in commands if f"insider-scanner-cli {name}" not in content
+    ]
+    assert missing == [], f"CLI commands missing from README: {missing}"
+
+
+def test_readme_cli_examples_parse_without_running_commands():
+    content = README.read_text(encoding="utf-8")
+    parser = build_parser()
+
+    for example in re.findall(r"^insider-scanner-cli (.+)$", content, re.MULTILINE):
+        argv = shlex.split(example, comments=True)
+        if argv == ["--help"]:
+            continue
+        args = parser.parse_args(argv)
+        assert callable(args.func), example
 
 
 def test_readme_documents_base_cli_install():

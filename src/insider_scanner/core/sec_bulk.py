@@ -124,6 +124,7 @@ def bulk_archive_fingerprint(
     zip_path: Path,
     *,
     policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
+    on_members: Callable[[int], None] | None = None,
 ) -> str:
     """Identify central-directory content and order without reading member bodies.
 
@@ -135,6 +136,8 @@ def bulk_archive_fingerprint(
     with _open_archive(zip_path) as zf:
         members = zf.infolist()
         _preflight_members(members, policy)
+        if on_members is not None:
+            on_members(len(members))
         digest = hashlib.sha256()
         for info in members:
             descriptor = json.dumps(
@@ -166,6 +169,7 @@ def iter_ownership_filings(
     retry_members: frozenset[int] = frozenset(),
     on_member_error: Callable[[int, str], None] | None = None,
     on_member_complete: Callable[[int], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Generator[BulkFilingMetadata, None, None]:
     """Stream ownership metadata from a preflighted local archive.
 
@@ -179,6 +183,8 @@ def iter_ownership_filings(
     violations remain fatal. Completion callbacks run only after a selected
     member is fully consumed, including empty, ignored or malformed members;
     closing the generator partway through a member does not complete it.
+    Cancellation is checked between members, including discovery that yields
+    no ownership filings. The callback should report state without side effects.
 
     Explicit local paths are accepted without an artificial containment root.
     A supplied ``cache_root`` retains the older trusted-root contract. Symlink
@@ -198,6 +204,8 @@ def iter_ownership_filings(
         members = zf.infolist()
         _preflight_members(members, policy)
         for member_index, info in enumerate(members):
+            if cancelled is not None and cancelled():
+                return
             if member_index < start_member and member_index not in retry_members:
                 continue
             try:

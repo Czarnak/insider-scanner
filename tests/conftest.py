@@ -30,9 +30,15 @@ _runtime_environment.setenv(
 _runtime_environment.setenv(
     "INSIDER_SCANNER_CACHE_DIR", str(Path(_runtime_root.name) / "cache")
 )
+_runtime_environment.setenv(
+    "INSIDER_SCANNER_LOG_DIR", str(Path(_runtime_root.name) / "logs")
+)
 
 
 def pytest_unconfigure(config):
+    from insider_scanner.utils.logging import shutdown_logging
+
+    shutdown_logging()
     _runtime_environment.undo()
     _runtime_root.cleanup()
 

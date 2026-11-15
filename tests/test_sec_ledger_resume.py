@@ -98,14 +98,21 @@ def test_large_backfill_batches_ledger_writes_and_publishes_committed_progress(
             ledger_writes.append(1)
 
     def progress(snapshot):
-        # A UI must never observe progress for trades or ledger rows still buffered.
+        # Observed parse progress can precede the batch commit. Explicit
+        # committed counts must always match durable rows and ledger entries.
         assert (
-            _count(persistence.engine, sec_ingested_filings) == snapshot.filings_parsed
+            _count(persistence.engine, sec_ingested_filings)
+            == snapshot.filings_committed
         )
         assert _count(persistence.engine, us_trades) == snapshot.transactions_inserted
-        last = metadata[snapshot.filings_parsed - 1].accession_number
-        assert persistence.sec_ingestion.is_terminal(last)
-        snapshots.append(snapshot.filings_parsed)
+        assert snapshot.filings_committed <= snapshot.filings_parsed
+        if snapshot.filings_committed:
+            last = metadata[snapshot.filings_committed - 1].accession_number
+            assert persistence.sec_ingestion.is_terminal(last)
+        if snapshot.filings_committed and (
+            not snapshots or snapshots[-1] != snapshot.filings_committed
+        ):
+            snapshots.append(snapshot.filings_committed)
 
     monkeypatch.setattr(persistence.sec_ingestion, "commit", commit)
     event.listen(persistence.engine, "before_cursor_execute", sql)

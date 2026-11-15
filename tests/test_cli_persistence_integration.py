@@ -313,8 +313,12 @@ def test_run_reports_command_failure_without_calling_network(capsys):
 
     assert code != 0
     error = capsys.readouterr().err
-    assert "Command failed. See logs for details." in error
+    from insider_scanner.utils.logging import get_log_file
+
+    destination = get_log_file()
+    assert f"Command failed. See logs: {destination}." in error
     assert "internal database details" not in error
+    assert "internal database details" in destination.read_text(encoding="utf-8")
 
 
 def test_import_legacy_exit_code_reports_clean_and_partial_success(tmp_path, capsys):

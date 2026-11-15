@@ -159,6 +159,17 @@ insider-scanner-cli latest --since 2025-06-01 --until 2025-06-30
 
 # Resolve SEC CIK
 insider-scanner-cli resolve-cik AAPL
+insider-scanner-cli cik AAPL # compatibility alias
+
+# Fetch daily prices (defaults to the previous 365 days through today)
+insider-scanner-cli price AAPL --since 2026-01-01 --until 2026-01-31
+
+# Compare locally stored SEC and scraper transactions without fetching data
+insider-scanner-cli sec-compare --ticker AAPL --date 2026-01-07
+insider-scanner-cli sec-compare --ticker AAPL --since 2026-01-01 --until 2026-01-31 --format json --output comparison.json
+
+# Set diagnostic verbosity before the command
+insider-scanner-cli --log-level DEBUG latest --count 50
 
 # Initialize default Congress member list
 insider-scanner-cli init-congress
@@ -173,6 +184,35 @@ insider-scanner-cli scan AAPL --congress-only
 insider-scanner-cli import-legacy ./old-exports
 insider-scanner-cli import-legacy ./large.json --max-file-size-mib 100
 ```
+
+For `scan` and `latest`, provide both `--since` and `--until` when setting a date
+range. `price` accepts either bound independently: the end defaults to today and
+the start to 365 days before the end. Reversed ranges are rejected. `latest
+--count` must be positive; repeat `--source` to select `secform4`, `openinsider`
+or `sec_edgar`. Both `scan --save` and `latest --save` print the exported path.
+An unresolved `resolve-cik`/`cik` reports the ticker on stderr and exits `1`.
+
+`sec-compare` reads persisted data only. Repeat `--ticker` and `--date`, or use
+one inclusive `--since`/`--until` range. `--legacy-source` selects comparison
+sources (default: `secform4` and `openinsider`); `--format` accepts `text`,
+`markdown` or `json`, and `--output` writes the report to a file.
+
+CLI results and final summaries go to stdout; progress and errors go to stderr.
+Detailed diagnostics are written to `insider-scanner.log`, rotating at 5 MiB with five
+backups. The directory is `INSIDER_SCANNER_LOG_DIR` when set, otherwise `logs`
+inside an overridden `INSIDER_SCANNER_DATA_DIR`, or the platform's user log
+directory. Error messages show the active file path. If the file cannot be
+opened, diagnostics remain on stderr. `--log-level` accepts `DEBUG`, `INFO`,
+`WARNING`, `ERROR` or `CRITICAL`, and overrides `INSIDER_SCANNER_LOG_LEVEL`
+(default: `INFO`).
+
+| Exit code | Meaning                                                                                                                                 |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Command completed; per-filing failures alone are nonfatal.                                                                              |
+| `1`       | Operational failure, including an unresolved CIK, invalid SEC configuration, blocked SEC access or an archive error.                    |
+| `2`       | Invalid arguments or input.                                                                                                             |
+| `3`       | `sec-daily`/`sec-catchup` left dates incomplete or stopped on an ingestion error, or `sec-backfill` skipped unreadable archive members. |
+| `130`     | Interrupted by Ctrl+C.                                                                                                                  |
 
 Congress searches resolve seed names and disclosure spellings through the member's
 structured first/last name and stable member ID. A unique surname can be searched;
@@ -235,11 +275,16 @@ Today's index remains provisional: available filings are retained, but the date
 stays uncovered and the summary warns that it needs another run. A missing index
 for today is also retryable. Future dates are rejected; a missing index for an
 elapsed date, such as a weekend or holiday, is treated as an empty day.
-Per-date progress is written to stderr unless `--quiet`; recoverable per-filing
-failures are reported in the summary without failing the command. Exit codes:
-`0` success, `1` when `SEC_USER_AGENT` is misconfigured or SEC access is blocked,
-`2` for an invalid range
-or a `sec-backfill` invocation missing `--confirm-full-backfill`.
+Per-date progress is written to stderr unless `--quiet`. Per-filing failures are
+reported in the summary; an incomplete date makes `sec-daily`/`sec-catchup` exit
+`3`, including an explicitly requested provisional current date. A failure count
+alone does not fail the command when all requested dates are complete.
+
+For all three SEC ingestion commands, the first Ctrl+C requests a cooperative
+stop. The current filing finishes, buffered results are committed, and the CLI
+prints a partial summary, closes its clients and database, and exits `130`.
+Run the same command again to resume from durable progress. A second Ctrl+C
+forces interruption; already committed batches remain available on restart.
 
 Transient filing downloads, mapping failures, and database write failures leave
 their dates uncovered so a later run retries them. Successful filings are kept
@@ -313,7 +358,22 @@ insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --cik 0000320193 
 
 # Override an archive-size limit after checking a trusted local archive
 insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --zip-max-total-bytes 34359738368
+
+# Suppress live progress while retaining the final summary and errors
+insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-backfill --quiet
 ```
+
+Backfill writes throttled progress to stderr during discovery and ingestion:
+archive member position, discovered/parsed filings, failures, skipped known
+filings, filing rate and an estimated remaining time. ETA uses completed members
+and is approximate because members differ in size; it is unknown until enough
+progress is available. Live parse counts can include buffered filings;
+committed-filing and transaction counters describe durable writes. The archive
+member position is cumulative across resumes; filing counters and elapsed time
+describe the current invocation. `--quiet` suppresses live progress while
+preserving the final stdout summary and stderr errors. Backfill per-filing
+failures remain nonfatal and are retained for retry in the ledger. Unreadable
+archive members leave discovery incomplete, produce a warning, and exit `3`.
 
 `--confirm-full-backfill` is a required acknowledgement flag — it cannot be omitted.
 The run is **resumable** through the local database's SEC ingestion ledger.

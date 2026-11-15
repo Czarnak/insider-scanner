@@ -59,14 +59,13 @@ def test_run_processes_all_fixture_records(persistence, tmp_path):
 
 
 def test_rerun_skips_exactly_the_committed_accessions(persistence, tmp_path):
-    seen = {"n": 0}
-
-    def cancel_after_one() -> bool:
-        seen["n"] += 1
-        return seen["n"] > 1
-
-    svc = _service(persistence, tmp_path)
-    svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
+    fetched = []
+    svc = _service(
+        persistence,
+        tmp_path,
+        make_transport(filing_bytes=BACKFILL_FILING, fetched=fetched),
+    )
+    svc.run(FIXTURE_ZIP, confirm=True, cancelled=lambda: len(fetched) >= 1)
     assert persistence.sec_ingestion.is_terminal(ACCESSIONS[0])
     assert persistence.sec_ingestion.get(ACCESSIONS[1]) is None
     assert persistence.sec_ingestion.get(ACCESSIONS[2]) is None
@@ -124,15 +123,14 @@ def test_mapping_failure_is_durable_and_recovers_after_mapper_fix(
     monkeypatch.setattr(
         "insider_scanner.services.sec_persistence.ownership_filing_to_trades", _raise
     )
-    seen = {"n": 0}
-
-    def cancel_after_one() -> bool:
-        seen["n"] += 1
-        return seen["n"] > 1
-
     # Run 1: process one mapping failure, then interrupt without retiring it.
-    svc = _service(persistence, tmp_path)
-    first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one)
+    fetched = []
+    svc = _service(
+        persistence,
+        tmp_path,
+        make_transport(filing_bytes=BACKFILL_FILING, fetched=fetched),
+    )
+    first = svc.run(FIXTURE_ZIP, confirm=True, cancelled=lambda: len(fetched) >= 1)
     assert first.failures == 1
     record = persistence.sec_ingestion.get(ACCESSIONS[0])
     assert record.status is SecFilingStatus.RETRYABLE_FAILURE
@@ -211,16 +209,10 @@ def test_unsupported_accession_is_terminal_on_resume(persistence, tmp_path):
     legacy = (
         b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
     )
-    calls = 0
-
-    def cancel_after_one():
-        nonlocal calls
-        calls += 1
-        return calls > 1
-
-    first = _service(persistence, tmp_path, make_transport(filing_bytes=legacy)).run(
-        FIXTURE_ZIP, confirm=True, cancelled=cancel_after_one
-    )
+    fetched = []
+    first = _service(
+        persistence, tmp_path, make_transport(filing_bytes=legacy, fetched=fetched)
+    ).run(FIXTURE_ZIP, confirm=True, cancelled=lambda: len(fetched) >= 1)
     assert first.unsupported == 1
     assert first.failures == 0
     second = _service(persistence, tmp_path).run(FIXTURE_ZIP, confirm=True)
