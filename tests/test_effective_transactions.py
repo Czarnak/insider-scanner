@@ -357,3 +357,66 @@ def test_sec_nonfinancial_correction_cannot_authorize_changed_quantity(engine):
     )
     repo.upsert([original, amendment])
     assert len(repo.query("AAPL")) == 2
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_scraper_aggregate_is_stale_if_any_constituent_line_is_superseded(
+    engine, reverse
+):
+    repo = UsTradeRepository(engine)
+    original = native(shares=4, value=800, direct_or_indirect="D")
+    unchanged = replace(
+        original,
+        sec_row_id="non-derivative:1",
+        shares=6,
+        value=1200,
+        direct_or_indirect="I",
+    )
+    lots = [unchanged, original] if reverse else [original, unchanged]
+    repo.upsert([*lots, us_trade(shares=10, value=2000)])
+    repo.upsert([amended(original, shares=5, value=1000)])
+    assert repo.query("AAPL", sources=["secform4"]) == []
+    assert len(repo.query_raw("AAPL", include_superseded=False)) == 2
+
+
+def test_incomplete_retained_narrative_cannot_authorize_changed_quantity(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    amendment = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","remarks":"Corrects the share count.","narrative_complete":false}',
+    )
+    repo.upsert([original, amendment])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_amendment_chain_keeps_untouched_original_line(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    untouched = replace(
+        original, sec_row_id="non-derivative:1", trade_date=date(2026, 1, 4)
+    )
+    first = amended(original)
+    last = amended(
+        first,
+        accession_number="0000320193-26-000004",
+        filing_date=date(2026, 1, 9),
+        shares=30,
+        value=6000,
+    )
+    repo.upsert([last, first, original, untouched])
+    assert repo.query("AAPL") == [last, untouched]
+
+
+def test_original_submission_date_does_not_disambiguate_same_day_originals(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    other = replace(original, accession_number="0000320193-26-000003")
+    repo.upsert(
+        [
+            original,
+            other,
+            amended(original, original_submission_date=original.filing_date),
+        ]
+    )
+    assert len(repo.query("AAPL")) == 3

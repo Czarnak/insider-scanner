@@ -188,7 +188,16 @@ def _build_detail(
     capped_ids = tuple(dict.fromkeys((*price_ids, *txn.footnote_ids)))[
         :_MAX_EMBEDDED_FOOTNOTES
     ]
+    all_ids = tuple(dict.fromkeys((*txn.price_footnote_ids, *txn.footnote_ids)))
     detail: dict[str, object] = {
+        "narrative_complete": (
+            len(ctx.filing.remarks or "") <= _MAX_FOOTNOTE_CHARS
+            and len(all_ids) <= _MAX_EMBEDDED_FOOTNOTES
+            and all(
+                fid in ctx.footnotes and len(ctx.footnotes[fid]) < _MAX_FOOTNOTE_CHARS
+                for fid in all_ids
+            )
+        ),
         "remarks": (ctx.filing.remarks or "")[:_MAX_FOOTNOTE_CHARS],
         "footnote_ids": list(capped_ids),
         "footnotes": {fid: ctx.footnotes.get(fid, "") for fid in capped_ids},

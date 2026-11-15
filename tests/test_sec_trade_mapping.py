@@ -192,6 +192,24 @@ def test_amendment_remarks_are_bounded_in_transaction_detail():
     trade = ownership_filing_to_trades(filing, _INDEX_ROW)[0]
 
     assert json.loads(trade.sec_detail_json).get("remarks") == "c" * 4096
+    assert json.loads(trade.sec_detail_json).get("narrative_complete") is False
+
+
+def test_truncated_referenced_footnote_marks_narrative_incomplete():
+    filing = _filing(
+        non_derivs=(_non_deriv(footnote_ids=("F1",)),),
+        is_amendment=True,
+        footnotes=(
+            Footnote(
+                "F1",
+                "Corrects the share count. "
+                + "x" * 5000
+                + " Adds an omitted transaction.",
+            ),
+        ),
+    )
+    trade = ownership_filing_to_trades(filing, _INDEX_ROW)[0]
+    assert json.loads(trade.sec_detail_json).get("narrative_complete") is False
 
 
 class TestTransactionOrdering:

@@ -71,6 +71,8 @@ def _owners(row: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _senate_supersessions(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    # debt: Trade-only ingestion cannot identify empty Senate amendments;
+    # preserve originals until filing-level metadata is transported and stored.
     groups: dict[tuple, dict[str, list[Mapping[str, Any]]]] = defaultdict(
         lambda: defaultdict(list)
     )
@@ -183,6 +185,20 @@ def _narrative(row: Mapping[str, Any]) -> str:
     )
 
 
+def _narrative_complete(row: Mapping[str, Any]) -> bool:
+    """Capped legacy strings cannot prove that omission wording was retained."""
+    detail = _detail(row)
+    if (
+        detail.get("narrative_complete") is False
+        or len(str(detail.get("remarks", ""))) >= 4096
+    ):
+        return False
+    footnotes = detail.get("footnotes")
+    return not isinstance(footnotes, dict) or all(
+        len(str(value)) < 4096 for value in footnotes.values()
+    )
+
+
 _ADDITION = re.compile(r"\b(?:add(?:s|ed|ing|ition|itional)?|omitt?\w*|unreported)\b")
 _CORRECTION = re.compile(r"\bcorrect(?:s|ed|ing|ion|ions)?\b")
 
@@ -215,7 +231,11 @@ def _replace_sec_lines(
     pending = []
     for row in incoming:
         key = _line_key(row)
-        if key is None or _ADDITION.search(_narrative(row)):
+        if (
+            key is None
+            or not _narrative_complete(row)
+            or _ADDITION.search(_narrative(row))
+        ):
             continue
         exact = [
             old
@@ -374,7 +394,10 @@ def _us_links(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
             if len(single) == 1:
                 matches.append(single[0])
             elif not single and len(lots) > 1 and _matches(row, lots):
-                matches.append(lots[0])
+                # Any corrected constituent makes the old combined scraper
+                # observation stale, regardless of the raw insertion order.
+                stale = [lot for lot in lots if lot["canonical_key"] in links]
+                matches.append(stale[0] if stale else lots[0])
         active = [match for match in matches if match["canonical_key"] not in links]
         if len(active) == 1:
             links[row["canonical_key"]] = (active[0]["canonical_key"], "duplicate")
