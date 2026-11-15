@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -320,7 +321,7 @@ def _is_link(path: Path) -> bool:
     """Reject symlinks and Windows junction/reparse directories alike."""
     if path.is_symlink():
         return True
-    if os.name == "nt":
+    if sys.platform == "win32":
         try:
             attributes = path.lstat().st_file_attributes
         except FileNotFoundError:
