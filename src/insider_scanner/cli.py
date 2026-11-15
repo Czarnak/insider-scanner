@@ -14,6 +14,7 @@ from threading import Event, current_thread, main_thread
 from time import monotonic
 from typing import TYPE_CHECKING, TypedDict
 
+from insider_scanner import __version__
 from insider_scanner.core import edgar
 from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.core.sec_bulk import SecBulkError
@@ -703,6 +704,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="insider-scanner-cli",
         description="Scan insider trades from secform4.com, openinsider.com, SEC EDGAR, and European regulators.",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
     parser.add_argument(
         "--log-level",
