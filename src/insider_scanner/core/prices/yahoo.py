@@ -71,8 +71,14 @@ def _empty_bars(result: Mapping[str, object]) -> FetchedPriceBars:
     return FetchedPriceBars()
 
 
-def parse_yahoo_chart(payload: object, symbol: str) -> FetchedPriceBars:
-    """Parse a decoded Yahoo chart response into ordered daily bars."""
+def parse_yahoo_chart(
+    payload: object,
+    symbol: str,
+    *,
+    start: Date | None = None,
+    end: Date | None = None,
+) -> FetchedPriceBars:
+    """Parse bars, validating values only inside optional session-date bounds."""
     try:
         chart = _mapping(_mapping(payload)["chart"])
         if chart["error"] is not None:
@@ -114,10 +120,15 @@ def parse_yahoo_chart(payload: object, symbol: str) -> FetchedPriceBars:
         skipped = 0
         for index, timestamp in enumerate(timestamps):
             try:
+                session_date = _exchange_date(timestamp, exchange_zone)
+                if (start is not None and session_date < start) or (
+                    end is not None and session_date > end
+                ):
+                    continue
                 bars.append(
                     PriceBar(
                         symbol=symbol,
-                        date=_exchange_date(timestamp, exchange_zone),
+                        date=session_date,
                         open=required["open"][index],
                         high=required["high"][index],
                         low=required["low"][index],
@@ -184,11 +195,7 @@ class YahooSource:
                 timeout=_TIMEOUT,
             )
             payload = _checked_json(response, "Yahoo")
-            bars = parse_yahoo_chart(payload, normalized_symbol)
-            return FetchedPriceBars(
-                (bar for bar in bars if start <= bar.date <= end),
-                complete=bars.complete,
-            )
+            return parse_yahoo_chart(payload, normalized_symbol, start=start, end=end)
         except PriceSourceError:
             raise
         except requests.RequestException as exc:

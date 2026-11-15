@@ -576,7 +576,7 @@ def test_yahoo_source_preserves_parser_price_source_error(
 ) -> None:
     sentinel = PriceSourceError("Yahoo")
 
-    def fail_parser(payload: object, symbol: str) -> list[PriceBar]:
+    def fail_parser(payload: object, symbol: str, **_bounds: object) -> list[PriceBar]:
         del payload, symbol
         raise sentinel
 
