@@ -187,7 +187,10 @@ def coalesce_congress_trades(
     # Select the complete range so a correction cannot create inverted bounds.
     amounts = right if right.amount_low or right.amount_high else left
     return replace(
-        merged, amount_low=amounts.amount_low, amount_high=amounts.amount_high
+        merged,
+        amount_low=amounts.amount_low,
+        amount_high=amounts.amount_high,
+        filing_complete=right.filing_complete,
     )
 
 

@@ -105,7 +105,7 @@ def test_native_sec_rows_and_scraper_observations_retain_raw_identity(engine):
     assert len(merge_trades(records)) == 4
     repository = UsTradeRepository(engine)
     assert repository.upsert(records) == UpsertResult(inserted=4)
-    assert len(repository.query("AAPL")) == 4
+    assert len(repository.query_raw("AAPL")) == 4
 
 
 def test_scraper_coalescing_is_associative_and_preserves_complementary_fields():

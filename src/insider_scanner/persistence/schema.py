@@ -409,6 +409,31 @@ for _missing_field in (
 congress_trades.append_column(
     Column("source_row_id", String(128), nullable=False, server_default="")
 )
+congress_trades.append_column(
+    Column("report_title", Text, nullable=False, server_default="")
+)
+congress_trades.append_column(Column("period_of_report", Date))
+congress_trades.append_column(
+    Column("is_amendment", Boolean, nullable=False, server_default=text("0"))
+)
+congress_trades.append_column(
+    Column("filing_complete", Boolean, nullable=False, server_default=text("1"))
+)
+
+# Raw observations retain their keys and timestamps. These derived links are
+# rebuilt in the same write transaction and applied before filters/pagination.
+trade_replacements = Table(
+    "trade_replacements",
+    metadata,
+    Column("market", String(16), primary_key=True),
+    Column("canonical_key", String(128), primary_key=True),
+    Column("replacement_key", String(128), nullable=False),
+    Column("reason", String(16), nullable=False),
+    CheckConstraint("market IN ('us', 'congress')", name="ck_replacement_market"),
+    CheckConstraint(
+        "reason IN ('superseded', 'duplicate')", name="ck_replacement_reason"
+    ),
+)
 
 
 # Migration nine makes committed SEC data and resume progress one transaction.

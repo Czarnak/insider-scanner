@@ -19,6 +19,10 @@ from insider_scanner.core.congress_identity import MemberIdentity, name_matches
 from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.core.merger import merge_trade_pair
 from insider_scanner.core.models import CongressTrade, InsiderTrade
+from insider_scanner.persistence.effective import (
+    rebuild_replacements,
+    visible_condition,
+)
 from insider_scanner.persistence.engine import immediate_transaction
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.persistence.mappings import (
@@ -284,7 +288,17 @@ def _upsert_in_connection(
     """Reuse row isolation inside the caller's transaction without committing it."""
     inputs = enumerate(trades)
     result = UpsertResult()
+    tickers: set[str] = set()
+    issuers: set[str] = set()
     while batch := list(islice(inputs, UPSERT_BATCH_SIZE)):
+        if policy.table is us_trades:
+            for _, trade in batch:
+                ticker = getattr(trade, "ticker", None)
+                issuer = getattr(trade, "cik_issuer", None)
+                if isinstance(ticker, str):
+                    tickers.add(ticker.strip().upper())
+                if isinstance(issuer, str) and issuer:
+                    issuers.add(issuer)
         try:
             with connection.begin_nested():
                 batch_result = _write_batch(connection, policy, batch)
@@ -322,6 +336,8 @@ def _upsert_in_connection(
                     )
                 batch_result += row_result
         result += batch_result
+    if result.inserted or result.updated:
+        rebuild_replacements(connection, policy.table, tickers=tickers, issuers=issuers)
     return result
 
 
@@ -360,10 +376,14 @@ class UsTradeRepository:
         end_date: date | None = None,
         trade_start_date: date | None = None,
         trade_end_date: date | None = None,
+        _raw: bool = False,
+        include_superseded: bool = False,
     ) -> list[InsiderTrade]:
         _validate_range(start_date, end_date)
         _validate_range(trade_start_date, trade_end_date)
         conditions = [us_trades.c.ticker == ticker.strip().upper()]
+        if not (_raw and include_superseded):
+            conditions.append(visible_condition(us_trades, raw=_raw, sources=sources))
         if start_date is not None:
             conditions.append(us_trades.c.filing_date >= start_date)
         if end_date is not None:
@@ -395,6 +415,14 @@ class UsTradeRepository:
         except SQLAlchemyError as error:
             raise _wrap("US trade query", error) from error
 
+    def query_raw(
+        self, ticker: str, *, include_superseded: bool = True, **criteria: Any
+    ) -> list[InsiderTrade]:
+        """Read retained source evidence, optionally excluding superseded filings."""
+        return self.query(
+            ticker, _raw=True, include_superseded=include_superseded, **criteria
+        )
+
     def query_latest(
         self,
         count: int,
@@ -406,7 +434,7 @@ class UsTradeRepository:
         if count < 1:
             raise ValueError("count must be positive")
         _validate_range(start_date, end_date)
-        conditions = []
+        conditions = [visible_condition(us_trades, sources=sources)]
         if start_date is not None:
             conditions.append(us_trades.c.filing_date >= start_date)
         if end_date is not None:
@@ -464,10 +492,11 @@ class CongressTradeRepository:
         end_date: date | None = None,
         trade_start_date: date | None = None,
         trade_end_date: date | None = None,
+        _raw: bool = False,
     ) -> list[CongressTrade]:
         _validate_range(start_date, end_date)
         _validate_range(trade_start_date, trade_end_date)
-        conditions = []
+        conditions = [] if _raw else [visible_condition(congress_trades)]
         if source is not None:
             conditions.append(congress_trades.c.source == source)
         if chamber is not None:
@@ -513,6 +542,12 @@ class CongressTradeRepository:
                 return [congress_from_row(row) for row in rows]
         except SQLAlchemyError as error:
             raise _wrap("Congress trade query", error) from error
+
+    def query_raw(
+        self, official: str | MemberIdentity | None = None, **criteria: Any
+    ) -> list[CongressTrade]:
+        """Read all Congress source observations, including replaced filings."""
+        return self.query(official, _raw=True, **criteria)
 
 
 class EuropeanTradeRepository:

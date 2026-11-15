@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection
 
 from insider_scanner.core.congress_common import parse_amount_range
 from insider_scanner.core.merger import merge_trade_pair
+from insider_scanner.persistence.effective import rebuild_replacements
 from insider_scanner.persistence.mappings import (
     us_canonical_key,
     us_from_row,
@@ -25,6 +26,7 @@ from insider_scanner.persistence.schema import (
     sec_archive_progress,
     sec_archive_retries,
     sec_ingested_filings,
+    trade_replacements,
     us_trades,
     v1_metadata,
 )
@@ -281,6 +283,33 @@ def _add_sec_archive_progress(connection: Connection) -> None:
     sec_archive_retries.create(connection)
 
 
+def _add_effective_transactions(connection: Connection) -> None:
+    """Retain raw keys/timestamps and derive replacement links from evidence."""
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN report_title TEXT NOT NULL DEFAULT ''"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN period_of_report DATE"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN is_amendment BOOLEAN NOT NULL DEFAULT 0"
+    )
+    connection.exec_driver_sql(
+        "ALTER TABLE congress_trades ADD COLUMN filing_complete BOOLEAN NOT NULL DEFAULT 1"
+    )
+    trade_replacements.create(connection)
+    rebuild_replacements(connection, us_trades)
+    rebuild_replacements(connection, congress_trades)
+    # Historical Senate rows never retained report titles. Refetch metadata
+    # rather than guessing amendment chains from similar transaction contents.
+    for table in (scan_coverage, refresh_state):
+        connection.execute(
+            delete(table).where(
+                table.c.domain == "congress", table.c.source == "senate"
+            )
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -331,5 +360,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=10,
         name="add_sec_archive_progress",
         upgrade=_add_sec_archive_progress,
+    ),
+    Migration(
+        version=11,
+        name="add_effective_transactions",
+        upgrade=_add_effective_transactions,
     ),
 )

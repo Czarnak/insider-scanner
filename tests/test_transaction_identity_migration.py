@@ -94,7 +94,7 @@ def test_upgrade_rekeys_scraper_preserves_native_sec_and_reingest_is_idempotent(
     assert dict(after[1]) == dict(before[1])
     repo = UsTradeRepository(engine)
     assert repo.upsert([scraper, native]) == UpsertResult(skipped=2)
-    assert len(repo.query("AAPL")) == 2
+    assert len(repo.query_raw("AAPL")) == 2
     bootstrap_database(engine)
     assert _rows(engine, us_trades) == after
 

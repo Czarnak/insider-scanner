@@ -148,6 +148,10 @@ class CongressTrade:
     source: str = ""  # "house", "senate"
     # Filing-local row identity preserves repeated transactions or account lots.
     source_row_id: str = ""
+    report_title: str = ""
+    period_of_report: date | None = None
+    is_amendment: bool = False
+    filing_complete: bool = True
 
     @property
     def direction(self) -> TransactionDirection:

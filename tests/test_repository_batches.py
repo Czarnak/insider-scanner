@@ -49,13 +49,16 @@ def test_batch_prefetches_and_writes_in_chunks(engine, repository_type, factory,
     event.listen(engine, "before_cursor_execute", observe)
     try:
         repository = repository_type(engine)
+        # One additional scope read reconciles effective replacement links;
+        # raw prefetch and writes remain batched rather than per input row.
+        expected_selects = 3 if factory is eu_trade else 4
         assert repository.upsert(iter(rows)) == UpsertResult(inserted=count)
-        assert sum(kind == "SELECT" for kind, _ in calls) == 3
+        assert sum(kind == "SELECT" for kind, _ in calls) == expected_selects
         assert sum(kind == "INSERT" for kind, _ in calls) == 3
         assert any(kind == "INSERT" and many for kind, many in calls)
         calls.clear()
         assert repository.upsert(corrected) == UpsertResult(updated=count)
-        assert sum(kind == "SELECT" for kind, _ in calls) == 3
+        assert sum(kind == "SELECT" for kind, _ in calls) == expected_selects
         assert sum(kind == "UPDATE" for kind, _ in calls) == 3
         assert any(kind == "UPDATE" and many for kind, many in calls)
     finally:
