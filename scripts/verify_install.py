@@ -16,6 +16,9 @@ import sysconfig
 import tempfile
 from contextlib import closing
 from importlib.metadata import version
+
+# Python >=3.11.5 is required; this legacy Python compatibility rule does not apply.
+# nosemgrep: python.lang.compatibility.python37.python37-compatibility-importlib2
 from importlib.resources import files
 from pathlib import Path
 
