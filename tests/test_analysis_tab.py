@@ -1,4 +1,6 @@
 from datetime import date
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -16,10 +18,20 @@ class CapturingPool:
         self.worker = worker
 
 
+def _services():
+    return SimpleNamespace(
+        prices=SimpleNamespace(get_history=Mock(return_value=[])),
+        persistence=SimpleNamespace(
+            us_trades=SimpleNamespace(query=Mock(return_value=[])),
+            congress_trades=SimpleNamespace(query=Mock(return_value=[])),
+        ),
+    )
+
+
 @pytest.fixture
 def tab(qtbot, monkeypatch):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT", "NVDA"])
-    w = AnalysisTab()
+    w = AnalysisTab(_services())
     qtbot.addWidget(w)
     return w
 
@@ -50,11 +62,6 @@ def test_load_selected_updates_chart(tab, monkeypatch, qtbot):
             value=100,
         ),
     ]
-    monkeypatch.setattr(mod, "get_price_history", lambda *a, **k: bars)
-    monkeypatch.setattr(
-        mod, "load_trades_for_ticker", lambda ticker: trades, raising=False
-    )
-
     tab.symbol_combo.setCurrentText("AAPL")
     # Call the synchronous render path directly to avoid threading in the test
     tab._render(bars, trades)
@@ -129,12 +136,7 @@ def test_load_trades_for_ticker_bounds_queries_and_trade_dates(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(
-        "insider_scanner.services.context.open_persistence",
-        lambda: Context(),
-    )
-
-    trades = load_trades_for_ticker("aapl", start, end)
+    trades = load_trades_for_ticker("aapl", start, end, persistence=Context())
 
     assert trades == [us_in_range, us_on_start, congress_in_range, congress_on_end]
     assert us_repository.calls == [
@@ -148,17 +150,17 @@ def test_load_trades_for_ticker_bounds_queries_and_trade_dates(monkeypatch):
         )
     ]
     assert congress_repository.calls == [
-        ((), {"trade_start_date": start, "trade_end_date": end})
+        ((), {"ticker": "AAPL", "trade_start_date": start, "trade_end_date": end})
     ]
 
 
 def test_analysis_tab_uses_injected_thread_pool(qtbot, monkeypatch):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
 
     tab._load_selected()
 
@@ -168,11 +170,13 @@ def test_analysis_tab_uses_injected_thread_pool(qtbot, monkeypatch):
 def test_analysis_tab_discards_result_after_symbol_changes(qtbot, monkeypatch):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: bars)
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(
+        tab._services.prices, "get_history", lambda *args, **kwargs: bars
+    )
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
     rendered = []
     monkeypatch.setattr(tab, "_render", lambda *args: rendered.append(args))
 
@@ -192,11 +196,13 @@ def test_analysis_tab_keeps_result_stale_after_switching_away_and_back(
 ):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: bars)
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(
+        tab._services.prices, "get_history", lambda *args, **kwargs: bars
+    )
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
     rendered = []
     monkeypatch.setattr(tab, "_render", lambda *args: rendered.append(args))
 
@@ -213,10 +219,10 @@ def test_analysis_tab_keeps_result_stale_after_switching_away_and_back(
 def test_analysis_tab_discards_error_after_symbol_changes(qtbot, monkeypatch):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
@@ -236,10 +242,10 @@ def test_analysis_tab_keeps_error_stale_after_switching_away_and_back(
 ):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL", "MSFT"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(tab._services.prices, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
@@ -259,11 +265,13 @@ def test_analysis_tab_keeps_error_stale_after_switching_away_and_back(
 def test_request_cancellation_suppresses_late_analysis_result(qtbot, monkeypatch):
     monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
     pool = CapturingPool()
-    tab = AnalysisTab(thread_pool=pool)
+    tab = AnalysisTab(_services(), thread_pool=pool)
     qtbot.addWidget(tab)
     bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
-    monkeypatch.setattr(mod, "get_price_history", lambda *args, **kwargs: bars)
-    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args: [])
+    monkeypatch.setattr(
+        tab._services.prices, "get_history", lambda *args, **kwargs: bars
+    )
+    monkeypatch.setattr(mod, "load_trades_for_ticker", lambda *args, **kwargs: [])
     rendered = []
     monkeypatch.setattr(tab, "_render", lambda *args: rendered.append(args))
 
@@ -276,3 +284,58 @@ def test_request_cancellation_suppresses_late_analysis_result(qtbot, monkeypatch
     assert rendered == []
     assert tab.status_label.text() == "Closing"
     assert tab._active_request is None
+
+
+def test_analysis_load_uses_application_services_without_bootstrap(qtbot, monkeypatch):
+    monkeypatch.setattr(mod, "load_watchlist", lambda: ["AAPL"])
+    bootstrap = Mock(side_effect=AssertionError("unexpected database bootstrap"))
+    monkeypatch.setattr("insider_scanner.services.context.open_persistence", bootstrap)
+    bars = [PriceBar("AAPL", date(2026, 1, 5), 1, 2, 0.5, 1.5, 10)]
+    services = SimpleNamespace(
+        prices=SimpleNamespace(get_history=Mock(return_value=bars)),
+        persistence=SimpleNamespace(
+            us_trades=SimpleNamespace(query=Mock(return_value=[])),
+            congress_trades=SimpleNamespace(query=Mock(return_value=[])),
+        ),
+    )
+    pool = CapturingPool()
+    tab = AnalysisTab(services, thread_pool=pool)
+    qtbot.addWidget(tab)
+    tab._load_selected()
+    result = pool.worker.fn()
+
+    assert result[2] == bars
+    services.prices.get_history.assert_called_once()
+    kwargs = services.persistence.congress_trades.query.call_args.kwargs
+    assert kwargs["ticker"] == "AAPL"
+    bootstrap.assert_not_called()
+
+
+def test_congress_ticker_filter_hydrates_only_matching_rows(persistence, monkeypatch):
+    from insider_scanner.persistence import repositories
+
+    persistence.congress_trades.upsert(
+        [
+            CongressTrade(
+                ticker="AAPL",
+                official_name="Alice",
+                doc_id="one",
+                source="house",
+                trade_date=date(2026, 1, 2),
+            ),
+            CongressTrade(
+                ticker="MSFT",
+                official_name="Bob",
+                doc_id="two",
+                source="house",
+                trade_date=date(2026, 1, 2),
+            ),
+        ]
+    )
+    hydrate = Mock(wraps=repositories.congress_from_row)
+    monkeypatch.setattr(repositories, "congress_from_row", hydrate)
+
+    rows = persistence.congress_trades.query(ticker=" aapl ")
+
+    assert [row.ticker for row in rows] == ["AAPL"]
+    assert hydrate.call_count == 1

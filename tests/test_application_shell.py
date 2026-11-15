@@ -69,6 +69,7 @@ def test_shell_starts_on_feed_and_exposes_only_functional_destinations(qtbot, tm
         assert window.page_title.text() == "Feed"
         assert window.global_search.isVisibleTo(window)
         assert window.global_search.accessibleName() == "Search unified feed"
+        assert getattr(window.analysis_tab, "_services", None) is services
     finally:
         window.shutdown_workers()
         services.persistence.close()

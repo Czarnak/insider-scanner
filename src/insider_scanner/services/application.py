@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from insider_scanner.core.sec_client import SecClient
@@ -13,6 +13,7 @@ from insider_scanner.core.sec_security import (
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.european import EuropeanScanService
+from insider_scanner.services.prices import PriceService
 from insider_scanner.services.sec_backfill import SecBackfillService
 from insider_scanner.services.sec_comparison import SecComparisonService
 from insider_scanner.services.sec_daily import SecDailyIngestionService
@@ -29,12 +30,19 @@ class ApplicationServices:
     us: UsScanService
     congress: CongressScanService
     european: EuropeanScanService
+    prices: PriceService = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "prices", PriceService(self.persistence.engine))
 
     def close(self) -> None:
         try:
-            self.persistence.close()
+            self.prices.close()
         finally:
-            close_http_sessions()
+            try:
+                self.persistence.close()
+            finally:
+                close_http_sessions()
 
     def make_sec_daily(
         self,

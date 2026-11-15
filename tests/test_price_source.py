@@ -7,6 +7,8 @@ from insider_scanner.core.prices.source import validate_price_request
 
 
 class CompleteSource:
+    name = "test"
+
     def fetch_daily(self, symbol: str, start: date, end: date) -> list[PriceBar]:
         return []
 
@@ -68,3 +70,24 @@ def test_price_source_error_does_not_expose_context_or_cause_secrets() -> None:
     assert "alpha-vantage" in str(error)
     assert secret not in rendered
     assert "api_key" not in rendered
+
+
+def test_price_source_error_retains_safe_reason_status_and_cause_type() -> None:
+    error = PriceSourceError(
+        "Tiingo", reason="auth", status_code=401, cause=RuntimeError("secret-token")
+    )
+
+    assert error.reason == "auth"
+    assert error.status_code == 401
+    assert error.cause_type == "RuntimeError"
+    assert "auth" in str(error)
+    assert "401" in str(error)
+    assert "secret-token" not in repr(error)
+
+
+def test_price_source_protocol_requires_provider_identity() -> None:
+    class AnonymousSource:
+        def fetch_daily(self, symbol: str, start: date, end: date) -> list[PriceBar]:
+            return []
+
+    assert not isinstance(AnonymousSource(), PriceSource)

@@ -507,6 +507,7 @@ class CongressTradeRepository:
         self,
         official: str | MemberIdentity | None = None,
         *,
+        ticker: str | None = None,
         source: str | None = None,
         chamber: str | None = None,
         start_date: date | None = None,
@@ -518,6 +519,8 @@ class CongressTradeRepository:
         _validate_range(start_date, end_date)
         _validate_range(trade_start_date, trade_end_date)
         conditions = [] if _raw else [visible_condition(congress_trades)]
+        if ticker is not None:
+            conditions.append(congress_trades.c.ticker == ticker.strip().upper())
         if source is not None:
             conditions.append(congress_trades.c.source == source)
         if chamber is not None:

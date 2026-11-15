@@ -42,7 +42,7 @@ def yahoo_payload() -> dict[str, Any]:
 
 
 def assert_sanitized(error: PriceSourceError, secret: str = "secret-payload") -> None:
-    assert str(error) == "Yahoo price request failed"
+    assert str(error).startswith("Yahoo price request failed")
     assert secret not in f"{error!s} {error!r} {error.args!r}"
 
 
@@ -77,10 +77,10 @@ def test_parse_yahoo_chart_rejects_fractional_timestamp() -> None:
     payload = yahoo_payload()
     payload["chart"]["result"][0]["timestamp"][1] = 86_400.5
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_yahoo_chart(payload, "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert len(bars) == 1
+    assert bars[0].date == date(1970, 1, 1)
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -119,7 +119,7 @@ def test_parse_yahoo_chart_rejects_malformed_container_types(payload: object) ->
     assert_sanitized(raised.value)
 
 
-@pytest.mark.parametrize("timestamps", [None, [], "86400", [None]])
+@pytest.mark.parametrize("timestamps", [None, "86400"])
 def test_parse_yahoo_chart_rejects_missing_or_malformed_bars(
     timestamps: object,
 ) -> None:
@@ -158,10 +158,10 @@ def test_parse_yahoo_chart_rejects_null_required_values(field: str) -> None:
     payload = yahoo_payload()
     payload["chart"]["result"][0]["indicators"]["quote"][0][field][0] = None
 
-    with pytest.raises(PriceSourceError) as raised:
-        parse_yahoo_chart(payload, "AAPL")
-
-    assert_sanitized(raised.value)
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert len(bars) == 1
+    assert bars[0].date == date(1970, 1, 2)
+    assert not bars.complete
 
 
 @pytest.mark.parametrize(
@@ -235,10 +235,82 @@ def test_parse_yahoo_chart_translates_invalid_bar_values(
     else:
         result["indicators"]["quote"][0][path[0]][0] = value
 
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert len(bars) == 1
+    assert bars[0].date == date(1970, 1, 2)
+    assert not bars.complete
+
+
+def test_parse_yahoo_empty_success_is_complete() -> None:
+    payload = yahoo_payload()
+    result = payload["chart"]["result"][0]
+    result["timestamp"] = []
+    result["indicators"] = {"quote": [{}], "adjclose": [{}]}
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert bars == []
+    assert bars.complete
+
+
+def test_parse_yahoo_empty_timestamps_cannot_hide_nonempty_quote_arrays() -> None:
+    payload = yahoo_payload()
+    payload["chart"]["result"][0]["timestamp"] = []
     with pytest.raises(PriceSourceError) as raised:
         parse_yahoo_chart(payload, "AAPL")
+    assert raised.value.reason == "schema"
 
-    assert_sanitized(raised.value)
+
+@pytest.mark.parametrize("has_timestamp", [False, True])
+def test_parse_yahoo_empty_metadata_response_is_complete(has_timestamp: bool) -> None:
+    result = {
+        "meta": {"symbol": "AAPL", "gmtoffset": -18_000},
+        "indicators": {"quote": [{}], "adjclose": [{}]},
+    }
+    if has_timestamp:
+        result["timestamp"] = None
+    payload = {"chart": {"error": None, "result": [result]}}
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert bars == []
+    assert bars.complete
+
+
+def test_parse_yahoo_all_invalid_rows_are_incomplete() -> None:
+    payload = yahoo_payload()
+    payload["chart"]["result"][0]["timestamp"] = [None, None]
+    bars = parse_yahoo_chart(payload, "AAPL")
+    assert bars == []
+    assert not bars.complete
+
+
+def test_parse_yahoo_labels_bars_in_exchange_local_calendar() -> None:
+    payload = yahoo_payload()
+    result = payload["chart"]["result"][0]
+    result["meta"] = {"gmtoffset": 39_600}
+    result["timestamp"] = [
+        int(datetime(2026, 1, 1, 23, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 1, 2, 23, tzinfo=UTC).timestamp()),
+    ]
+    bars = parse_yahoo_chart(payload, "BHP.AX")
+    assert [bar.date for bar in bars] == [date(2026, 1, 2), date(2026, 1, 3)]
+
+
+def test_yahoo_provider_has_stable_identity() -> None:
+    assert YahooSource(session=FakeSession()).name == "yahoo"
+
+
+def test_yahoo_close_preserves_injected_session(monkeypatch) -> None:
+    class ClosingSession(FakeSession):
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    injected = ClosingSession()
+    YahooSource(session=injected).close()
+    assert not injected.closed
+    owned = ClosingSession()
+    monkeypatch.setattr(requests, "Session", lambda: owned)
+    YahooSource().close()
+    assert owned.closed
 
 
 class FakeResponse:
@@ -288,8 +360,8 @@ def utc_epoch(value: date) -> int:
 def test_yahoo_source_sends_exact_chart_request_and_parses_response() -> None:
     session = FakeSession()
     source = YahooSource(session=session)
-    start = date(2026, 1, 1)
-    end = date(2026, 1, 31)
+    start = date(1970, 1, 1)
+    end = date(1970, 1, 31)
 
     bars = source.fetch_daily("^gspc", start, end)
 
@@ -301,13 +373,49 @@ def test_yahoo_source_sends_exact_chart_request_and_parses_response() -> None:
                 "params": {
                     "interval": "1d",
                     "events": "history",
-                    "period1": utc_epoch(start),
-                    "period2": utc_epoch(end + timedelta(days=1)),
+                    "period1": utc_epoch(start) - 86_400,
+                    "period2": utc_epoch(end + timedelta(days=1)) + 86_400,
                 },
                 "timeout": (5.0, 20.0),
             },
         )
     ]
+
+
+def test_yahoo_source_requests_and_filters_exchange_local_range() -> None:
+    payload = yahoo_payload()
+    result = payload["chart"]["result"][0]
+    result["meta"] = {"gmtoffset": 39_600}
+    result["timestamp"] = [
+        int(datetime(2026, 1, 1, 23, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 1, 2, 23, tzinfo=UTC).timestamp()),
+    ]
+    session = FakeSession(response=FakeResponse(payload=payload))
+    bars = YahooSource(session=session).fetch_daily(
+        "BHP.AX", date(2026, 1, 2), date(2026, 1, 2)
+    )
+    assert [bar.date for bar in bars] == [date(2026, 1, 2)]
+    params = session.calls[0][1]["params"]
+    assert params["period1"] <= result["timestamp"][0]
+
+
+def test_yahoo_padding_invalid_adjacent_bar_does_not_poison_requested_coverage() -> (
+    None
+):
+    payload = yahoo_payload()
+    result = payload["chart"]["result"][0]
+    result["meta"] = {"gmtoffset": 39_600}
+    result["timestamp"] = [
+        int(datetime(2026, 1, 1, 23, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 1, 2, 23, tzinfo=UTC).timestamp()),
+    ]
+    result["indicators"]["quote"][0]["close"][1] = None
+    source = YahooSource(session=FakeSession(response=FakeResponse(payload=payload)))
+
+    bars = source.fetch_daily("BHP.AX", date(2026, 1, 2), date(2026, 1, 2))
+
+    assert [bar.date for bar in bars] == [date(2026, 1, 2)]
+    assert bars.complete
 
 
 @pytest.mark.parametrize(
@@ -384,6 +492,14 @@ def test_yahoo_source_sanitizes_http_errors(status_code: int) -> None:
         source.fetch_daily("AAPL", date(2026, 1, 1), date(2026, 1, 2))
 
     assert_sanitized(raised.value)
+    assert raised.value.status_code == status_code
+    assert raised.value.reason == (
+        "auth"
+        if status_code in {401, 403}
+        else "rate_limit"
+        if status_code == 429
+        else "http"
+    )
 
 
 @pytest.mark.parametrize(
@@ -460,7 +576,7 @@ def test_yahoo_source_preserves_parser_price_source_error(
 ) -> None:
     sentinel = PriceSourceError("Yahoo")
 
-    def fail_parser(payload: object, symbol: str) -> list[PriceBar]:
+    def fail_parser(payload: object, symbol: str, **_bounds: object) -> list[PriceBar]:
         del payload, symbol
         raise sentinel
 
