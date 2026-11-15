@@ -14,17 +14,17 @@ from insider_scanner.services.sec_daily import SecDailyIngestionSummary
 
 
 def _daily_summary(**kwargs):
-    values = dict(
-        interval=DateInterval(date(2026, 1, 7), date(2026, 1, 7)),
-        dates_total=1,
-        dates_completed=1,
-        filings_discovered=1,
-        filings_parsed=1,
-        transactions_inserted=1,
-        transactions_updated=0,
-        transactions_skipped=0,
-        failures=0,
-    )
+    values = {
+        "interval": DateInterval(date(2026, 1, 7), date(2026, 1, 7)),
+        "dates_total": 1,
+        "dates_completed": 1,
+        "filings_discovered": 1,
+        "filings_parsed": 1,
+        "transactions_inserted": 1,
+        "transactions_updated": 0,
+        "transactions_skipped": 0,
+        "failures": 0,
+    }
     values.update(kwargs)
     return SecDailyIngestionSummary(**values)
 
@@ -132,12 +132,11 @@ def test_keyboard_interrupt_during_startup_returns_130(monkeypatch, capsys):
 
 def test_second_sigint_forces_interrupt_and_restores_handler(capsys):
     previous = signal.getsignal(signal.SIGINT)
-    with pytest.raises(KeyboardInterrupt):
-        with cli._cooperative_interrupt() as cancelled:
-            handler = signal.getsignal(signal.SIGINT)
-            handler(signal.SIGINT, None)
-            assert cancelled()
-            handler(signal.SIGINT, None)
+    with pytest.raises(KeyboardInterrupt), cli._cooperative_interrupt() as cancelled:
+        handler = signal.getsignal(signal.SIGINT)
+        handler(signal.SIGINT, None)
+        assert cancelled()
+        handler(signal.SIGINT, None)
     assert signal.getsignal(signal.SIGINT) is previous
 
 
