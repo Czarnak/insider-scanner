@@ -41,6 +41,16 @@ def test_logs_persist_with_date_and_actionable_location(tmp_path):
     assert str(destination) in app_logging.diagnostic_hint()
 
 
+def test_persistent_diagnostics_keep_internal_details_off_stderr(capsys):
+    destination = app_logging.setup_logging()
+    try:
+        raise RuntimeError("internal database details")
+    except RuntimeError:
+        app_logging.get_logger("test").exception("Command failed")
+    assert capsys.readouterr().err == ""
+    assert "internal database details" in destination.read_text(encoding="utf-8")
+
+
 def test_rotates_logs_and_retains_previous_diagnostics(tmp_path):
     destination = app_logging.setup_logging()
     handler = next(

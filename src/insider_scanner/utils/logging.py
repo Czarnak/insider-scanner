@@ -47,7 +47,7 @@ def shutdown_logging() -> None:
 
 
 def setup_logging(level: int | str | None = None) -> Path | None:
-    """Configure console and rotating diagnostics; retain console on I/O failure."""
+    """Persist rotating diagnostics, using stderr when file creation fails."""
     selected = (
         level if level is not None else os.getenv("INSIDER_SCANNER_LOG_LEVEL", "INFO")
     )
@@ -69,10 +69,6 @@ def setup_logging(level: int | str | None = None) -> Path | None:
         "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    console = _ConsoleHandler()
-    console.setFormatter(formatter)
-    root.addHandler(console)
-
     path = _log_path()
     log_file: Path | None = None
     try:
@@ -81,6 +77,9 @@ def setup_logging(level: int | str | None = None) -> Path | None:
             path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
         )
     except OSError as exc:
+        console = _ConsoleHandler()
+        console.setFormatter(formatter)
+        root.addHandler(console)
         # Report the type, never an arbitrary OS error containing private data.
         print(
             f"Could not open log file {path} ({type(exc).__name__}); logging to stderr.",
@@ -95,6 +94,8 @@ def setup_logging(level: int | str | None = None) -> Path | None:
         logging.getLogger(name).setLevel(logging.WARNING)
     if invalid_environment_level:
         root.warning("Invalid INSIDER_SCANNER_LOG_LEVEL; using INFO")
+        if log_file is not None:
+            print("Invalid INSIDER_SCANNER_LOG_LEVEL; using INFO", file=sys.stderr)
     return log_file
 
 

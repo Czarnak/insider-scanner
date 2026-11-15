@@ -198,7 +198,7 @@ sources (default: `secform4` and `openinsider`); `--format` accepts `text`,
 `markdown` or `json`, and `--output` writes the report to a file.
 
 CLI results and final summaries go to stdout; progress and errors go to stderr.
-Diagnostics also persist in `insider-scanner.log`, rotating at 5 MiB with five
+Detailed diagnostics are written to `insider-scanner.log`, rotating at 5 MiB with five
 backups. The directory is `INSIDER_SCANNER_LOG_DIR` when set, otherwise `logs`
 inside an overridden `INSIDER_SCANNER_DATA_DIR`, or the platform's user log
 directory. Error messages show the active file path. If the file cannot be
