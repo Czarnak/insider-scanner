@@ -115,6 +115,9 @@ def create_sqlite_engine(
         _connection_record: Any,
     ) -> None:
         dbapi_connection.isolation_level = None
+        dbapi_connection.create_function(
+            "casefold", 1, lambda value: str(value or "").casefold(), deterministic=True
+        )
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA foreign_keys=ON")
