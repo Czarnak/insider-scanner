@@ -41,6 +41,9 @@ Filings are processed in filing-date/accession order regardless of ingestion
 order. An SEC amendment marked incomplete by the ingestion ledger cannot replace
 the original.
 
+An explicitly supplied but incomplete owner list cannot fall back to the primary
+owner; missing or invalid secondary CIKs prevent inferred linkage.
+
 Transaction lines match on security title, date, code, derivative status and
 ownership direction. Derivative contract terms also participate. Exact financial
 restatements replace observations one for one, preserving repeated-lot counts.
@@ -49,9 +52,11 @@ evidence of a correction concerning the changed financial field. Addition or
 omission wording vetoes that inference. Unmatched original lines and added lines
 remain effective. Chains resolve to their final replacement.
 
-Truncated remarks, capped/missing referenced footnotes and truncated footnote
-lists cannot authorize a line replacement: the omitted text could describe an
-addition. A stale scraper aggregate is superseded when any constituent SEC line
+Only an affirmative retained narrative-completeness marker authorizes a line
+replacement. Legacy details without that proof, truncated remarks, capped/missing
+referenced footnotes and truncated footnote lists remain uncertain: omitted text
+could describe an addition. A source reparse can establish complete evidence.
+A stale scraper aggregate is superseded when any constituent SEC line
 is corrected, independent of raw insertion order.
 
 This is conservative evidence-based inference, not a regulator-supplied line ID.

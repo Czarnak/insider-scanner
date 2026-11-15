@@ -1,5 +1,6 @@
 """Effective reads preserve raw provenance without counting restatements twice."""
 
+import json
 from dataclasses import replace
 from datetime import date
 
@@ -25,7 +26,7 @@ def native(**kwargs):
             "period_of_report": date(2026, 1, 5),
             "form_type": "4",
             "transaction_code": "S",
-            "sec_detail_json": '{"security_title":"Common Stock","remarks":"Corrects the share count in the original report."}',
+            "sec_detail_json": '{"security_title":"Common Stock","remarks":"Corrects the share count in the original report.","narrative_complete":true}',
             **kwargs,
         }
     )
@@ -431,3 +432,73 @@ def test_unrelated_correction_text_cannot_authorize_unchanged_share_count(engine
     )
     repo.upsert([original, amendment])
     assert len(repo.query("AAPL")) == 2
+
+
+@pytest.mark.parametrize(
+    "owners",
+    [
+        [{"cik": "0000123456"}, {"cik": ""}],
+        [{"cik": "0000123456"}, {"cik": None}],
+        [{"cik": "0000123456"}, {"cik": "invalid"}],
+        "not-a-list",
+    ],
+)
+def test_incomplete_joint_owner_evidence_cannot_fall_back_to_primary_owner(
+    engine, owners
+):
+    repo = UsTradeRepository(engine)
+    original = native()
+    detail = json.loads(original.sec_detail_json)
+    detail["reporting_owners"] = owners
+    amendment = amended(original, sec_detail_json=json.dumps(detail))
+    repo.upsert([original, amendment])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_legacy_narrative_without_completeness_proof_cannot_supersede(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    amendment = amended(
+        original,
+        sec_detail_json='{"security_title":"Common Stock","footnote_ids":["F1"],"footnotes":{"F1":"Corrects the share count."}}',
+    )
+    repo.upsert([original, amendment])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_omission_wording_vetoes_even_complete_correction_narrative(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    detail = json.loads(original.sec_detail_json)
+    detail["remarks"] = (
+        "Corrects the share count following an omission in the original report."
+    )
+    repo.upsert([original, amended(original, sec_detail_json=json.dumps(detail))])
+    assert len(repo.query("AAPL")) == 2
+
+
+def test_migration_keeps_legacy_uncertainty_until_complete_source_reparse(tmp_path):
+    engine = create_sqlite_engine(tmp_path / "legacy-narrative.sqlite3")
+    try:
+        bootstrap_database(engine, migrations=MIGRATIONS[:10])
+        original = native()
+        modern = amended(original)
+        legacy_detail = json.loads(modern.sec_detail_json)
+        del legacy_detail["narrative_complete"]
+        legacy = replace(modern, sec_detail_json=json.dumps(legacy_detail))
+        table = Table("us_trades", MetaData(), autoload_with=engine)
+        with engine.begin() as connection:
+            connection.execute(
+                insert(table), [us_to_values(original), us_to_values(legacy)]
+            )
+            before = list(connection.execute(select(table)).mappings())
+        bootstrap_database(engine)
+        repo = UsTradeRepository(engine)
+        assert len(repo.query("AAPL")) == 2
+        with engine.connect() as connection:
+            assert list(connection.execute(select(table)).mappings()) == before
+        repo.upsert([modern])
+        assert repo.query("AAPL") == [modern]
+        assert len(repo.query_raw("AAPL")) == 2
+    finally:
+        engine.dispose()

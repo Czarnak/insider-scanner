@@ -51,22 +51,32 @@ def _normalized(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
+def _cik_key(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    if not value.isascii() or not value.isdigit() or len(value) > 10:
+        return ""
+    return value.lstrip("0")
+
+
 def _owners(row: Mapping[str, Any]) -> tuple[str, ...]:
     try:
-        detail = json.loads(row["sec_detail_json"])
-        owners = tuple(
-            sorted(
-                {
-                    str(owner["cik"]).strip().lstrip("0")
-                    for owner in detail["reporting_owners"]
-                }
-            )
-        )
-        if owners and all(owners):
-            return owners
-    except (TypeError, ValueError, KeyError, AttributeError):
-        pass
-    owner = row["cik_insider"].strip().lstrip("0")
+        detail = json.loads(row["sec_detail_json"]) if row["sec_detail_json"] else {}
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(detail, dict):
+        return ()
+    if "reporting_owners" in detail:
+        owners = detail["reporting_owners"]
+        if not isinstance(owners, list) or not owners:
+            return ()
+        ciks = [
+            _cik_key(owner.get("cik")) if isinstance(owner, dict) else ""
+            for owner in owners
+        ]
+        return tuple(sorted(set(ciks))) if all(ciks) else ()
+    owner = _cik_key(row["cik_insider"])
     return (owner,) if owner else ()
 
 
@@ -189,7 +199,7 @@ def _narrative_complete(row: Mapping[str, Any]) -> bool:
     """Capped legacy strings cannot prove that omission wording was retained."""
     detail = _detail(row)
     if (
-        detail.get("narrative_complete") is False
+        detail.get("narrative_complete") is not True
         or len(str(detail.get("remarks", ""))) >= 4096
     ):
         return False
@@ -199,7 +209,9 @@ def _narrative_complete(row: Mapping[str, Any]) -> bool:
     )
 
 
-_ADDITION = re.compile(r"\b(?:add(?:s|ed|ing|ition|itional)?|omitt?\w*|unreported)\b")
+_ADDITION = re.compile(
+    r"\b(?:add(?:s|ed|ing|ition|itional)?|omit\w*|omiss\w*|unreported)\b"
+)
 _CORRECTION = re.compile(r"\bcorrect(?:s|ed|ing|ion|ions)?\b")
 
 
@@ -278,7 +290,7 @@ def _sec_supersessions(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, st
         lambda: defaultdict(list)
     )
     for row in rows:
-        issuer, owners = row["cik_issuer"].strip().lstrip("0"), _owners(row)
+        issuer, owners = _cik_key(row["cik_issuer"]), _owners(row)
         form = row["form_type"].upper().removesuffix("/A")
         if not (
             row["accession_number"]
