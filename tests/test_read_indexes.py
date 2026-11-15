@@ -41,8 +41,8 @@ def test_read_index_upgrade_preserves_rows_and_uses_ordered_indexes(tmp_path):
         UsTradeRepository(engine).upsert([us_trade(insider_name="MÜLLER Straße")])
         with engine.connect() as connection:
             before = connection.execute(select(us_trades)).mappings().all()
-        bootstrap_database(engine)
-        bootstrap_database(engine)
+        bootstrap_database(engine, migrations=MIGRATIONS[:12])
+        bootstrap_database(engine, migrations=MIGRATIONS[:12])
         with engine.connect() as connection:
             assert connection.execute(select(us_trades)).mappings().all() == before
             assert connection.execute(select(schema_version.c.version)).all()[-1] == (
