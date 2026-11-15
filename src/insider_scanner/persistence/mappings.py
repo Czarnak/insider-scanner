@@ -190,7 +190,9 @@ def coalesce_congress_trades(
         merged,
         amount_low=amounts.amount_low,
         amount_high=amounts.amount_high,
-        filing_complete=right.filing_complete,
+        filing_complete=right.filing_complete
+        if right.report_title
+        else left.filing_complete,
     )
 
 

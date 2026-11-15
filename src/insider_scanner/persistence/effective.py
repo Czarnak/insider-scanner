@@ -207,11 +207,13 @@ def _us_links(rows: list[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
                 matches.append(single[0])
             elif not single and len(lots) > 1 and _matches(row, lots):
                 matches.append(lots[0])
-        if len(matches) != 1:
-            continue
-        match = matches[0]
-        existing = links.get(match["canonical_key"])
-        links[row["canonical_key"]] = existing or (match["canonical_key"], "duplicate")
+        active = [match for match in matches if match["canonical_key"] not in links]
+        if len(active) == 1:
+            links[row["canonical_key"]] = (active[0]["canonical_key"], "duplicate")
+        elif not active:
+            replacements = {links[match["canonical_key"]] for match in matches}
+            if len(replacements) == 1:
+                links[row["canonical_key"]] = replacements.pop()
     return links
 
 

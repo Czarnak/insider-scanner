@@ -201,3 +201,58 @@ def test_upgrade_preserves_raw_rows_and_repairs_effective_visibility(tmp_path):
         assert len(UsTradeRepository(engine).query_raw("AAPL")) == 2
     finally:
         engine.dispose()
+
+
+def test_same_day_unchanged_amendment_does_not_restore_scraper_duplicate(engine):
+    repo = UsTradeRepository(engine)
+    original = native()
+    amendment = amended(
+        original, shares=10, value=2000, filing_date=original.filing_date
+    )
+    repo.upsert([original, amendment, us_trade(shares=10, value=2000)])
+    assert repo.query("AAPL") == [amendment]
+
+
+def test_reparse_moves_native_identity_without_hiding_previous_ticker_scraper(engine):
+    repo = UsTradeRepository(engine)
+    original = native(cik_issuer="", cik_insider="")
+    scraper = us_trade(shares=10, value=2000)
+    repo.upsert([original, scraper])
+    assert repo.query("AAPL") == [original]
+    repo.upsert([replace(original, ticker="MSFT")])
+    assert repo.query("AAPL") == [scraper]
+
+
+@pytest.mark.parametrize("latest", [False, True])
+def test_source_generators_are_used_once(engine, latest):
+    repo = UsTradeRepository(engine)
+    scraper = us_trade(shares=10, value=2000)
+    repo.upsert([native(), scraper])
+    sources = (name for name in ["secform4"])
+    result = (
+        repo.query_latest(10, sources=sources)
+        if latest
+        else repo.query("AAPL", sources=sources)
+    )
+    assert result == [scraper]
+
+
+def test_metadata_free_import_cannot_promote_partial_senate_amendment(engine):
+    repo = CongressTradeRepository(engine)
+    original = senate(source_row_id="1")
+    partial = senate(doc_id="amended", source_row_id="1", filing_date=date(2026, 2, 3))
+    partial.is_amendment = True
+    partial.filing_complete = False
+    repo.upsert([original, partial])
+    repo.upsert(
+        [
+            replace(
+                partial,
+                report_title="",
+                period_of_report=None,
+                is_amendment=False,
+                filing_complete=True,
+            )
+        ]
+    )
+    assert len(repo.query()) == 2

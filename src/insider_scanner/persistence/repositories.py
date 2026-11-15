@@ -165,6 +165,7 @@ def _write_batch(
     connection: Connection,
     policy: _BatchPolicy,
     indexed_trades: list[tuple[int, Any]],
+    us_scopes: tuple[set[str], set[str]] | None = None,
 ) -> UpsertResult:
     """Plan merges in input order, then write each changed stored row once."""
     prepared = [(trade, policy.to_values(trade)) for _, trade in indexed_trades]
@@ -192,6 +193,11 @@ def _write_batch(
         row["canonical_key"]: _StoredTrade(dict(row), row["canonical_key"])
         for row in rows
     }
+    if policy.table is us_trades and us_scopes is not None:
+        for record in stored.values():
+            us_scopes[0].add(record.values["ticker"])
+            if record.values["cik_issuer"]:
+                us_scopes[1].add(record.values["cik_issuer"])
     changed: dict[int, _StoredTrade] = {}
     result = UpsertResult()
     for trade, incoming_values in prepared:
@@ -301,7 +307,9 @@ def _upsert_in_connection(
                     issuers.add(issuer)
         try:
             with connection.begin_nested():
-                batch_result = _write_batch(connection, policy, batch)
+                batch_result = _write_batch(
+                    connection, policy, batch, (tickers, issuers)
+                )
         except (
             SQLAlchemyError,
             TypeError,
@@ -315,7 +323,9 @@ def _upsert_in_connection(
             for item in batch:
                 try:
                     with connection.begin_nested():
-                        row_result = _write_batch(connection, policy, [item])
+                        row_result = _write_batch(
+                            connection, policy, [item], (tickers, issuers)
+                        )
                 except (
                     SQLAlchemyError,
                     TypeError,
@@ -379,6 +389,7 @@ class UsTradeRepository:
         _raw: bool = False,
         include_superseded: bool = False,
     ) -> list[InsiderTrade]:
+        sources = (sources,) if isinstance(sources, str) else tuple(sources or ())
         _validate_range(start_date, end_date)
         _validate_range(trade_start_date, trade_end_date)
         conditions = [us_trades.c.ticker == ticker.strip().upper()]
@@ -431,6 +442,7 @@ class UsTradeRepository:
         start_date: date | None = None,
         end_date: date | None = None,
     ) -> list[InsiderTrade]:
+        sources = (sources,) if isinstance(sources, str) else tuple(sources or ())
         if count < 1:
             raise ValueError("count must be positive")
         _validate_range(start_date, end_date)
