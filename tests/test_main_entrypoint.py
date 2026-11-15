@@ -48,6 +48,11 @@ def _stub_theme_manager(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return manager
 
 
+@pytest.fixture(autouse=True)
+def _stub_diagnostic_hint(monkeypatch):
+    monkeypatch.setattr(app_main, "diagnostic_hint", lambda: "See logs: runtime.log.")
+
+
 def test_run_reports_gui_extra_install_when_pyside6_is_missing(capsys):
     real_import = builtins.__import__
 
@@ -178,7 +183,7 @@ def test_main_window_startup_failure_closes_services_and_exits_cleanly(
     critical.assert_called_once_with(
         None,
         "Startup Error",
-        "Could not initialize the application window. See logs for details.",
+        "Could not initialize the application window. See logs: runtime.log.",
     )
     log_exception.assert_called_once_with("Application window startup failed")
     services.close.assert_called_once_with()

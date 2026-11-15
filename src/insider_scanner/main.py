@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from insider_scanner.utils.logging import get_logger
+from insider_scanner.utils.logging import diagnostic_hint, get_logger
 
 log = get_logger("main")
 
@@ -96,7 +96,7 @@ def run() -> int:
         QMessageBox.critical(
             None,
             "Startup Error",
-            "Could not initialize the local database. See logs for details.",
+            f"Could not initialize the local database. {diagnostic_hint()}",
         )
         return 1
 
@@ -110,7 +110,7 @@ def run() -> int:
         QMessageBox.critical(
             None,
             "Startup Error",
-            "Could not initialize the application window. See logs for details.",
+            f"Could not initialize the application window. {diagnostic_hint()}",
         )
         if window is None or window.shutdown_workers():
             _close_services(services)
