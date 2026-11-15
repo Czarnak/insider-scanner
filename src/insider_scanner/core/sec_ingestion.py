@@ -10,31 +10,56 @@ from pathlib import Path
 from insider_scanner.core import sec_index
 from insider_scanner.core._sec_xml import SecXmlSecurityError
 from insider_scanner.core.sec_client import (
-    SecBlockedError, SecClient, SecClientError, SecClientSecurityError,
-    SecFilingNotFoundError, SecHttpError,
+    SecBlockedError,
+    SecClient,
+    SecClientError,
+    SecClientSecurityError,
+    SecFilingNotFoundError,
+    SecHttpError,
 )
 from insider_scanner.core.sec_downloader import (
-    PendingSecFiling, SecDownloadError, SecDownloadSecurityError,
-    fetch_filing, promote_validated_filing, quarantine_failed_download,
+    PendingSecFiling,
+    SecDownloadError,
+    SecDownloadSecurityError,
+    fetch_filing,
+    promote_validated_filing,
+    quarantine_failed_download,
 )
 from insider_scanner.core.sec_ownership_document import (
-    SecOwnershipDocumentError, UnsupportedOwnershipDocumentError,
+    SecOwnershipDocumentError,
+    UnsupportedOwnershipDocumentError,
     extract_ownership_document,
 )
 from insider_scanner.core.sec_ownership_parser import (
-    OwnershipFiling, SecOwnershipParseError, parse_ownership_document,
+    OwnershipFiling,
+    SecOwnershipParseError,
+    parse_ownership_document,
 )
-from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY, SecSecurityPolicy
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
+)
 from insider_scanner.core.sec_trade_mapping import SecTradeMappingError
 from insider_scanner.persistence.errors import PersistenceError
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_ingestion")
-_COUNTER_KEYS = ("discovered", "downloaded", "parsed", "skipped", "failed", "unsupported")
-_RECOVERABLE = (
-    SecClientError, SecDownloadError, SecOwnershipDocumentError,
-    SecOwnershipParseError, SecXmlSecurityError,
+_COUNTER_KEYS = (
+    "discovered",
+    "downloaded",
+    "parsed",
+    "skipped",
+    "failed",
+    "unsupported",
 )
+_RECOVERABLE = (
+    SecClientError,
+    SecDownloadError,
+    SecOwnershipDocumentError,
+    SecOwnershipParseError,
+    SecXmlSecurityError,
+)
+
 
 class SecFilingStatus(str, Enum):
     SUCCESS = "success"
@@ -200,5 +225,3 @@ def _accession_from_path(archive_path: str) -> str | None:
 
 def new_counters() -> dict[str, int]:
     return {key: 0 for key in _COUNTER_KEYS}
-
-

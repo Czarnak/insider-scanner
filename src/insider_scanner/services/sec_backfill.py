@@ -1,17 +1,8 @@
-"""Explicit, resumable full bulk backfill from a SEC submissions ZIP.
+"""Bulk SEC ingestion backed by the same durable ledger as daily ingestion.
 
-Streams ownership-filing metadata from a user-supplied submissions archive,
-synthesizes a SecMasterIndexRow per filing, and runs each through the *same*
-hardened download/parse/persist pipeline as daily ingestion. Resume state is a
-JSON checkpoint of completed accession numbers keyed to the ZIP identity.
-
-Known limitation: the checkpoint stores the full set of completed accessions; for
-a whole-archive backfill this set can grow large. Acceptable for fixture-scale and
-repair runs; a compact cursor is a future optimization (do not silently cap it).
-
-Successful filings, unsupported legacy documents and deterministic rejections
-are terminal checkpoint entries. Transient fetch, mapping and persistence errors
-remain retryable; their accessions and reasons are included in the run summary.
+Trades and filing status commit together in bounded batches. Ledger entries are
+accession based, survive successful runs and archive renames, and are never
+cleared by a targeted CIK run. Old JSON checkpoints are left untouched.
 """
 
 from __future__ import annotations
@@ -25,32 +16,24 @@ from insider_scanner.core.sec_bulk import (
     bulk_metadata_to_index_row,
     iter_ownership_filings,
 )
-from insider_scanner.core.sec_client import SecClient
+from insider_scanner.core.sec_client import SecBlockedError, SecClient
 from insider_scanner.core.sec_downloader import purge_stale_cache
-from insider_scanner.core.sec_index import SecMasterIndexRow
-from insider_scanner.core.sec_ownership_parser import OwnershipFiling
-from insider_scanner.core.sec_security import (
-    DEFAULT_SEC_SECURITY_POLICY,
-    SecSecurityPolicy,
-)
-from insider_scanner.core.sec_trade_mapping import (
-    SecTradeMappingError,
-    ownership_filing_to_trades,
-)
-from insider_scanner.persistence.json_state import atomic_write_json, read_json_dict
-from insider_scanner.services.common import not_cancelled
-from insider_scanner.services.context import PersistenceContext
-from insider_scanner.services.sec_downloads import (
+from insider_scanner.core.sec_ingestion import (
     SecFilingOutcome,
     SecFilingStatus,
     new_counters,
     process_filing_row,
 )
-from insider_scanner.services.sec_persistence import SecTradeBatch
+from insider_scanner.core.sec_security import (
+    DEFAULT_SEC_SECURITY_POLICY,
+    SecSecurityPolicy,
+)
+from insider_scanner.services.common import not_cancelled
+from insider_scanner.services.context import PersistenceContext
+from insider_scanner.services.sec_persistence import SecTradeBatch, make_persist_sink
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("sec_backfill")
-_CHECKPOINT_VERSION = 1
 
 
 class SecBackfillConfirmationError(Exception):
@@ -89,7 +72,6 @@ class SecBackfillService:
         cache_root: Path,
         policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
         cleanup: bool = True,
-        checkpoint_path: Path | None = None,
         batch_filings: int = 200,
         batch_rows: int = 5_000,
     ) -> None:
@@ -98,7 +80,6 @@ class SecBackfillService:
         self._cache_root = cache_root
         self._policy = policy
         self._cleanup = cleanup
-        self._checkpoint_path = checkpoint_path
         if batch_filings < 1 or batch_rows < 1:
             raise ValueError("SEC batch limits must be positive")
         self._batch_filings = batch_filings
@@ -119,46 +100,58 @@ class SecBackfillService:
             )
 
         counters = new_counters()
+        ledger = self._persistence.sec_ingestion
         batch = SecTradeBatch(
-            self._persistence.us_trades.upsert,
+            ledger.commit,
             max_filings=self._batch_filings,
             max_rows=self._batch_rows,
         )
+        sink = make_persist_sink(batch)
         skipped_resume = 0
         skipped_metadata = 0
         discovered = 0
         outcomes: list[SecFilingOutcome] = []
-        has_retryable_failures = False
+        failed_accessions: set[str | None] = set()
+        attempted: set[str] = set()
+        interrupted = False
 
-        completed = self._load_completed(zip_path)
+        def snapshot() -> SecBackfillSummary:
+            return SecBackfillSummary(
+                filings_discovered=discovered,
+                filings_parsed=counters["parsed"],
+                transactions_inserted=batch.upserts.inserted,
+                transactions_updated=batch.upserts.updated,
+                transactions_skipped=batch.upserts.skipped,
+                skipped_resume=skipped_resume,
+                skipped_metadata=skipped_metadata,
+                failures=counters["failed"],
+                unsupported=counters["unsupported"],
+                outcomes=tuple(outcomes),
+                cancelled=interrupted,
+            )
 
-        def record_committed(*, flush: bool = False) -> None:
-            nonlocal has_retryable_failures
+        def record_committed(*, flush: bool = False, emit: bool = True) -> None:
             committed = batch.take_outcomes(flush=flush)
-            changed = False
             for item in committed:
-                if item.complete:
-                    if item.accession is not None:
-                        completed.add(item.accession)
-                        changed = True
-                else:
+                if item.stage == "persist" and not item.complete:
                     outcomes.append(item)
-                    counters["failed"] += 1
-                    has_retryable_failures = True
-            if changed:
-                self._save_completed(zip_path, completed)
+                    if item.accession not in failed_accessions:
+                        counters["failed"] += 1
+                        failed_accessions.add(item.accession)
+            if committed and emit and on_progress is not None:
+                on_progress(snapshot())
 
         gen = iter_ownership_filings(
             zip_path, cache_root=zip_path.parent, policy=self._policy, ciks=ciks
         )
-        interrupted = False
         try:
             for meta in gen:
                 if cancelled():
                     interrupted = True
                     break
                 discovered += 1
-                if meta.accession_number in completed:
+                accession = meta.accession_number
+                if accession in attempted or ledger.is_terminal(accession):
                     skipped_resume += 1
                     continue
                 try:
@@ -166,101 +159,54 @@ class SecBackfillService:
                 except SecBulkError:
                     skipped_metadata += 1
                     continue
-
-                def _sink(
-                    r: SecMasterIndexRow,
-                    filing: OwnershipFiling,
-                ) -> None:
-                    try:
-                        trades = ownership_filing_to_trades(filing, r)
-                    except SecTradeMappingError as exc:
-                        _log.warning(
-                            "SEC backfill mapping failed accession=%s reason=%s",
-                            r.archive_path.rsplit("/", 1)[-1].removesuffix(".txt"),
-                            type(exc).__name__,
+                attempted.add(accession)
+                try:
+                    outcome = process_filing_row(
+                        row,
+                        client=self._client,
+                        cache_root=self._cache_root,
+                        counters=counters,
+                        policy=self._policy,
+                        on_filing_parsed=sink,
+                    )
+                except SecBlockedError as error:
+                    batch.add_outcome(
+                        SecFilingOutcome(
+                            accession,
+                            SecFilingStatus.RETRYABLE_FAILURE,
+                            "fetch",
+                            type(error).__name__,
                         )
-                        raise
-                    accession = r.archive_path.rsplit("/", 1)[-1].removesuffix(".txt")
-                    batch.add(accession, trades)
-
-                outcome = process_filing_row(
-                    row,
-                    client=self._client,
-                    cache_root=self._cache_root,
-                    counters=counters,
-                    policy=self._policy,
-                    on_filing_parsed=_sink,
-                )
+                    )
+                    raise
                 if outcome.status is not SecFilingStatus.SUCCESS:
                     outcomes.append(outcome)
-                if outcome.complete and outcome.status is not SecFilingStatus.SUCCESS:
-                    completed.add(meta.accession_number)
-                    self._save_completed(zip_path, completed)
-                elif not outcome.complete:
-                    has_retryable_failures = True
+                    batch.add_outcome(outcome)
+                    if outcome.status is not SecFilingStatus.UNSUPPORTED:
+                        failed_accessions.add(outcome.accession)
                 record_committed()
+        except BaseException:
+            # Preserve the abort even if a final flush or callback also fails.
+            try:
+                record_committed(flush=True, emit=False)
+            except BaseException as error:  # noqa: BLE001 - preserve the original abort
+                _log.warning(
+                    "SEC pending filing flush failed while aborting exception=%s",
+                    type(error).__name__,
+                )
+            raise
         finally:
-            gen.close()  # release the ZIP handle promptly on early exit
-            # Keep previously parsed filings on cancellation or a blocked fetch.
-            record_committed(flush=True)
+            gen.close()
+        record_committed(flush=True, emit=False)
 
-        fully_done = not interrupted and not has_retryable_failures
-        if fully_done:
-            self._delete_checkpoint()
-            if self._cleanup:
-                purge_stale_cache(self._cache_root, policy=self._policy)
+        if (
+            self._cleanup
+            and not interrupted
+            and not any(not item.complete for item in outcomes)
+        ):
+            purge_stale_cache(self._cache_root, policy=self._policy)
 
-        summary = SecBackfillSummary(
-            filings_discovered=discovered,
-            filings_parsed=counters["parsed"],
-            transactions_inserted=batch.upserts.inserted,
-            transactions_updated=batch.upserts.updated,
-            transactions_skipped=batch.upserts.skipped,
-            skipped_resume=skipped_resume,
-            skipped_metadata=skipped_metadata,
-            failures=counters["failed"],
-            unsupported=counters["unsupported"],
-            outcomes=tuple(outcomes),
-            cancelled=interrupted,
-        )
+        summary = snapshot()
         if on_progress is not None:
             on_progress(summary)
         return summary
-
-    # --- checkpoint (resume state) -----------------------------------------
-
-    def _load_completed(self, zip_path: Path) -> set[str]:
-        if self._checkpoint_path is None:
-            return set()
-        data = read_json_dict(self._checkpoint_path)
-        if not data or data.get("version") != _CHECKPOINT_VERSION:
-            return set()
-        if data.get("zip") != zip_path.name:
-            return set()  # different archive -> start fresh
-        raw = data.get("completed_accessions")
-        return (
-            {a for a in raw if isinstance(a, str)} if isinstance(raw, list) else set()
-        )
-
-    def _save_completed(self, zip_path: Path, completed: set[str]) -> None:
-        if self._checkpoint_path is None:
-            return
-        try:
-            atomic_write_json(
-                self._checkpoint_path,
-                {
-                    "version": _CHECKPOINT_VERSION,
-                    "zip": zip_path.name,
-                    "completed_accessions": sorted(completed),
-                },
-            )
-        except OSError:
-            _log.warning("SEC backfill checkpoint save failed")
-
-    def _delete_checkpoint(self) -> None:
-        if self._checkpoint_path is None:
-            return
-        try:
-            self._checkpoint_path.unlink(missing_ok=True)
-        except OSError:
-            _log.warning("SEC backfill checkpoint cleanup failed")
