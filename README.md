@@ -316,9 +316,24 @@ insider-scanner-cli sec-backfill --zip PATH\TO\submissions.zip --confirm-full-ba
 ```
 
 `--confirm-full-backfill` is a required acknowledgement flag — it cannot be omitted.
-The run is **resumable**: if it is interrupted, re-running the same command
-continues from the last checkpoint without re-ingesting already-processed filings.
-The backfill reuses the same hardened downloader and parser as `sec-daily`.
+The run is **resumable** through the local database's SEC ingestion ledger.
+Trades and their accession status commit together in bounded batches. Re-running
+skips committed successes, unsupported documents and permanent rejections, and
+retries transient fetch, mapping or persistence failures. Attempts and the latest
+failure reason remain in the ledger after a run finishes. A targeted `--cik` run
+cannot clear full-run progress; renamed or refreshed archives reuse known
+accessions. Removing a download cache does not remove ingestion progress.
+
+Daily and catch-up commands use this same ledger to skip committed filings in
+incomplete dates, while database coverage selects the dates still needed. Their
+counters describe the current invocation. The standalone downloader has no resume
+state; durable resume belongs to the database-backed services.
+
+Migration 9 adds the ledger without changing stored trades or existing coverage.
+Old SEC JSON checkpoints are preserved but no longer read or written. They cannot
+prove which trades committed, so the first backfill after upgrading validates
+those filings again and safely upserts existing rows. The backfill reuses the
+same hardened downloader and parser as `sec-daily`.
 
 **SEC fair-access reminders**:
 
@@ -403,7 +418,7 @@ and real session expiry frequency have not been verified against the live site.
 
 Migration 5 resets legacy US/Congress coverage because older compaction overwrote
 the timestamps needed to prove a date was complete. All stored trades are
-retained. The SEC downloader also invalidates legacy completion checkpoints.
+retained. Legacy SEC JSON completion checkpoints are no longer used.
 The next scan or SEC catch-up fetches the requested history again and rebuilds
 coverage under the new rules, which can make that first run slower.
 
