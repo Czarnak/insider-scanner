@@ -84,7 +84,7 @@ def get_price_history(
             changed = any(
                 _basis_changed(old_by_date[bar.date], bar)
                 for bar in fetched
-                if bar.date in old_by_date
+                if bar.date in old_by_date and bar.date < checked_at.date()
             )
             pending.append((interval, fetched))
             if changed:
@@ -111,7 +111,11 @@ def get_price_history(
                 ),
             )
             replacement = src.fetch_daily(symbol, full.start, full.end)
-            if not replacement or not getattr(replacement, "complete", True):
+            if (
+                not replacement
+                or not getattr(replacement, "complete", True)
+                or not old_by_date.keys() <= {bar.date for bar in replacement}
+            ):
                 raise PriceSourceError(source_name, reason="schema")
             repo.store_fetch(
                 engine,

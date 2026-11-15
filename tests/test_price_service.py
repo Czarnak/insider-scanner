@@ -218,3 +218,70 @@ def test_failed_refresh_keeps_cached_data_and_does_not_mark_coverage(e):
     source.calls.clear()
     get_price_history("AAPL", start, end, source=source, engine=e)
     assert source.calls
+
+
+def test_intraday_close_changes_do_not_refetch_completed_history(e, monkeypatch):
+    source = FakeSource()
+    day = date(2026, 1, 5)
+    instant = datetime(2026, 1, 5, 15, tzinfo=UTC)
+    _set_clock(monkeypatch, instant)
+    get_price_history("AAPL", date(2026, 1, 1), day, source=source, engine=e)
+    source.calls.clear()
+
+    def refresh(symbol, start, end):
+        source.calls.append((start, end))
+        return [
+            PriceBar(symbol, start, 1, 1, 1, 1, 1),
+            PriceBar(symbol, day, 2, 2, 2, 2, 1),
+        ]
+
+    source.fetch_daily = refresh
+    _set_clock(monkeypatch, instant + timedelta(minutes=6))
+    bars = get_price_history("AAPL", date(2026, 1, 1), day, source=source, engine=e)
+    assert bars[-1].close == 2
+    assert len(source.calls) == 1, (
+        "an unfinished bar changing is not a corporate action"
+    )
+
+
+@pytest.mark.parametrize("mode", ["failure", "incomplete", "truncated"])
+def test_failed_adjustment_replacement_preserves_every_old_bar(e, mode):
+    from insider_scanner.core.prices.source import FetchedPriceBars, PriceSourceError
+
+    source = FakeSource()
+    first, last, end = date(2026, 1, 1), date(2026, 1, 4), date(2026, 1, 6)
+    original = get_price_history("AAPL", first, last, source=source, engine=e)
+
+    def refresh(symbol, start, stop):
+        if start == first:
+            if mode == "failure":
+                raise PriceSourceError("fake", reason="network")
+            return FetchedPriceBars(
+                [PriceBar(symbol, last, 0.5, 0.5, 0.5, 0.5, 1)],
+                complete=mode != "incomplete",
+            )
+        return [
+            PriceBar(symbol, last, 0.5, 0.5, 0.5, 0.5, 1),
+            PriceBar(symbol, end, 0.5, 0.5, 0.5, 0.5, 1),
+        ]
+
+    source.fetch_daily = refresh
+    assert get_price_history("AAPL", first, end, source=source, engine=e) == original
+
+
+def test_partial_provider_results_never_claim_coverage(e):
+    from insider_scanner.core.prices.source import FetchedPriceBars, PriceSourceError
+
+    source = FakeSource()
+    day = date(2026, 1, 1)
+    source.fetch_daily = lambda *args: FetchedPriceBars([], complete=False)
+    with pytest.raises(PriceSourceError, match="schema"):
+        get_price_history("AAPL", day, day, source=source, engine=e)
+    source.fetch_daily = lambda *args: FetchedPriceBars(
+        [PriceBar("AAPL", day, 1, 1, 1, 1, 1)], complete=False
+    )
+    assert get_price_history("AAPL", day, day, source=source, engine=e)
+    source.calls.clear()
+    source.fetch_daily = FakeSource.fetch_daily.__get__(source)
+    get_price_history("AAPL", day, day, source=source, engine=e)
+    assert source.calls
