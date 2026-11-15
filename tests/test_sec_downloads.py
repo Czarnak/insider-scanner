@@ -73,7 +73,7 @@ def test_cache_promotion_failure_keeps_parsed_sink_results(tmp_path, monkeypatch
         raise SecDownloadIoError()
 
     monkeypatch.setattr(
-        "insider_scanner.services.sec_downloads.promote_validated_filing",
+        "insider_scanner.core.sec_ingestion.promote_validated_filing",
         fail_promotion,
     )
     report = download_filings_in_range(
@@ -187,7 +187,7 @@ class _CancelAfterDates:
         return self.completed >= self.limit
 
 
-def test_cancellation_leaves_remaining_dates_for_resume(tmp_path: Path) -> None:
+def test_cancellation_reports_only_completed_dates(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint.json"
     cancel = _CancelAfterDates(1)
 
@@ -199,17 +199,19 @@ def test_cancellation_leaves_remaining_dates_for_resume(tmp_path: Path) -> None:
         end_date=date(2026, 6, 16),
         client=make_client(make_transport()),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
         cancelled=cancel,
         on_progress=progress,
     )
 
     assert first.dates_total == 2
     assert first.dates_completed == 1
-    assert checkpoint.exists()  # retained for resume
+    assert first.cancelled
+    assert not checkpoint.exists()
 
 
-def test_resume_skips_completed_dates_and_restores_counters(tmp_path: Path) -> None:
+def test_standalone_calls_start_new_counters_and_process_requested_dates(
+    tmp_path: Path,
+) -> None:
     checkpoint = tmp_path / "checkpoint.json"
     cancel = _CancelAfterDates(1)
 
@@ -221,31 +223,27 @@ def test_resume_skips_completed_dates_and_restores_counters(tmp_path: Path) -> N
         end_date=date(2026, 6, 16),
         client=make_client(make_transport()),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
         cancelled=cancel,
         on_progress=progress,
     )
 
-    assert read_json_dict(checkpoint)["version"] == 2
+    assert not checkpoint.exists()
     resume_urls: list[str] = []
     report = download_filings_in_range(
         start_date=date(2026, 6, 15),
         end_date=date(2026, 6, 16),
         client=make_client(make_transport(fetched=resume_urls)),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
     )
 
     assert report.dates_completed == 2
-    assert report.discovered == 4  # 2 from run one (restored) + 2 from the resume
-    # The already-completed first day is never re-fetched on resume.
-    assert not any("20260615" in url for url in resume_urls)
+    assert report.discovered == 4  # Both dates belong to this invocation.
+    assert any("20260615" in url for url in resume_urls)
     assert any("20260616" in url for url in resume_urls)
     assert not checkpoint.exists()  # deleted on clean completion
 
 
-def test_resume_restores_unsupported_count_in_report_and_progress(tmp_path):
-    checkpoint = tmp_path / "checkpoint.json"
+def test_standalone_calls_do_not_restore_unsupported_count(tmp_path):
     cancel = _CancelAfterDates(1)
     legacy = (
         b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
@@ -261,7 +259,6 @@ def test_resume_restores_unsupported_count_in_report_and_progress(tmp_path):
         end_date=date(2026, 6, 16),
         client=make_client(make_transport(filing_bytes=legacy)),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
         cancelled=cancel,
         on_progress=progress,
     )
@@ -272,15 +269,16 @@ def test_resume_restores_unsupported_count_in_report_and_progress(tmp_path):
         end_date=date(2026, 6, 16),
         client=make_client(make_transport()),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
         on_progress=snapshots.append,
     )
     assert resumed.dates_completed == 2
-    assert resumed.unsupported == snapshots[-1].unsupported == 2
-    assert resumed.parsed == 2
+    assert resumed.unsupported == snapshots[-1].unsupported == 0
+    assert resumed.parsed == 4
 
 
-def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
+def test_legacy_checkpoint_is_preserved_without_loading_counters(
+    tmp_path: Path,
+) -> None:
     checkpoint = tmp_path / "checkpoint.json"
     # A stale checkpoint for a *different* range that marks its day complete.
     atomic_write_json(
@@ -301,10 +299,10 @@ def test_mismatched_checkpoint_range_starts_fresh(tmp_path: Path) -> None:
         end_date=date(2026, 6, 20),
         client=make_client(make_transport()),
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
     )
 
-    # Range differs → the stale state (including its inflated counters) is ignored.
+    # Standalone orchestration never reads or deletes legacy user checkpoints.
+    assert read_json_dict(checkpoint)["counters"]["parsed"] == 99
     assert report.discovered == 2
     assert report.dates_completed == 1
 
@@ -405,7 +403,6 @@ def test_continue_on_error_false_halts_on_first_failed_date(tmp_path: Path) -> N
         end_date=date(2026, 6, 16),
         client=client,
         cache_root=tmp_path,
-        checkpoint_path=checkpoint,
         continue_on_error=False,
     )
 
@@ -578,7 +575,7 @@ def test_blocked_download_aborts_before_date_completion(tmp_path, blocked_stage)
         patch.object(SecClient, "fetch_text", side_effect=SecBlockedError(600))
         if blocked_stage == "index"
         else patch(
-            "insider_scanner.services.sec_downloads.fetch_filing",
+            "insider_scanner.core.sec_ingestion.fetch_filing",
             side_effect=SecBlockedError(600),
         )
     )
@@ -588,7 +585,6 @@ def test_blocked_download_aborts_before_date_completion(tmp_path, blocked_stage)
             end_date=date(2026, 6, 16),
             client=client,
             cache_root=tmp_path / "cache",
-            checkpoint_path=checkpoint,
             on_progress=snapshots.append,
         )
 
@@ -597,11 +593,7 @@ def test_blocked_download_aborts_before_date_completion(tmp_path, blocked_stage)
     assert not checkpoint.exists()
 
 
-def test_blocked_catchup_preserves_previous_coverage_and_checkpoint(
-    persistence, tmp_path
-):
-    import json
-
+def test_blocked_catchup_preserves_previous_coverage_and_ledger(persistence, tmp_path):
     from insider_scanner.core.sec_client import SecBlockedError
     from insider_scanner.persistence.coverage import DateInterval
     from insider_scanner.services.sec_daily import (
@@ -626,13 +618,13 @@ def test_blocked_catchup_preserves_previous_coverage_and_checkpoint(
         persistence,
         client=make_client(transport),
         cache_root=tmp_path / "cache",
-        checkpoint_path=checkpoint,
     )
     with pytest.raises(SecBlockedError):
         service.ingest_range(DAY, NEXT_DAY)
 
-    state = json.loads(checkpoint.read_text(encoding="utf-8"))
-    assert state["completed_dates"] == [DAY.isoformat()]
+    assert not checkpoint.exists()
+    assert persistence.sec_ingestion.is_terminal("0000320193-26-000061")
+    assert persistence.sec_ingestion.is_terminal("0000789019-26-000010")
     assert persistence.coverage.gaps(
         "us", SEC_DAILY_IDENTIFIER, "sec_edgar", DateInterval(DAY, NEXT_DAY)
     ) == (DateInterval(NEXT_DAY, NEXT_DAY),)

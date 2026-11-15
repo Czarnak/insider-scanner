@@ -1,6 +1,6 @@
 """Idempotent SEC daily ingestion: download → map → persist with coverage gating.
 
-Wraps the resumable downloader (:func:`download_filings_in_range`) with a persist
+Wraps the downloader (:func:`download_filings_in_range`) with a persist
 sink and per-date coverage bookkeeping so that re-running the same daily ingest
 does not duplicate records. Each successfully parsed ownership filing is mapped to
 ``InsiderTrade`` rows and upserted; coverage is recorded only for dates that fully
@@ -21,7 +21,6 @@ The persist sink distinguishes two failure classes:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
@@ -34,10 +33,6 @@ from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
 )
-from insider_scanner.core.sec_trade_mapping import (
-    SecTradeMappingError,
-    ownership_filing_to_trades,
-)
 from insider_scanner.persistence.coverage import DateInterval, normalize_intervals
 from insider_scanner.services.common import not_cancelled, validate_range
 from insider_scanner.services.context import PersistenceContext
@@ -48,18 +43,7 @@ from insider_scanner.services.sec_downloads import (
     download_filings_in_range,
     sec_today,
 )
-from insider_scanner.services.sec_persistence import SecTradeBatch
-from insider_scanner.utils.logging import get_logger
-
-_log = get_logger("sec_daily")
-
-_CONTROL_CHARS_RE = re.compile(r"[^\x20-\x7E]")
-
-
-def _safe_for_log(value: str | None) -> str:
-    """Sanitize a string for log output by replacing non-printable ASCII with '?'."""
-    return _CONTROL_CHARS_RE.sub("?", value) if value else ""
-
+from insider_scanner.services.sec_persistence import SecTradeBatch, make_persist_sink
 
 # Sentinel coverage identifier for the SEC daily feed. It cannot collide with a
 # real ticker (no ticker contains the double-underscore sentinel form), so daily
@@ -118,7 +102,6 @@ class SecDailyIngestionService:
         clock: Callable[[], date] | None = None,
         cleanup: bool = True,
         continue_on_error: bool = True,
-        checkpoint_path: Path | None = None,
         batch_filings: int = 200,
         batch_rows: int = 5_000,
     ) -> None:
@@ -129,7 +112,6 @@ class SecDailyIngestionService:
         self._clock = clock or sec_today
         self._cleanup = cleanup
         self._continue_on_error = continue_on_error
-        self._checkpoint_path = checkpoint_path
         if batch_filings < 1 or batch_rows < 1:
             raise ValueError("SEC batch limits must be positive")
         self._batch_filings = batch_filings
@@ -167,12 +149,12 @@ class SecDailyIngestionService:
 
         state = _RunState(
             SecTradeBatch(
-                self._persistence.us_trades.upsert,
+                self._persistence.sec_ingestion.commit,
                 max_filings=self._batch_filings,
                 max_rows=self._batch_rows,
             )
         )
-        sink = self._make_sink(state)
+        sink = make_persist_sink(state.batch)
         progress = _compose_progress(self._make_coverage_recorder(), on_progress)
 
         gaps = self._persistence.coverage.gaps(
@@ -202,8 +184,9 @@ class SecDailyIngestionService:
                 on_date_flush=lambda: tuple(
                     item
                     for item in state.batch.take_outcomes(flush=True)
-                    if not item.complete
+                    if not item.complete and item.stage == "persist"
                 ),
+                on_filing_outcome=state.batch.add_outcome,
             )
             filings_discovered += report.discovered
             filings_parsed += report.parsed
@@ -243,6 +226,7 @@ class SecDailyIngestionService:
         on_progress: Callable[[SecDownloadProgress], None],
         cancelled: Callable[[], bool],
         on_date_flush: Callable[[], tuple[SecFilingOutcome, ...]],
+        on_filing_outcome: Callable[[SecFilingOutcome], None],
     ) -> SecDownloadReport:
         return download_filings_in_range(
             start_date=gap.start,
@@ -252,37 +236,14 @@ class SecDailyIngestionService:
             policy=self._policy,
             cleanup=self._cleanup,
             continue_on_error=self._continue_on_error,
-            checkpoint_path=self._checkpoint_path,
             cancelled=cancelled,
             on_filing_parsed=sink,
             on_progress=on_progress,
             on_date_flush=on_date_flush,
+            should_skip=self._persistence.sec_ingestion.is_terminal,
+            on_filing_outcome=on_filing_outcome,
             clock=self._clock,
         )
-
-    def _make_sink(
-        self, state: _RunState
-    ) -> Callable[[SecMasterIndexRow, OwnershipFiling], None]:
-        """Build the per-run persist sink closure.
-
-        Mapping and persistence failures propagate so the downloader records the
-        accession and leaves its date uncovered for a later retry.
-        """
-
-        def _sink(row: SecMasterIndexRow, filing: OwnershipFiling) -> None:
-            try:
-                trades = ownership_filing_to_trades(filing, row)
-            except SecTradeMappingError as exc:
-                _log.warning(
-                    "SEC daily mapping failed accession=%s reason=%s",
-                    _safe_for_log(filing.accession_number),
-                    type(exc).__name__,
-                )
-                raise
-            accession = row.archive_path.rsplit("/", 1)[-1].removesuffix(".txt")
-            state.batch.add(accession, trades)
-
-        return _sink
 
     def _make_coverage_recorder(
         self,

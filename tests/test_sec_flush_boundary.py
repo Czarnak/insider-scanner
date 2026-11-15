@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from insider_scanner.core.sec_client import SecBlockedError
-from insider_scanner.persistence.json_state import read_json_dict
 from insider_scanner.services.sec_downloads import (
     SecFilingOutcome,
     SecFilingStatus,
@@ -14,7 +13,7 @@ from insider_scanner.services.sec_downloads import (
 from tests.sec_stubs import DAY, StubResponse, make_client, make_transport
 
 
-def test_flush_precedes_checkpoint_and_progress(tmp_path):
+def test_flush_precedes_progress(tmp_path):
     checkpoint = tmp_path / "checkpoint.json"
     pending = []
     committed = []
@@ -29,7 +28,7 @@ def test_flush_precedes_checkpoint_and_progress(tmp_path):
     def progress(snapshot):
         assert len(committed) == 2
         assert not pending
-        assert read_json_dict(checkpoint)["completed_dates"] == [DAY.isoformat()]
+        assert not checkpoint.exists()
         snapshots.append(snapshot)
 
     report = download_filings_in_range(
@@ -37,7 +36,6 @@ def test_flush_precedes_checkpoint_and_progress(tmp_path):
         end_date=DAY,
         client=make_client(make_transport()),
         cache_root=tmp_path / "cache",
-        checkpoint_path=checkpoint,
         on_filing_parsed=lambda row, filing: pending.append(row),
         on_date_flush=flush,
         on_progress=progress,
@@ -65,7 +63,6 @@ def test_flush_failures_keep_date_retryable_and_count_each_filing(tmp_path):
         end_date=DAY,
         client=make_client(make_transport()),
         cache_root=tmp_path / "cache",
-        checkpoint_path=checkpoint,
         on_date_flush=lambda: failures,
         on_progress=snapshots.append,
         continue_on_error=False,
@@ -139,9 +136,9 @@ def test_partial_date_flushes_successes_despite_another_fetch_failure(tmp_path):
 def test_blocked_date_flushes_pending_without_masking_original_exception(
     tmp_path, monkeypatch, caplog, flush_raises
 ):
-    from insider_scanner.services import sec_downloads
+    from insider_scanner.core import sec_ingestion
 
-    original_fetch = sec_downloads.fetch_filing
+    original_fetch = sec_ingestion.fetch_filing
     pending = []
     committed = []
 
@@ -157,7 +154,7 @@ def test_blocked_date_flushes_pending_without_masking_original_exception(
             raise RuntimeError("flush failed with private adapter details")
         return ()
 
-    monkeypatch.setattr(sec_downloads, "fetch_filing", fetch)
+    monkeypatch.setattr(sec_ingestion, "fetch_filing", fetch)
     checkpoint = tmp_path / "checkpoint.json"
     with pytest.raises(SecBlockedError):
         download_filings_in_range(
@@ -165,7 +162,6 @@ def test_blocked_date_flushes_pending_without_masking_original_exception(
             end_date=DAY,
             client=make_client(make_transport()),
             cache_root=tmp_path / "cache",
-            checkpoint_path=checkpoint,
             on_filing_parsed=lambda row, filing: pending.append(row),
             on_date_flush=flush,
         )
