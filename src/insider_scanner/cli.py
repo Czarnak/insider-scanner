@@ -153,13 +153,14 @@ def cmd_latest(args: argparse.Namespace, services: ApplicationServices) -> None:
     if args.save:
         from insider_scanner.core.merger import save_scan_results
 
-        save_scan_results(trades, label="latest_scan")
+        out = save_scan_results(trades, label="latest_scan")
+        print(f"\nResults saved to: {out}")
 
 
 def cmd_resolve_cik(
     args: argparse.Namespace,
     _services: ApplicationServices,
-) -> None:
+) -> int:
     """Resolve a ticker to SEC CIK."""
     from insider_scanner.core.edgar import get_filing_url, resolve_cik
 
@@ -169,8 +170,10 @@ def cmd_resolve_cik(
     if cik:
         print(f"{ticker} → CIK {cik}")
         print(f"EDGAR filings: {get_filing_url(cik)}")
+        return 0
     else:
-        print(f"Could not resolve CIK for {ticker}")
+        print(f"Could not resolve CIK for {ticker}", file=sys.stderr)
+        return 1
 
 
 def cmd_init_congress(
@@ -294,6 +297,8 @@ def cmd_price(
 
     end = args.until or date.today()
     start = args.since or (end - timedelta(days=365))
+    if start > end:
+        raise ValueError("--since must not be after --until")
     engine = services.persistence.engine if services else None
     bars = get_price_history(args.ticker.upper(), start, end, engine=engine)
     if not bars:
@@ -591,6 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         action="append",
         dest="sources",
+        choices=("secform4", "openinsider", "sec_edgar"),
         default=None,
         help=(
             "US source to scan (repeatable). Default before validation approval: "
@@ -601,7 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # latest
     p_latest = sub.add_parser("latest", help="Fetch latest insider trades")
-    p_latest.add_argument("--count", type=int, default=100)
+    p_latest.add_argument("--count", type=_parse_positive_int, default=100)
     p_latest.add_argument("--since", type=_parse_date_arg, default=None)
     p_latest.add_argument("--until", type=_parse_date_arg, default=None)
     p_latest.add_argument("--save", action="store_true")
@@ -614,6 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         action="append",
         dest="sources",
+        choices=("secform4", "openinsider", "sec_edgar"),
         default=None,
         help=(
             "US latest source (repeatable). Default before validation approval: "
@@ -844,6 +851,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_cli_range(args: argparse.Namespace) -> None:
+    """Reject incomplete or reversed scan ranges before opening persistence."""
+    if args.func not in (cmd_scan, cmd_latest, cmd_price):
+        return
+    start = args.since
+    end = args.until
+    if args.func is cmd_price:
+        end = end or date.today()
+        start = start or (end - timedelta(days=365))
+    elif (start is None) != (end is None):
+        raise ValueError("provide both --since and --until")
+    if start is not None and end is not None and start > end:
+        raise ValueError("--since must not be after --until")
+
+
 def run(
     argv: list[str] | None = None,
     *,
@@ -853,6 +875,11 @@ def run(
     setup_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        _validate_cli_range(args)
+    except ValueError as error:
+        print(f"Invalid input: {error}", file=sys.stderr)
+        return 2
     services: ApplicationServices | None = None
     if args.func is cmd_init_congress:
         try:
@@ -877,6 +904,9 @@ def run(
     except SecBlockedError as error:
         print(str(error), file=sys.stderr)
         result = 1
+    except ValueError as error:
+        print(f"Invalid input: {error}", file=sys.stderr)
+        result = 2
     except Exception:
         log.exception("CLI command failed")
         print("Command failed. See logs for details.", file=sys.stderr)
