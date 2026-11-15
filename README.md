@@ -466,6 +466,21 @@ Writes retain `synchronous=FULL` durability and `BEGIN IMMEDIATE` protection for
 read/merge/write operations. Close the persistence context when finished to
 release pooled connections and database files.
 
+The Feed reads bounded pages from each selected market and merges those pages.
+Load More uses a cursor with a fixed insertion snapshot; new scans become visible
+on reload. Corrections to existing rows and changes in amendment visibility can
+still change the results between requests. The header shows the number of loaded
+transactions. Repository callers can request an exact total on the first page;
+continuations skip that count.
+
+Feed freshness uses successful refresh timestamps for the selected markets.
+An empty successful refresh advances freshness; importing historical rows alone
+does not. Text search uses Unicode case folding and a SQLite FTS5 trigram index
+for fragments of at least three normalized characters. Shorter fragments use a
+literal substring scan. The first database open after upgrading creates and
+backfills the search indexes atomically, so that upgrade can take time and disk
+space on a large archive. Trade records and ingestion progress are preserved.
+
 Trade upserts prefetch and write chunks of 300 inputs within one transaction.
 `UpsertResult.errors` identifies rejected rows by their zero-based input index,
 with a diagnostic message; valid rows still commit. Database lock, I/O, or other

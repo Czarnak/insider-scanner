@@ -7,7 +7,14 @@ import webbrowser
 from datetime import datetime
 from functools import partial
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QThreadPool, Signal
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QThreadPool,
+    Signal,
+)
 from PySide6.QtGui import QBrush, QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -29,6 +36,7 @@ from insider_scanner.persistence.errors import is_access_denied
 from insider_scanner.persistence.feed import (
     DEFAULT_PAGE_SIZE,
     FeedCriteria,
+    FeedCursor,
     FeedMarket,
     FeedPage,
     FeedRecord,
@@ -73,7 +81,7 @@ class FeedTableModel(QAbstractTableModel):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._records: tuple[FeedRecord, ...] = ()
+        self._records: list[FeedRecord] = []
         self._palette = get_theme_manager().palette()
         self._mono_font = QFont("JetBrains Mono")
         self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
@@ -124,7 +132,7 @@ class FeedTableModel(QAbstractTableModel):
 
     def replace_records(self, records: tuple[FeedRecord, ...]) -> None:
         self.beginResetModel()
-        self._records = tuple(records)
+        self._records = list(records)
         self.endResetModel()
 
     def append_records(self, records: tuple[FeedRecord, ...]) -> None:
@@ -132,14 +140,14 @@ class FeedTableModel(QAbstractTableModel):
             return
         start = len(self._records)
         self.beginInsertRows(QModelIndex(), start, start + len(records) - 1)
-        self._records = (*self._records, *records)
+        self._records.extend(records)
         self.endInsertRows()
 
     def record_at(self, row: int) -> FeedRecord:
         return self._records[row]
 
     def records(self) -> tuple[FeedRecord, ...]:
-        return self._records
+        return tuple(self._records)
 
     def _on_palette_changed(self, palette) -> None:
         self._palette = palette
@@ -205,6 +213,7 @@ class FeedPageWidget(QWidget):
         self._workers: dict[int, Worker] = {}
         self._criteria: FeedCriteria = initial_criteria or FeedCriteria()
         self._total_count = 0
+        self._next_cursor: FeedCursor | None = None
         self._freshness_text = "Local data unavailable"
         self._build_ui()
         self.filter_panel.set_filters(self._criteria)
@@ -297,10 +306,7 @@ class FeedPageWidget(QWidget):
 
         self.model = FeedTableModel(self)
         self.table = make_feed_table(self.model, "Unified transaction feed")
-        self.table.horizontalHeader().setSortIndicator(
-            6,
-            Qt.SortOrder.DescendingOrder,
-        )
+        self._sync_sort_indicator()
         self.table.doubleClicked.connect(self._open_selected_source)
         self.table.clicked.connect(self._on_row_clicked)
         self.table.selectionModel().selectionChanged.connect(self._on_row_selected)
@@ -345,6 +351,7 @@ class FeedPageWidget(QWidget):
     def set_criteria(self, criteria: FeedCriteria) -> None:
         """Canonical apply path: store, sync UI, emit criteriaChanged, re-query."""
         self._criteria = criteria
+        self._sync_sort_indicator()
         self.filter_panel.set_filters(criteria)
         self.chips.set_criteria(criteria)
         self.criteriaChanged.emit(criteria)
@@ -389,9 +396,10 @@ class FeedPageWidget(QWidget):
 
             from insider_scanner.persistence.feed_state import decode_column_layout
 
-            self.table.horizontalHeader().restoreState(
-                QByteArray(decode_column_layout(text))
-            )
+            header = self.table.horizontalHeader()
+            with QSignalBlocker(header):
+                header.restoreState(QByteArray(decode_column_layout(text)))
+                self._sync_sort_indicator()
         except (ValueError, TypeError, RuntimeError):
             log.warning("Could not restore column layout: corrupt or invalid blob")
 
@@ -432,6 +440,21 @@ class FeedPageWidget(QWidget):
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _sync_sort_indicator(self) -> None:
+        column = next(
+            column
+            for column, field in _SORTABLE_COLUMNS.items()
+            if field == self._criteria.sort_field
+        )
+        header = self.table.horizontalHeader()
+        with QSignalBlocker(header):
+            header.setSortIndicator(
+                column,
+                Qt.SortOrder.DescendingOrder
+                if self._criteria.descending
+                else Qt.SortOrder.AscendingOrder,
+            )
+
     def _clear_chip_key(self, key: str) -> FeedCriteria:
         """Return a new FeedCriteria with the criterion identified by *key* cleared."""
         if key.startswith("market:"):
@@ -462,9 +485,14 @@ class FeedPageWidget(QWidget):
             return
         self._request_id += 1
         request_id = self._request_id
-        offset = self.model.rowCount() if append else 0
+        if not append:
+            self._next_cursor = None
         try:
-            query = self._criteria.to_query(limit=DEFAULT_PAGE_SIZE, offset=offset)
+            query = self._criteria.to_query(
+                limit=DEFAULT_PAGE_SIZE,
+                cursor=self._next_cursor if append else None,
+                include_total=False,
+            )
         except ValueError as exc:
             self._show_state(str(exc))
             return
@@ -493,13 +521,16 @@ class FeedPageWidget(QWidget):
             self.model.append_records(page.records)
         else:
             self.model.replace_records(page.records)
-        self._total_count = page.total_count
-        self.resultCountChanged.emit(page.total_count)
+        self._next_cursor = page.next_cursor
+        self._total_count = (
+            page.total_count if page.total_count is not None else self.model.rowCount()
+        )
+        self.resultCountChanged.emit(self._total_count)
         self._set_freshness(page)
         self.progress.hide()
         self.load_more_button.setEnabled(True)
         self.load_more_button.setVisible(page.has_more)
-        if page.total_count == 0:
+        if self.model.rowCount() == 0:
             message = (
                 "No transactions match your search."
                 if self._criteria.search
@@ -539,7 +570,11 @@ class FeedPageWidget(QWidget):
 
     def _set_freshness(self, page: FeedPage) -> None:
         if page.freshness_at is None:
-            text = "No local data"
+            text = (
+                "Local data has not been refreshed"
+                if self.model.rowCount()
+                else "No local data"
+            )
         else:
             timestamp = self._format_timestamp(page.freshness_at)
             text = f"Local data stale · {timestamp}" if page.is_stale else timestamp
