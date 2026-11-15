@@ -199,30 +199,36 @@ def test_rerun_same_date_is_idempotent_without_redownload(
     assert len(_sec_rows(persistence)) == 2  # no new rows
 
 
-def test_rerun_with_redownload_skips_at_upsert(
+def test_ledger_skips_committed_filings_when_date_coverage_is_missing(
     persistence: PersistenceContext, tmp_path: Path
 ) -> None:
-    """If the same date is re-processed through the sink (coverage absent), the
-    upsert is idempotent and reports skips rather than inserts."""
+    """A lost coverage update re-reads the index without re-fetching committed filings."""
     service = _make_service(
         persistence, tmp_path, make_transport(index_text=INDEX_TWO_ROWS)
     )
     service.ingest_date(DAY)
     assert len(_sec_rows(persistence)) == 2
 
-    # Wipe coverage to force a second full pass through download + sink.
+    # Simulate interruption between the filing commit and coverage bookkeeping.
     from sqlalchemy import text
 
     with persistence.engine.begin() as connection:
         connection.execute(text("DELETE FROM scan_coverage"))
 
+    fetched = []
     second = _make_service(
-        persistence, tmp_path, make_transport(index_text=INDEX_TWO_ROWS)
+        persistence,
+        tmp_path,
+        make_transport(index_text=INDEX_TWO_ROWS, fetched=fetched),
     )
     summary = second.ingest_date(DAY)
 
+    assert len(fetched) == 1
+    assert fetched[0].endswith("master.20260615.idx")
+    assert summary.filings_parsed == 0
+    assert summary.dates_completed == 1
     assert summary.transactions_inserted == 0
-    assert summary.transactions_skipped == 2
+    assert summary.transactions_skipped == 0
     assert len(_sec_rows(persistence)) == 2  # still idempotent
 
 
@@ -394,12 +400,12 @@ def test_persistence_error_in_sink_leaves_date_uncovered_then_recovers(
     The date is left uncovered, ``failures`` reflects it, and a subsequent run
     with a working upsert completes and covers the date.
     """
-    original_upsert = persistence.us_trades.upsert
+    original_upsert = persistence.sec_ingestion.commit
 
     def failing_upsert(trades: object) -> object:
         raise PersistenceError("simulated transient DB failure")
 
-    monkeypatch.setattr(persistence.us_trades, "upsert", failing_upsert)
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", failing_upsert)
 
     service = _make_service(
         persistence, tmp_path, make_transport(index_text=INDEX_TWO_ROWS)
@@ -413,7 +419,7 @@ def test_persistence_error_in_sink_leaves_date_uncovered_then_recovers(
     assert summary.dates_completed == 0
 
     # Restore the working upsert and re-run: the date now completes and is covered.
-    monkeypatch.setattr(persistence.us_trades, "upsert", original_upsert)
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", original_upsert)
     recovery = _make_service(
         persistence, tmp_path, make_transport(index_text=INDEX_TWO_ROWS)
     )
@@ -438,7 +444,7 @@ def test_mapping_error_leaves_date_uncovered_for_repaired_mapper(
         raise SecTradeMappingError("malformed filing")
 
     monkeypatch.setattr(
-        "insider_scanner.services.sec_daily.ownership_filing_to_trades",
+        "insider_scanner.services.sec_persistence.ownership_filing_to_trades",
         mapping_raises,
     )
 
@@ -610,3 +616,106 @@ def test_failing_user_callback_does_not_lose_already_recorded_coverage(
     # Coverage was recorded before the failing callback ran, so it survives.
     covered = _coverage(persistence)
     assert any(i.start <= DAY <= i.end for i in covered)  # type: ignore[attr-defined]
+
+
+def test_partial_date_retry_fetches_only_failed_accession(persistence, tmp_path):
+    from insider_scanner.core.sec_ingestion import SecFilingStatus
+    from tests.sec_stubs import StubResponse
+
+    first_accession = "0000320193-26-000061"
+    failed_accession = "0000789019-26-000010"
+    transport = make_transport(index_text=INDEX_TWO_ROWS)
+    original_get = transport.get.side_effect
+    transport.get.side_effect = lambda url, **kwargs: (
+        StubResponse(status_code=503)
+        if "/789019/" in url
+        else original_get(url, **kwargs)
+    )
+    first = _make_service(persistence, tmp_path, transport).ingest_date(DAY)
+    assert first.failures == first.transactions_inserted == 1
+    assert first.dates_completed == 0
+    assert (
+        persistence.sec_ingestion.get(first_accession).status is SecFilingStatus.SUCCESS
+    )
+    assert (
+        persistence.sec_ingestion.get(failed_accession).status
+        is SecFilingStatus.RETRYABLE_FAILURE
+    )
+    assert persistence.sec_ingestion.get(failed_accession).attempts == 1
+
+    fetched = []
+    second = _make_service(
+        persistence,
+        tmp_path,
+        make_transport(index_text=INDEX_TWO_ROWS, fetched=fetched),
+    ).ingest_date(DAY)
+    assert second.filings_discovered == 2
+    assert (
+        second.filings_parsed
+        == second.transactions_inserted
+        == second.dates_completed
+        == 1
+    )
+    assert second.failures == 0
+    assert len(fetched) == 2  # index and the previously failed filing
+    assert all(first_accession not in url for url in fetched)
+    assert persistence.sec_ingestion.get(first_accession).attempts == 1
+    assert persistence.sec_ingestion.get(failed_accession).attempts == 2
+    assert persistence.sec_ingestion.is_terminal(failed_accession)
+
+
+def test_blocked_filing_flushes_success_and_records_retry(persistence, tmp_path):
+    from insider_scanner.core.sec_client import SecBlockedError
+    from insider_scanner.core.sec_ingestion import SecFilingStatus
+    from tests.sec_stubs import StubResponse
+
+    transport = make_transport(index_text=INDEX_TWO_ROWS)
+    original_get = transport.get.side_effect
+    transport.get.side_effect = lambda url, **kwargs: (
+        StubResponse(status_code=403)
+        if "/789019/" in url
+        else original_get(url, **kwargs)
+    )
+    with pytest.raises(SecBlockedError):
+        _make_service(persistence, tmp_path, transport).ingest_date(DAY)
+
+    assert len(_sec_rows(persistence)) == 1
+    assert _coverage(persistence) == ()
+    assert persistence.sec_ingestion.is_terminal("0000320193-26-000061")
+    failure = persistence.sec_ingestion.get("0000789019-26-000010")
+    assert failure.status is SecFilingStatus.RETRYABLE_FAILURE
+    assert failure.attempts == 1
+    assert failure.reason == "SecBlockedError"
+
+
+def test_failed_terminal_outcome_commit_keeps_date_uncovered(
+    persistence, tmp_path, monkeypatch
+):
+    legacy = (
+        b"<SEC-DOCUMENT>\n<DOCUMENT>\n<TYPE>4\n<TEXT>Paper filing</TEXT>\n</DOCUMENT>"
+    )
+    original_commit = persistence.sec_ingestion.commit
+
+    def fail(entries):
+        raise PersistenceError("database is locked")
+
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", fail)
+    first = _make_service(
+        persistence,
+        tmp_path,
+        make_transport(index_text=INDEX_ONE_ROW, filing_bytes=legacy),
+    ).ingest_date(DAY)
+    assert first.unsupported == first.failures == 1
+    assert first.dates_completed == 0
+    assert _coverage(persistence) == ()
+    assert persistence.sec_ingestion.get("0000320193-26-000061") is None
+
+    monkeypatch.setattr(persistence.sec_ingestion, "commit", original_commit)
+    second = _make_service(
+        persistence,
+        tmp_path,
+        make_transport(index_text=INDEX_ONE_ROW, filing_bytes=legacy),
+    ).ingest_date(DAY)
+    assert second.failures == 0
+    assert second.unsupported == second.dates_completed == 1
+    assert persistence.sec_ingestion.is_terminal("0000320193-26-000061")

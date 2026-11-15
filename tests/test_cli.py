@@ -558,7 +558,17 @@ def test_sec_summary_reports_unsupported_separately_from_failures(
         from insider_scanner.services.sec_backfill import SecBackfillSummary
 
         cli._print_backfill_summary(
-            SecBackfillSummary(4, 2, 2, 0, 0, 0, 0, 0, unsupported=unsupported)
+            SecBackfillSummary(
+                filings_discovered=4,
+                filings_parsed=2,
+                transactions_inserted=2,
+                transactions_updated=0,
+                transactions_skipped=0,
+                skipped_resume=0,
+                skipped_metadata=0,
+                failures=0,
+                unsupported=unsupported,
+            )
         )
 
     out = capsys.readouterr().out
@@ -592,7 +602,7 @@ class TestCmdSecDaily:
         make_kwargs = seen["make"]
         assert make_kwargs["cleanup"] is True  # type: ignore[index]
         assert make_kwargs["cache_root"] == Path("cache")  # type: ignore[index]
-        assert make_kwargs["checkpoint_path"] is None  # type: ignore[index]
+        assert "checkpoint_path" not in make_kwargs  # type: ignore[index]
         assert "SEC ingestion" in capsys.readouterr().out
 
     def test_no_cleanup_flag_disables_cleanup(self, monkeypatch):
@@ -639,12 +649,9 @@ class TestCmdSecDaily:
 
 
 class TestCmdSecCatchup:
-    def test_passes_inclusive_range_and_checkpoint(self, monkeypatch, capsys):
+    def test_passes_inclusive_range_without_checkpoint(self, monkeypatch, capsys):
         monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
-        monkeypatch.setattr(
-            cli, "_sec_checkpoint_path", lambda: Path("cache/ckpt.json")
-        )
         seen: dict[str, object] = {}
 
         class FakeService:
@@ -670,7 +677,7 @@ class TestCmdSecCatchup:
         assert code == 0
         assert seen["range"] == (date(2026, 6, 1), date(2026, 6, 3))
         assert seen["make"]["cleanup"] is False  # type: ignore[index]
-        assert seen["make"]["checkpoint_path"] == Path("cache/ckpt.json")  # type: ignore[index]
+        assert "checkpoint_path" not in seen["make"]  # type: ignore[index]
         assert "SEC ingestion" in capsys.readouterr().out
 
     def test_invalid_range_is_rejected_before_building_client(
@@ -738,9 +745,6 @@ class TestCmdSecBackfill:
     def test_dispatches_service_and_prints_summary(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
         monkeypatch.setattr(cli, "_sec_cache_root", lambda: Path("cache"))
-        monkeypatch.setattr(
-            cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf_ckpt.json")
-        )
         zip_path = tmp_path / "submissions.zip"
         zip_path.touch()
         seen: dict[str, object] = {}
@@ -750,7 +754,16 @@ class TestCmdSecBackfill:
                 seen["run"] = {"zip_path": zp, "confirm": confirm, "ciks": ciks}
                 from insider_scanner.services.sec_backfill import SecBackfillSummary
 
-                return SecBackfillSummary(10, 8, 5, 1, 2, 1, 0, 0)
+                return SecBackfillSummary(
+                    filings_discovered=10,
+                    filings_parsed=8,
+                    transactions_inserted=5,
+                    transactions_updated=1,
+                    transactions_skipped=2,
+                    skipped_resume=1,
+                    skipped_metadata=0,
+                    failures=0,
+                )
 
         class FakeServices:
             def make_sec_backfill(self, **kwargs):
@@ -775,23 +788,14 @@ class TestCmdSecBackfill:
         assert seen["run"]["ciks"] == frozenset({"0000320193"})
         assert seen["make"]["cleanup"] is True
         out = capsys.readouterr().out
-        assert "discovered=10" in out
-
-
-def test_sec_backfill_requires_confirmation(capsys, monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
-
-    class _FakeServices:
-        def close(self):
-            pass
-
-    rc = cli.run(
-        ["sec-backfill", "--zip", str(tmp_path / "submissions.zip")],
-        service_factory=_FakeServices,
-    )
-    out = capsys.readouterr()
-    assert rc == 2
-    assert cli.SEC_BULK_SUBMISSIONS_URL in (out.out + out.err)
+        assert out == (
+            f"Starting full bulk backfill from {zip_path} (resumable).\n"
+            "SEC backfill: discovered=10 parsed=8 unsupported=0\n"
+            "  transactions: inserted=5 updated=1 skipped=2\n"
+            "  skipped:      resume=1 metadata=0\n"
+            "  failures:     0\n"
+        )
+        assert "checkpoint_path" not in seen["make"]
 
 
 def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
@@ -804,7 +808,16 @@ def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
             captured.update(zip_path=zp, confirm=confirm, ciks=ciks)
             from insider_scanner.services.sec_backfill import SecBackfillSummary
 
-            return SecBackfillSummary(2, 2, 2, 0, 0, 0, 0, 0)
+            return SecBackfillSummary(
+                filings_discovered=2,
+                filings_parsed=2,
+                transactions_inserted=2,
+                transactions_updated=0,
+                transactions_skipped=0,
+                skipped_resume=0,
+                skipped_metadata=0,
+                failures=0,
+            )
 
     class _FakeServices:
         def make_sec_backfill(self, **kw):
@@ -814,9 +827,6 @@ def test_sec_backfill_dispatches_with_confirm(monkeypatch, tmp_path):
             pass
 
     monkeypatch.setattr(cli, "_build_sec_client", lambda: Mock())
-    monkeypatch.setattr(
-        cli, "_sec_backfill_checkpoint_path", lambda: Path("cache/bf.json")
-    )
 
     rc = cli.run(
         [

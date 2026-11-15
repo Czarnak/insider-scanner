@@ -271,50 +271,57 @@ def _upsert_batches(
     before replaying individual rows, so counters and merge state stay accurate.
     Operational failures escape and roll back the entire outer transaction.
     """
-    inputs = enumerate(trades)
-    result = UpsertResult()
     try:
         with immediate_transaction(engine) as connection:
-            while batch := list(islice(inputs, UPSERT_BATCH_SIZE)):
+            return _upsert_in_connection(connection, trades, policy)
+    except SQLAlchemyError as error:
+        raise _wrap(operation, error) from error
+
+
+def _upsert_in_connection(
+    connection: Connection, trades: Iterable[Any], policy: _BatchPolicy
+) -> UpsertResult:
+    """Reuse row isolation inside the caller's transaction without committing it."""
+    inputs = enumerate(trades)
+    result = UpsertResult()
+    while batch := list(islice(inputs, UPSERT_BATCH_SIZE)):
+        try:
+            with connection.begin_nested():
+                batch_result = _write_batch(connection, policy, batch)
+        except (
+            SQLAlchemyError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            OverflowError,
+        ) as error:
+            if not _row_error(error):
+                raise
+            batch_result = UpsertResult()
+            for item in batch:
                 try:
                     with connection.begin_nested():
-                        batch_result = _write_batch(connection, policy, batch)
+                        row_result = _write_batch(connection, policy, [item])
                 except (
                     SQLAlchemyError,
                     TypeError,
                     ValueError,
                     AttributeError,
                     OverflowError,
-                ) as error:
-                    if not _row_error(error):
+                ) as row_error:
+                    if not _row_error(row_error):
                         raise
-                    batch_result = UpsertResult()
-                    for item in batch:
-                        try:
-                            with connection.begin_nested():
-                                row_result = _write_batch(connection, policy, [item])
-                        except (
-                            SQLAlchemyError,
-                            TypeError,
-                            ValueError,
-                            AttributeError,
-                            OverflowError,
-                        ) as row_error:
-                            if not _row_error(row_error):
-                                raise
-                            cause = getattr(row_error, "orig", row_error)
-                            row_result = UpsertResult(
-                                errors=(
-                                    UpsertRowError(
-                                        index=item[0],
-                                        message=f"{type(cause).__name__}: {cause}",
-                                    ),
-                                )
-                            )
-                        batch_result += row_result
-                result += batch_result
-    except SQLAlchemyError as error:
-        raise _wrap(operation, error) from error
+                    cause = getattr(row_error, "orig", row_error)
+                    row_result = UpsertResult(
+                        errors=(
+                            UpsertRowError(
+                                index=item[0],
+                                message=f"{type(cause).__name__}: {cause}",
+                            ),
+                        )
+                    )
+                batch_result += row_result
+        result += batch_result
     return result
 
 
@@ -330,6 +337,18 @@ class UsTradeRepository:
                 us_trades, us_to_values, us_from_row, merge_trade_pair, us_provenance
             ),
             "US trade upsert",
+        )
+
+    def upsert_in_connection(
+        self, connection: Connection, trades: Iterable[InsiderTrade]
+    ) -> UpsertResult:
+        """Write on an existing transaction owned and committed by the caller."""
+        return _upsert_in_connection(
+            connection,
+            trades,
+            _BatchPolicy(
+                us_trades, us_to_values, us_from_row, merge_trade_pair, us_provenance
+            ),
         )
 
     def query(

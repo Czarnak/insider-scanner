@@ -40,6 +40,7 @@ EXPECTED_TABLES = {
     "scan_coverage",
     "refresh_state",
     "price_history",
+    "sec_ingested_filings",
 }
 
 EXPECTED_UNIQUE_CONSTRAINTS = {

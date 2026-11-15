@@ -43,7 +43,6 @@ class ApplicationServices:
         policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
         cleanup: bool = True,
         continue_on_error: bool = True,
-        checkpoint_path: Path | None = None,
     ) -> SecDailyIngestionService:
         """Lazily construct a daily SEC ingestion service.
 
@@ -58,7 +57,6 @@ class ApplicationServices:
             policy=policy,
             cleanup=cleanup,
             continue_on_error=continue_on_error,
-            checkpoint_path=checkpoint_path,
         )
 
     def make_sec_comparison(self) -> SecComparisonService:
@@ -72,7 +70,6 @@ class ApplicationServices:
         cache_root: Path,
         policy: SecSecurityPolicy = DEFAULT_SEC_SECURITY_POLICY,
         cleanup: bool = True,
-        checkpoint_path: Path | None = None,
     ) -> SecBackfillService:
         """Lazily construct a full bulk backfill service (CLI/GUI supplies the client)."""
         return SecBackfillService(
@@ -81,7 +78,6 @@ class ApplicationServices:
             cache_root=cache_root,
             policy=policy,
             cleanup=cleanup,
-            checkpoint_path=checkpoint_path,
         )
 
 

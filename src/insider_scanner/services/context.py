@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy.engine import Engine
@@ -16,6 +16,7 @@ from insider_scanner.persistence.repositories import (
     EuropeanTradeRepository,
     UsTradeRepository,
 )
+from insider_scanner.persistence.sec_ingestion import SecIngestionRepository
 from insider_scanner.utils.config import DATABASE_FILE
 
 
@@ -27,6 +28,10 @@ class PersistenceContext:
     european_trades: EuropeanTradeRepository
     coverage: CoverageRepository
     refresh: RefreshStateRepository
+    sec_ingestion: SecIngestionRepository = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sec_ingestion", SecIngestionRepository(self.engine))
 
     def close(self) -> None:
         self.engine.dispose()

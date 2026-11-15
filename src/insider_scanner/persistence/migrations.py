@@ -22,6 +22,7 @@ from insider_scanner.persistence.schema import (
     congress_trades,
     refresh_state,
     scan_coverage,
+    sec_ingested_filings,
     us_trades,
     v1_metadata,
 )
@@ -268,6 +269,11 @@ def _remove_duplicate_indexes(connection: Connection) -> None:
     connection.exec_driver_sql("DROP INDEX IF EXISTS ix_price_history_symbol_date")
 
 
+def _add_sec_ingestion_ledger(connection: Connection) -> None:
+    """Add independent resume records without trusting legacy JSON claims."""
+    sec_ingested_filings.create(connection)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -308,5 +314,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=8,
         name="remove_duplicate_indexes",
         upgrade=_remove_duplicate_indexes,
+    ),
+    Migration(
+        version=9,
+        name="add_sec_ingestion_ledger",
+        upgrade=_add_sec_ingestion_ledger,
     ),
 )

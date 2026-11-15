@@ -347,20 +347,6 @@ def _sec_cache_root() -> Path:
     return EDGAR_CACHE_DIR
 
 
-def _sec_checkpoint_path() -> Path:
-    """Stable checkpoint file under the cache dir for resumable catch-up runs."""
-    from insider_scanner.utils.config import EDGAR_CACHE_DIR
-
-    return EDGAR_CACHE_DIR / "sec_catchup_checkpoint.json"
-
-
-def _sec_backfill_checkpoint_path() -> Path:
-    """Stable checkpoint file under the cache dir for resumable full-backfill runs."""
-    from insider_scanner.utils.config import EDGAR_CACHE_DIR
-
-    return EDGAR_CACHE_DIR / "sec_backfill_checkpoint.json"
-
-
 def _make_cli_progress(
     quiet: bool,
 ) -> Callable[[SecDownloadProgress], None] | None:
@@ -470,7 +456,6 @@ def cmd_sec_daily(args: argparse.Namespace, services: ApplicationServices) -> in
             client=client,
             cache_root=_sec_cache_root(),
             cleanup=not args.no_cleanup,
-            checkpoint_path=None,
         )
         summary = service.ingest_date(day, on_progress=_make_cli_progress(args.quiet))
         _print_sec_summary(summary)
@@ -496,7 +481,6 @@ def cmd_sec_catchup(args: argparse.Namespace, services: ApplicationServices) -> 
             client=client,
             cache_root=_sec_cache_root(),
             cleanup=not args.no_cleanup,
-            checkpoint_path=_sec_checkpoint_path(),
         )
         summary = service.ingest_range(
             args.since, args.until, on_progress=_make_cli_progress(args.quiet)
@@ -551,7 +535,6 @@ def cmd_sec_backfill(args: argparse.Namespace, services: ApplicationServices) ->
             client=client,
             cache_root=_sec_cache_root(),
             cleanup=not args.no_cleanup,
-            checkpoint_path=_sec_backfill_checkpoint_path(),
         )
         print(f"Starting full bulk backfill from {zip_path} (resumable).")
         summary = service.run(zip_path, confirm=True, ciks=ciks)
