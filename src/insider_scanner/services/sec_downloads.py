@@ -25,6 +25,7 @@ from insider_scanner.core.sec_ingestion import (
     SecFilingOutcome,
     SecFilingStatus,
     _accession_from_path,
+    _failure_reason,
     _log_recoverable_level,
     new_counters,
     process_filing_row,
@@ -257,7 +258,10 @@ def _process_date(
         if outcomes is not None:
             outcomes.append(
                 SecFilingOutcome(
-                    None, SecFilingStatus.RETRYABLE_FAILURE, "index", type(exc).__name__
+                    None,
+                    SecFilingStatus.RETRYABLE_FAILURE,
+                    "index",
+                    _failure_reason(exc),
                 )
             )
         return False

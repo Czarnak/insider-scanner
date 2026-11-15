@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from time import monotonic
 
 from insider_scanner.core.sec_bulk import (
     SecBulkError,
@@ -49,6 +50,13 @@ class SecBackfillSummary:
     parsed but then failed to persist is counted in both ``filings_parsed`` and
     ``failures``; ``skipped_resume``/``skipped_metadata`` count filings that were
     never fetched. Treat each counter independently, not as a sum.
+
+    Live snapshots include observed parses before their batch commits.
+    ``filings_committed`` counts successful filings whose batches committed;
+    transaction counts also include only committed writes. ``members_completed``
+    is the cumulative durable archive position, excluding retry members, across
+    resumes. Filing counters and elapsed time describe this invocation. The ETA
+    uses completed archive members, whose sizes can vary considerably.
     """
 
     filings_discovered: int
@@ -65,6 +73,12 @@ class SecBackfillSummary:
     discovered_rows: int = 0
     duplicates: int = 0
     skipped_members: int = 0
+    elapsed_seconds: float = 0.0
+    filings_per_second: float = 0.0
+    members_total: int = 0
+    members_completed: int = 0
+    eta_seconds: float | None = None
+    filings_committed: int = 0
 
 
 class SecBackfillService:
@@ -105,8 +119,17 @@ class SecBackfillService:
             )
 
         counters = new_counters()
+        started = monotonic()
         ledger = self._persistence.sec_ingestion
-        archive_id = bulk_archive_fingerprint(zip_path, policy=self._policy)
+        members_total = 0
+
+        def count_members(count: int) -> None:
+            nonlocal members_total
+            members_total = count
+
+        archive_id = bulk_archive_fingerprint(
+            zip_path, policy=self._policy, on_members=count_members
+        )
         scope = (
             "full"
             if ciks is None
@@ -133,8 +156,31 @@ class SecBackfillService:
         completed_members: list[int] = []
         retry_members: set[int] = set()
         accession_members: dict[str | None, int] = {}
+        next_member = position.next_member
+        durable_retries = set(position.retry_members)
+        initial_completed = next_member - len(durable_retries)
+        members_visited = 0
+        last_progress_time = started
+        last_progress_units = 0
+        filings_committed = 0
 
-        def snapshot() -> SecBackfillSummary:
+        def cancellation_requested() -> bool:
+            nonlocal interrupted
+            interrupted = interrupted or cancelled()
+            return interrupted
+
+        def snapshot(*, final: bool = False) -> SecBackfillSummary:
+            elapsed = max(0.0, monotonic() - started)
+            members_completed = next_member - len(durable_retries)
+            newly_completed = members_completed - initial_completed
+            remaining = max(0, members_total - members_completed)
+            eta = (
+                0.0
+                if remaining == 0
+                else remaining * elapsed / newly_completed
+                if newly_completed > 0
+                else None
+            )
             return SecBackfillSummary(
                 filings_discovered=discovered,
                 filings_parsed=counters["parsed"],
@@ -145,16 +191,44 @@ class SecBackfillService:
                 skipped_metadata=skipped_metadata,
                 failures=counters["failed"],
                 unsupported=counters["unsupported"],
-                outcomes=tuple(outcomes),
+                # The complete outcome list belongs to the final report. Do
+                # not copy a growing failure list into every live snapshot.
+                outcomes=tuple(outcomes) if final else (),
                 cancelled=interrupted,
                 discovered_rows=discovered_rows,
                 duplicates=duplicates,
                 skipped_members=skipped_members,
+                elapsed_seconds=elapsed,
+                filings_per_second=(len(attempted) - skipped_resume) / elapsed
+                if elapsed > 0
+                else 0.0,
+                members_total=members_total,
+                members_completed=members_completed,
+                eta_seconds=eta,
+                filings_committed=filings_committed,
             )
 
+        def emit_progress(*, force: bool = False) -> None:
+            nonlocal last_progress_time, last_progress_units
+            if on_progress is None:
+                return
+            now = monotonic()
+            units = discovered_rows + members_visited
+            if (
+                force
+                or units - last_progress_units >= 100
+                or now - last_progress_time >= 2.0
+            ):
+                on_progress(snapshot())
+                last_progress_time = now
+                last_progress_units = units
+
         def record_committed(*, flush: bool = False, emit: bool = True) -> None:
+            nonlocal filings_committed
             committed = batch.take_outcomes(flush=flush)
             for item in committed:
+                if item.status is SecFilingStatus.SUCCESS:
+                    filings_committed += 1
                 if not item.complete and item.accession in accession_members:
                     retry_members.add(accession_members[item.accession])
                 if item.stage == "persist" and not item.complete:
@@ -162,10 +236,11 @@ class SecBackfillService:
                     if item.accession not in failed_accessions:
                         counters["failed"] += 1
                         failed_accessions.add(item.accession)
-            if committed and emit and on_progress is not None:
-                on_progress(snapshot())
+            if committed and emit:
+                emit_progress(force=True)
 
         def checkpoint_members() -> None:
+            nonlocal next_member
             if not completed_members:
                 return
             record_committed(flush=True, emit=False)
@@ -173,6 +248,11 @@ class SecBackfillService:
                 archive_id,
                 scope,
                 [(index, index in retry_members) for index in completed_members],
+            )
+            next_member = max(next_member, max(completed_members) + 1)
+            durable_retries.difference_update(completed_members)
+            durable_retries.update(
+                index for index in completed_members if index in retry_members
             )
             completed_members.clear()
             retry_members.clear()
@@ -185,10 +265,13 @@ class SecBackfillService:
             _log.warning("SEC bulk member skipped index=%d reason=%s", index, reason)
 
         def member_complete(index: int) -> None:
+            nonlocal members_visited
+            members_visited += 1
             completed_members.append(index)
             # Bound replay and write cost even for members with no filings.
             if len(completed_members) >= self._batch_filings:
                 checkpoint_members()
+            emit_progress()
 
         gen = iter_ownership_filings(
             zip_path,
@@ -198,11 +281,11 @@ class SecBackfillService:
             retry_members=position.retry_members,
             on_member_error=member_error,
             on_member_complete=member_complete,
+            cancelled=cancellation_requested,
         )
         try:
             for meta in gen:
-                if cancelled():
-                    interrupted = True
+                if cancellation_requested():
                     break
                 discovered_rows += 1
                 accession = meta.accession_number
@@ -212,15 +295,18 @@ class SecBackfillService:
                     seen.add(accession)
                     discovered += 1
                 if accession in attempted:
+                    emit_progress()
                     continue
                 if ledger.is_terminal(accession):
                     attempted.add(accession)
                     skipped_resume += 1
+                    emit_progress()
                     continue
                 try:
                     row = bulk_metadata_to_index_row(meta)
                 except SecBulkError:
                     skipped_metadata += 1
+                    emit_progress()
                     continue
                 attempted.add(accession)
                 if meta.member_index is not None:
@@ -253,6 +339,7 @@ class SecBackfillService:
                     if not outcome.complete and meta.member_index is not None:
                         retry_members.add(meta.member_index)
                 record_committed()
+                emit_progress()
         except BaseException:
             # Preserve the abort even if a final flush or callback also fails.
             try:
@@ -268,7 +355,7 @@ class SecBackfillService:
         record_committed(flush=True, emit=False)
         checkpoint_members()
 
-        summary = snapshot()
+        summary = snapshot(final=True)
         if on_progress is not None:
             on_progress(summary)
         return summary

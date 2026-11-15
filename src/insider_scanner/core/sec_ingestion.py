@@ -14,8 +14,10 @@ from insider_scanner.core.sec_client import (
     SecClient,
     SecClientError,
     SecClientSecurityError,
+    SecDecodeError,
     SecFilingNotFoundError,
     SecHttpError,
+    SecTransportError,
 )
 from insider_scanner.core.sec_downloader import (
     PendingSecFiling,
@@ -103,15 +105,24 @@ def process_filing_row(
     accession = _accession_from_path(row.archive_path)
     try:
         pending = fetch_filing(row, client=client, cache_root=cache_root, cache=cache)
-    except SecBlockedError:
+    except SecBlockedError as exc:
+        _log_recoverable_level(
+            "SEC filing failed stage=fetch cik=%s reason=%s",
+            row.cik,
+            exc,
+            accession=accession,
+        )
         raise
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
-            "SEC filing failed stage=fetch cik=%s reason=%s", row.cik, exc
+            "SEC filing failed stage=fetch cik=%s reason=%s",
+            row.cik,
+            exc,
+            accession=accession,
         )
         return SecFilingOutcome(
-            accession, _fetch_failure_status(exc), "fetch", type(exc).__name__
+            accession, _fetch_failure_status(exc), "fetch", _failure_reason(exc)
         )
 
     if pending.from_cache:
@@ -139,7 +150,10 @@ def process_filing_row(
     except _RECOVERABLE as exc:
         counters["failed"] += 1
         _log_recoverable_level(
-            "SEC filing failed stage=parse cik=%s reason=%s", row.cik, exc
+            "SEC filing failed stage=parse cik=%s reason=%s",
+            row.cik,
+            exc,
+            accession=accession,
         )
         _maybe_quarantine(
             pending, cache_root=cache_root, enabled=retain_failed_downloads and cache
@@ -157,7 +171,10 @@ def process_filing_row(
         except (*_RECOVERABLE, PersistenceError, SecTradeMappingError) as exc:
             counters["failed"] += 1
             _log_recoverable_level(
-                "SEC filing failed stage=persist cik=%s reason=%s", row.cik, exc
+                "SEC filing failed stage=persist cik=%s reason=%s",
+                row.cik,
+                exc,
+                accession=accession,
             )
             stage = "mapping" if isinstance(exc, SecTradeMappingError) else "persist"
             return SecFilingOutcome(
@@ -190,18 +207,45 @@ def _fetch_failure_status(exc: Exception) -> SecFilingStatus:
     return SecFilingStatus.RETRYABLE_FAILURE
 
 
-def _log_recoverable_level(message: str, identifier: str, exc: Exception) -> None:
+def _failure_reason(exc: Exception) -> str:
+    """Keep structured request context without arbitrary exception text."""
+    parts = [type(exc).__name__]
+    if isinstance(exc, SecHttpError):
+        parts.append(f"http_status={exc.status_code}")
+    if isinstance(
+        exc, (SecHttpError, SecTransportError, SecDecodeError, SecClientSecurityError)
+    ):
+        # The SEC client sanitizes these labels at exception construction.
+        parts.append(f"url={exc.url}")
+    if isinstance(exc, SecBlockedError):
+        parts.append(f"retry_after_seconds={exc.retry_after_seconds:g}")
+    return " ".join(parts)
+
+
+def _log_recoverable_level(
+    message: str,
+    identifier: str,
+    exc: Exception,
+    *,
+    accession: str | None = None,
+) -> None:
     """Log a recoverable failure, escalating security-policy violations to ERROR.
 
     A :class:`SecClientSecurityError` (blocked host, disallowed redirect,
     content-type or size violation) is not normal for a legitimate SEC archive
     path, so it is surfaced at ERROR even though the batch continues.
     """
-    reason = type(exc).__name__
-    if isinstance(exc, SecClientSecurityError):
-        _log.error(message, identifier, reason)
+    reason = _failure_reason(exc)
+    args: tuple[str, ...]
+    if accession is not None:
+        message += " accession=%s"
+        args = (identifier, reason, accession)
     else:
-        _log.warning(message, identifier, reason)
+        args = (identifier, reason)
+    if isinstance(exc, SecClientSecurityError):
+        _log.error(message, *args)
+    else:
+        _log.warning(message, *args)
 
 
 def _maybe_quarantine(
