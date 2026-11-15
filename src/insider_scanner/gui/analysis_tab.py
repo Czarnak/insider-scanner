@@ -16,47 +16,50 @@ from PySide6.QtWidgets import (
 )
 
 from insider_scanner.core.models import CongressTrade, InsiderTrade
-from insider_scanner.core.prices import get_price_history
 from insider_scanner.core.prices.model import PriceBar
 from insider_scanner.gui.price_chart import PriceChartWidget
+from insider_scanner.services.application import ApplicationServices
+from insider_scanner.services.context import PersistenceContext
 from insider_scanner.utils.config import load_watchlist
 from insider_scanner.utils.threading import Worker
 
 
 def load_trades_for_ticker(
-    ticker: str, start: date, end: date
+    ticker: str, start: date, end: date, *, persistence: PersistenceContext
 ) -> list[InsiderTrade | CongressTrade]:
-    """Load stored insider trades for a US ticker from the Phase 1 DB."""
-    from insider_scanner.services.context import open_persistence
-
-    normalized_ticker = ticker.upper()
-    ctx = open_persistence()
-    try:
-        us_trades = ctx.us_trades.query(
-            ticker=normalized_ticker,
-            trade_start_date=start,
-            trade_end_date=end,
-        )
-        congress_trades = ctx.congress_trades.query(
-            trade_start_date=start,
-            trade_end_date=end,
-        )
-        return [
-            trade
-            for trade in [*us_trades, *congress_trades]
-            if trade.ticker == normalized_ticker
-            and trade.trade_date is not None
-            and start <= trade.trade_date <= end
-        ]
-    finally:
-        ctx.close()
+    """Load ticker-filtered overlay trades using shared application persistence."""
+    normalized_ticker = ticker.strip().upper()
+    us_trades = persistence.us_trades.query(
+        ticker=normalized_ticker,
+        trade_start_date=start,
+        trade_end_date=end,
+    )
+    congress_trades = persistence.congress_trades.query(
+        ticker=normalized_ticker,
+        trade_start_date=start,
+        trade_end_date=end,
+    )
+    return [
+        trade
+        for trade in [*us_trades, *congress_trades]
+        if trade.ticker == normalized_ticker
+        and trade.trade_date is not None
+        and start <= trade.trade_date <= end
+    ]
 
 
 class AnalysisTab(QWidget):
     """Pick a US ticker -> price line + insider markers from local data."""
 
-    def __init__(self, parent=None, *, thread_pool: QThreadPool | None = None) -> None:
+    def __init__(
+        self,
+        services: ApplicationServices | None = None,
+        parent=None,
+        *,
+        thread_pool: QThreadPool | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._services = services
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._request_id = 0
         self._active_request: tuple[int, str] | None = None
@@ -99,6 +102,9 @@ class AnalysisTab(QWidget):
                 self.symbol_combo.setCurrentIndex(idx)
 
     def _load_selected(self) -> None:
+        if self._services is None:
+            self.status_label.setText("Price analysis requires application services")
+            return
         symbol = self.symbol_combo.currentText().strip().upper()
         if not symbol:
             self.status_label.setText("No symbol selected")
@@ -111,10 +117,13 @@ class AnalysisTab(QWidget):
         self._request_id += 1
         request_id = self._request_id
         self._active_request = (request_id, symbol)
+        services = self._services
 
         def work():
-            bars = get_price_history(symbol, start, end)
-            trades = load_trades_for_ticker(symbol, start, end)
+            bars = services.prices.get_history(symbol, start, end)
+            trades = load_trades_for_ticker(
+                symbol, start, end, persistence=services.persistence
+            )
             return request_id, symbol, bars, trades
 
         worker = Worker(work)

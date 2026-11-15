@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, TypedDict
 
 from insider_scanner.core import edgar
 from insider_scanner.core.fetch_outcome import describe_incomplete
-from insider_scanner.core.prices import get_price_history
 from insider_scanner.core.sec_bulk import SecBulkError
 from insider_scanner.core.sec_client import SecBlockedError
 from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
@@ -304,7 +303,7 @@ def cmd_import_legacy(
 
 def cmd_price(
     args: argparse.Namespace,
-    services: ApplicationServices | None = None,
+    services: ApplicationServices,
 ) -> None:
     """Fetch + cache daily bars for a US ticker and print them."""
     from datetime import date, timedelta
@@ -313,8 +312,7 @@ def cmd_price(
     start = args.since or (end - timedelta(days=365))
     if start > end:
         raise ValueError("--since must not be after --until")
-    engine = services.persistence.engine if services else None
-    bars = get_price_history(args.ticker.upper(), start, end, engine=engine)
+    bars = services.prices.get_history(args.ticker.upper(), start, end)
     if not bars:
         print(f"No price data for {args.ticker.upper()} in {start}..{end}")
         return

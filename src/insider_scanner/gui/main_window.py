@@ -483,7 +483,9 @@ class MainWindow(QMainWindow):
         try:
             from insider_scanner.gui.analysis_tab import AnalysisTab
 
-            self.analysis_tab = AnalysisTab(thread_pool=self._thread_pool)
+            self.analysis_tab = AnalysisTab(
+                self._services, thread_pool=self._thread_pool
+            )
         except Exception as exc:
             log.exception("Analysis page initialization failed")
             self.analysis_tab = QLabel(f"Analysis failed to load: {exc}")

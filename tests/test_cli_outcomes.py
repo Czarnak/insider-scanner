@@ -81,7 +81,7 @@ def test_command_value_error_is_usage_error_and_closes_services(monkeypatch, cap
 
 def test_price_single_bound_keeps_existing_default(monkeypatch):
     history = Mock(return_value=[])
-    monkeypatch.setattr(cli, "get_price_history", history)
+    services = SimpleNamespace(prices=SimpleNamespace(get_history=history))
     args = cli.build_parser().parse_args(["price", "AAPL", "--until", "2026-01-01"])
-    cli.cmd_price(args)
+    cli.cmd_price(args, services)
     assert history.call_args.args[1] < history.call_args.args[2]
