@@ -869,8 +869,8 @@ cache bypass available. Verification links open the human EDGAR search page.
 | ----------------------------- | ---------------------------------------------------------------------------- |
 | `insider_scanner.sqlite3`     | Parsed trades, coverage intervals, refresh state, and schema version         |
 | `congress_members.json`       | Editable Congress member list with committee assignments and sector mappings |
-| `watchlists.json`            | Shared named watchlists for monitoring, US scans and Analysis                  |
-| `tickers_watchlist.txt`       | Legacy US symbols imported once into `watchlists.json` by the GUI              |
+| `watchlists.json`             | Shared named watchlists for monitoring, US scans and Analysis                |
+| `tickers_watchlist.txt`       | Legacy US symbols imported once into `watchlists.json` by the GUI            |
 | `eu_watchlist.txt`            | Editable European ISIN watchlist                                             |
 | `house_disclosures/`          | Cached House disclosure indexes and PDFs                                     |
 | `exports/scans/`              | Generated CSV/JSON scan exports                                              |
