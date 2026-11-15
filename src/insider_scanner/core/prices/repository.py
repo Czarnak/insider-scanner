@@ -211,23 +211,3 @@ def store_fetch(
                     set_={"covered_at": now},
                 )
             )
-
-
-def find_missing_ranges(
-    coverage: tuple[date, date] | None, start: date, end: date
-) -> list[tuple[date, date]]:
-    """Edge-extension gap detection.
-
-    Returns the sub-ranges of [start, end] not covered by ``coverage``:
-    a head gap below coverage.min and a tail gap above coverage.max.
-    Interior non-trading days are intentionally not re-fetched.
-    """
-    if coverage is None:
-        return [(start, end)]
-    cov_min, cov_max = coverage
-    gaps: list[tuple[date, date]] = []
-    if start < cov_min:
-        gaps.append((start, min(end, cov_min - timedelta(days=1))))
-    if end > cov_max:
-        gaps.append((max(start, cov_max + timedelta(days=1)), end))
-    return gaps

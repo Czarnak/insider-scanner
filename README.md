@@ -129,6 +129,25 @@ analysis workflows available under **Tools**.
 - Hover over trade markers to view detailed tooltips including insider name, role, trade size, and total value.
 - The chart supports standard panning and zooming via pyqtgraph.
 
+Price requests reuse the application's database and lazily opened provider
+session. The cache records successful fetched intervals separately for each
+provider, including empty weekends, holidays and pre-listing ranges. Historical
+bars from older versions remain stored and are verified by the selected provider
+before they establish coverage. Provider changes never mix cached adjustment bases.
+
+Today's bars and empty current ranges are reused for at most five minutes, then
+checked again; an unfinished bar must also be fetched again after midnight UTC.
+Refreshes compare an overlapping completed bar. A changed close or adjusted close
+triggers an atomic refresh of that symbol's cached history. A failed, malformed or
+truncated replacement keeps the previous history intact. Adjustment changes are
+detected when a missing or unfinished interval is refreshed; a fully cached
+historical request does not poll the provider for later corporate actions.
+
+Yahoo session dates use the exchange timezone (or its supplied UTC offset).
+Malformed rows are skipped individually and cannot establish complete coverage;
+provider failures report sanitized categories and HTTP status without response
+bodies or credentials. Live provider availability is separate from offline tests.
+
 ![insider_scanners](img/analysisTab.png)
 
 #### Appearance & themes

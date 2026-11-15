@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -6,13 +6,15 @@ from sqlalchemy.engine import Engine
 
 from insider_scanner.core.prices import repository as repo
 from insider_scanner.core.prices.model import PriceBar
-from insider_scanner.persistence.schema import price_history
+from insider_scanner.persistence.coverage import DateInterval
+from insider_scanner.persistence.schema import price_history, scan_coverage
 
 
 @pytest.fixture
 def e() -> Engine:
     engine = create_engine("sqlite://")  # in-memory
     price_history.create(engine)
+    scan_coverage.create(engine)
     yield engine
     engine.dispose()
 
@@ -88,20 +90,32 @@ def test_get_coverage_returns_min_max(e):
     assert repo.get_coverage(e, "AAPL") == (date(2026, 1, 5), date(2026, 1, 9))
 
 
-def test_find_missing_ranges_no_coverage_returns_full_range():
-    rng = repo.find_missing_ranges(None, date(2026, 1, 1), date(2026, 1, 31))
-    assert rng == [(date(2026, 1, 1), date(2026, 1, 31))]
+@pytest.mark.parametrize("replace", [False, True])
+def test_coverage_write_failure_rolls_back_bars_and_provider_invalidation(e, replace):
+    now = datetime(2026, 11, 15, tzinfo=UTC)
+    interval = DateInterval(date(2026, 1, 1), date(2026, 1, 4))
+    original = PriceBar("AAPL", interval.start, 10, 10, 10, 10, 1)
+    repo.store_fetch(e, "AAPL", "yahoo", interval, [original], now=now, complete=True)
 
+    def fail_coverage(connection, cursor, statement, parameters, context, executemany):
+        if statement.startswith("INSERT INTO scan_coverage"):
+            raise RuntimeError("simulated coverage storage failure")
 
-def test_find_missing_ranges_extends_both_edges():
-    cov = (date(2026, 1, 10), date(2026, 1, 20))
-    rng = repo.find_missing_ranges(cov, date(2026, 1, 1), date(2026, 1, 31))
-    assert rng == [
-        (date(2026, 1, 1), date(2026, 1, 9)),
-        (date(2026, 1, 21), date(2026, 1, 31)),
-    ]
-
-
-def test_find_missing_ranges_fully_covered_returns_empty():
-    cov = (date(2026, 1, 1), date(2026, 1, 31))
-    assert repo.find_missing_ranges(cov, date(2026, 1, 5), date(2026, 1, 20)) == []
+    event.listen(e, "before_cursor_execute", fail_coverage)
+    try:
+        with pytest.raises(RuntimeError, match="coverage storage"):
+            repo.store_fetch(
+                e,
+                "AAPL",
+                "yahoo" if replace else "tiingo",
+                interval,
+                [PriceBar("AAPL", interval.start, 5, 5, 5, 5, 1)],
+                now=now,
+                complete=True,
+                replace=replace,
+            )
+    finally:
+        event.remove(e, "before_cursor_execute", fail_coverage)
+    assert repo.get_bars(e, "AAPL", interval.start, interval.end) == [original]
+    assert repo.fetched_intervals(e, "AAPL", "yahoo", now=now) == (interval,)
+    assert repo.fetched_intervals(e, "AAPL", "tiingo", now=now) == ()
