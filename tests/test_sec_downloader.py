@@ -193,6 +193,24 @@ def test_cache_bypass_fetches_without_inspecting_cache_paths(tmp_path: Path) -> 
     transport.get.assert_called_once()
 
 
+def test_fetch_and_promotion_do_not_resolve_digest_paths_repeatedly(
+    tmp_path: Path,
+) -> None:
+    from insider_scanner.core.sec_downloader import (
+        fetch_filing,
+        promote_validated_filing,
+    )
+
+    client, _ = make_client()
+    with patch.object(
+        Path, "resolve", side_effect=AssertionError("digest paths need no resolution")
+    ):
+        pending = fetch_filing(make_row(), client=client, cache_root=tmp_path)
+        downloaded = promote_validated_filing(pending, cache_root=tmp_path)
+
+    assert downloaded.content_path.read_bytes() == pending.content
+
+
 def test_validated_promotion_writes_versioned_cache_atomically(tmp_path: Path) -> None:
     from insider_scanner.core.sec_downloader import (
         fetch_filing,
