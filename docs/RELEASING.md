@@ -5,7 +5,7 @@ reusable CI workflow (offline tests with coverage, lint, formatting, types and
 the locked dependency audit). It then builds and verifies one wheel and source distribution,
 publishes those artifacts to TestPyPI, verifies the exact tagged version, and
 then publishes the same artifacts to PyPI. TestPyPI verification first installs
-the candidate wheel and its dependencies from PyPI, then replaces only the
+the local candidate wheel with dependencies from PyPI, then replaces only the
 application from TestPyPI using `--no-deps --force-reinstall`.
 
 Publishing uses GitHub Trusted Publishing (OIDC). Do not create or store PyPI or
