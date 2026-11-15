@@ -12,11 +12,15 @@ All public store operations return **new** immutable ``AlertStore`` values.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from insider_scanner.persistence.feed import FeedCriteria
-from insider_scanner.persistence.feed_state import criteria_from_dict, criteria_to_dict
+from insider_scanner.persistence.feed_state import (
+    FeedStateError,
+    criteria_from_dict,
+    criteria_to_dict,
+)
 from insider_scanner.persistence.json_state import (
     atomic_write_json,
     preserve_json_state,
@@ -49,6 +53,16 @@ class AlertRule:
     watchlist: str | None = None
     enabled: bool = True
     last_seen_at: datetime | None = None
+    error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.last_seen_at is not None:
+            at = self.last_seen_at
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=UTC)
+            object.__setattr__(self, "last_seen_at", at.astimezone(UTC))
+        if self.error:
+            object.__setattr__(self, "enabled", False)
 
 
 @dataclass(frozen=True)
@@ -63,15 +77,34 @@ class AlertStore:
 
     def with_rule(self, rule: AlertRule) -> AlertStore:
         """Return a copy with *rule* added, replacing any rule of the same name."""
-        others = tuple(r for r in self.rules if r.name != rule.name)
-        return replace(self, rules=(*others, rule)[:_MAX_RULES])
+        if self.get(rule.name) is not None:
+            return replace(
+                self,
+                rules=tuple(rule if r.name == rule.name else r for r in self.rules),
+            )
+        if len(self.rules) >= _MAX_RULES:
+            raise AlertStoreError(f"Cannot add more than {_MAX_RULES} alert rules")
+        return replace(self, rules=(*self.rules, rule))
 
     def without_rule(self, name: str) -> AlertStore:
         return replace(self, rules=tuple(r for r in self.rules if r.name != name))
 
     def toggled(self, name: str, enabled: bool) -> AlertStore:
+        rule = self.get(name)
+        if enabled and rule is not None and rule.error:
+            raise AlertStoreError(f"Cannot enable invalid alert '{name}': {rule.error}")
         rules = tuple(
             replace(r, enabled=enabled) if r.name == name else r for r in self.rules
+        )
+        return replace(self, rules=rules)
+
+    def renamed_watchlist(self, old: str, new: str) -> AlertStore:
+        """Keep alert references attached when a watchlist display name changes."""
+        rules = tuple(
+            replace(r, watchlist=new)
+            if r.watchlist is not None and r.watchlist.casefold() == old.casefold()
+            else r
+            for r in self.rules
         )
         return replace(self, rules=rules)
 
@@ -97,6 +130,7 @@ def rule_to_dict(r: AlertRule) -> dict:
         "criteria": criteria_to_dict(r.criteria),
         "watchlist": r.watchlist,
         "enabled": r.enabled,
+        "error": r.error,
         "last_seen_at": r.last_seen_at.isoformat()
         if r.last_seen_at is not None
         else None,
@@ -106,21 +140,24 @@ def rule_to_dict(r: AlertRule) -> dict:
 def rule_from_dict(d: dict) -> AlertRule:
     """Reconstruct an AlertRule; raises AlertStoreError on structural failure.
 
-    A malformed ``criteria`` block falls back to the default FeedCriteria rather
-    than failing the whole rule.
+    Malformed predicates and watermarks disable the rule with a persisted error;
+    invalid state must never widen an alert to all transactions.
     """
     try:
         name = str(d["name"])
     except (KeyError, TypeError) as exc:
         raise AlertStoreError(f"Cannot parse AlertRule from dict: {exc}") from exc
 
+    raw_error = d.get("error")
+    error = str(raw_error) if raw_error else None
     raw_criteria = d.get("criteria", {})
     try:
-        criteria = criteria_from_dict(
-            raw_criteria if isinstance(raw_criteria, dict) else {}
-        )
-    except Exception:  # noqa: BLE001 - resilient: bad criteria → default
+        if not isinstance(raw_criteria, dict):
+            raise FeedStateError("Alert criteria must be an object")
+        criteria = criteria_from_dict(raw_criteria)
+    except FeedStateError as exc:
         criteria = FeedCriteria()
+        error = f"Invalid criteria: {exc}"
 
     watchlist = d.get("watchlist")
     watchlist = str(watchlist) if watchlist is not None else None
@@ -129,11 +166,14 @@ def rule_from_dict(d: dict) -> AlertRule:
 
     raw_seen = d.get("last_seen_at")
     try:
+        if raw_seen is not None and not isinstance(raw_seen, str):
+            raise ValueError("Alert timestamp must be an ISO timestamp")
         last_seen_at = (
-            datetime.fromisoformat(raw_seen) if isinstance(raw_seen, str) else None
+            datetime.fromisoformat(raw_seen) if raw_seen is not None else None
         )
-    except ValueError:
+    except ValueError as exc:
         last_seen_at = None
+        error = f"Invalid last-seen timestamp: {exc}"
 
     return AlertRule(
         name=name,
@@ -141,6 +181,7 @@ def rule_from_dict(d: dict) -> AlertRule:
         watchlist=watchlist,
         enabled=enabled,
         last_seen_at=last_seen_at,
+        error=error,
     )
 
 
@@ -175,13 +216,13 @@ def store_from_dict(d: dict) -> AlertStore:
 
 
 def load_alerts(path: Path) -> AlertStore:
-    """Load an AlertStore from *path*; returns an empty store on any error."""
+    """Load rules, preserving unreadable state while surfacing programming errors."""
     data = read_json_dict(path)
     if data is None:
         return AlertStore()
     try:
         return store_from_dict(data)
-    except Exception as exc:  # noqa: BLE001 - never fail a load
+    except AlertStoreError as exc:
         _log.warning("Failed to parse alerts from %s: %s", path, exc)
         preserve_json_state(path)
         return AlertStore()
