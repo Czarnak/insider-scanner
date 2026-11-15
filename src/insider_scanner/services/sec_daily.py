@@ -1,4 +1,4 @@
-"""Idempotent SEC daily ingestion: download → map → persist with coverage gating.
+"""Idempotent SEC daily ingestion: download â†’ map â†’ persist with coverage gating.
 
 Wraps the downloader (:func:`download_filings_in_range`) with a persist
 sink and per-date coverage bookkeeping so that re-running the same daily ingest
@@ -11,9 +11,9 @@ Error model
 -----------
 The persist sink distinguishes two failure classes:
 
-* ``SecTradeMappingError`` — logged with the accession and propagated so a
+* ``SecTradeMappingError`` â€” logged with the accession and propagated so a
   later run with repaired mapping logic can retry the filing.
-* :class:`PersistenceError` (transient DB issue) — propagated. The downloader
+* :class:`PersistenceError` (transient DB issue) â€” propagated. The downloader
   hook catches it, counts a ``failed``, and leaves the date uncovered so the next
   run retries it. Already-persisted rows from the partial date are harmless
   because re-ingest is idempotent (SEC canonical-key identity).
@@ -82,13 +82,6 @@ class SecDailyIngestionSummary:
     stopped_on_error: bool = False
 
 
-@dataclass(slots=True)
-class _RunState:
-    """Mutable accumulators for one ingest run (never escapes the call)."""
-
-    batch: SecTradeBatch
-
-
 class SecDailyIngestionService:
     """Download, map, and persist SEC ownership filings with coverage gating."""
 
@@ -147,14 +140,12 @@ class SecDailyIngestionService:
             raise ValueError("end_date must not be in the future")
         dates_total = _day_count(requested)
 
-        state = _RunState(
-            SecTradeBatch(
-                self._persistence.sec_ingestion.commit,
-                max_filings=self._batch_filings,
-                max_rows=self._batch_rows,
-            )
+        batch = SecTradeBatch(
+            self._persistence.sec_ingestion.commit,
+            max_filings=self._batch_filings,
+            max_rows=self._batch_rows,
         )
-        sink = make_persist_sink(state.batch)
+        sink = make_persist_sink(batch)
         progress = _compose_progress(self._make_coverage_recorder(), on_progress)
 
         gaps = self._persistence.coverage.gaps(
@@ -183,10 +174,10 @@ class SecDailyIngestionService:
                 cancelled=cancelled,
                 on_date_flush=lambda: tuple(
                     item
-                    for item in state.batch.take_outcomes(flush=True)
+                    for item in batch.take_outcomes(flush=True)
                     if not item.complete and item.stage == "persist"
                 ),
-                on_filing_outcome=state.batch.add_outcome,
+                on_filing_outcome=batch.add_outcome,
             )
             filings_discovered += report.discovered
             filings_parsed += report.parsed
@@ -208,9 +199,9 @@ class SecDailyIngestionService:
             dates_completed=dates_completed,
             filings_discovered=filings_discovered,
             filings_parsed=filings_parsed,
-            transactions_inserted=state.batch.upserts.inserted,
-            transactions_updated=state.batch.upserts.updated,
-            transactions_skipped=state.batch.upserts.skipped,
+            transactions_inserted=batch.upserts.inserted,
+            transactions_updated=batch.upserts.updated,
+            transactions_skipped=batch.upserts.skipped,
             failures=download_failed,
             unsupported=unsupported,
             outcomes=tuple(outcomes),
