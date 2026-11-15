@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import MetaData, Table, insert, select
+from sqlalchemy import Column, MetaData, Table, insert, inspect, select
 
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.coverage import CoverageRepository, DateInterval
@@ -34,7 +34,16 @@ def legacy_database(tmp_path):
 
 
 def _rows(engine, table):
-    historical_table = Table(table.name, MetaData(), autoload_with=engine)
+    # Read historical columns without reflecting unrelated expression indexes,
+    # which SQLAlchemy does not support on SQLite.
+    historical_table = Table(
+        table.name,
+        MetaData(),
+        *[
+            Column(column["name"], column["type"])
+            for column in inspect(engine).get_columns(table.name)
+        ],
+    )
     with engine.connect() as connection:
         return [
             dict(row) for row in connection.execute(select(historical_table)).mappings()

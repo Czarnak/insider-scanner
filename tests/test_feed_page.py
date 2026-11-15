@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 
 from PySide6.QtCore import Qt, QThreadPool
@@ -9,6 +10,7 @@ from PySide6.QtCore import Qt, QThreadPool
 from insider_scanner.gui.feed_page import FeedPageWidget
 from insider_scanner.persistence.feed import (
     FeedCriteria,
+    FeedCursor,
     FeedMarket,
     FeedPage,
     FeedQuery,
@@ -56,13 +58,14 @@ def _record(key: str, identifier: str) -> FeedRecord:
     )
 
 
-def _page(records, *, total=None, has_more=False, stale=False):
+def _page(records, *, total=None, has_more=False, stale=False, cursor=None):
     return FeedPage(
         records=tuple(records),
         total_count=len(records) if total is None else total,
         freshness_at=datetime(2026, 6, 15, 10, tzinfo=UTC),
         is_stale=stale,
         has_more=has_more,
+        next_cursor=cursor,
     )
 
 
@@ -85,7 +88,7 @@ def test_feed_page_loads_first_page_and_exposes_accessible_controls(qtbot):
     assert page.model.rowCount() == 1
     assert page.model.record_at(0).identifier == "AAPL"
     assert page.state_label.isHidden()
-    assert repository.queries == [FeedQuery()]
+    assert repository.queries == [FeedQuery(include_total=False)]
 
 
 def test_new_search_replaces_rows_and_uses_normalized_query(qtbot):
@@ -111,9 +114,17 @@ def test_new_search_replaces_rows_and_uses_normalized_query(qtbot):
 
 def test_load_more_appends_rows_without_resetting_existing_data(qtbot):
     pool = CapturingPool()
+    cursor = FeedCursor(
+        criteria=FeedCriteria(),
+        sort_value=date(2026, 6, 14),
+        filing_date=date(2026, 6, 15),
+        market=FeedMarket.US,
+        row_id=1,
+        snapshots=((FeedMarket.US, 2),),
+    )
     repository = FakeFeedRepository(
         [
-            _page([_record("us:1", "AAPL")], total=2, has_more=True),
+            _page([_record("us:1", "AAPL")], total=2, has_more=True, cursor=cursor),
             _page([_record("us:2", "MSFT")], total=2),
         ]
     )
@@ -128,8 +139,47 @@ def test_load_more_appends_rows_without_resetting_existing_data(qtbot):
         "AAPL",
         "MSFT",
     ]
-    assert repository.queries[-1].offset == 1
+    assert repository.queries[-1].offset == 0
+    assert repository.queries[-1].cursor == cursor
+    assert repository.queries[-1].include_total is False
     assert page.load_more_button.isHidden()
+
+
+def test_unknown_totals_show_loaded_count_and_reload_discards_cursor(qtbot):
+    pool = CapturingPool()
+    cursor = FeedCursor(
+        criteria=FeedCriteria(),
+        sort_value=date(2026, 6, 14),
+        filing_date=date(2026, 6, 15),
+        market=FeedMarket.US,
+        row_id=1,
+        snapshots=((FeedMarket.US, 2),),
+    )
+    first = replace(
+        _page([_record("us:1", "AAPL")], has_more=True, cursor=cursor),
+        total_count=None,
+    )
+    second = replace(_page([_record("us:2", "MSFT")]), total_count=None)
+    repository = FakeFeedRepository([first, second, second])
+    page = FeedPageWidget(repository, thread_pool=pool)
+    qtbot.addWidget(page)
+    counts = []
+    page.resultCountChanged.connect(counts.append)
+    _complete(pool)
+
+    page.load_more()
+    _complete(pool, 1)
+
+    assert counts == [1, 2]
+    assert page.state_label.isHidden()
+    assert repository.queries[-1].cursor == cursor
+
+    page.reload()
+    _complete(pool, 2)
+
+    assert repository.queries[-1].cursor is None
+    assert page.model.rowCount() == 1
+    assert counts == [1, 2, 1]
 
 
 def test_feed_page_distinguishes_empty_matches_stale_and_error(qtbot):
@@ -192,6 +242,45 @@ def test_initial_criteria_issues_one_query_and_reflects_in_chips_and_panel(qtbot
 
     # Panel reflects the markets
     assert page.filter_panel.cb_market_us.isChecked()
+
+
+def test_initial_and_saved_criteria_keep_sort_indicator_in_sync(qtbot):
+    pool = CapturingPool()
+    initial = FeedCriteria(sort_field=FeedSortField.ISSUER, descending=False)
+    page = FeedPageWidget(
+        FakeFeedRepository([]), thread_pool=pool, initial_criteria=initial
+    )
+    qtbot.addWidget(page)
+    header = page.table.horizontalHeader()
+    assert header.sortIndicatorSection() == 2
+    assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+    assert len(pool.workers) == 1
+
+    page.set_criteria(FeedCriteria(sort_field=FeedSortField.VALUE, descending=True))
+
+    assert header.sortIndicatorSection() == 10
+    assert header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder
+    assert len(pool.workers) == 2
+
+
+def test_restored_column_layout_keeps_current_criteria_sort(qtbot):
+    original = FeedPageWidget(None)
+    qtbot.addWidget(original)
+    original.table.horizontalHeader().setSortIndicator(4, Qt.SortOrder.AscendingOrder)
+    saved_layout = original.column_layout()
+    pool = CapturingPool()
+    page = FeedPageWidget(FakeFeedRepository([]), thread_pool=pool)
+    qtbot.addWidget(page)
+
+    page.restore_column_layout(saved_layout)
+
+    assert page.criteria().sort_field == FeedSortField.TRANSACTION_DATE
+    assert page.table.horizontalHeader().sortIndicatorSection() == 6
+    assert (
+        page.table.horizontalHeader().sortIndicatorOrder()
+        == Qt.SortOrder.DescendingOrder
+    )
+    assert len(pool.workers) == 1
 
 
 def test_filters_applied_merges_search_and_sort_keeps_filter_fields(qtbot):

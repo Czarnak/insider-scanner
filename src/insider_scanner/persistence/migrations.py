@@ -20,6 +20,7 @@ from insider_scanner.persistence.mappings import (
     us_to_values,
 )
 from insider_scanner.persistence.schema import (
+    READ_INDEXES,
     congress_trades,
     refresh_state,
     scan_coverage,
@@ -30,6 +31,7 @@ from insider_scanner.persistence.schema import (
     us_trades,
     v1_metadata,
 )
+from insider_scanner.persistence.search import install_search_indexes
 
 
 @dataclass(frozen=True)
@@ -322,6 +324,14 @@ def _add_effective_transactions(connection: Connection) -> None:
         )
 
 
+def _scale_database_reads(connection: Connection) -> None:
+    """Add read/search indexes without rewriting observations or progress."""
+    connection.exec_driver_sql("DROP INDEX IF EXISTS ix_us_trades_source_filing_date")
+    for index in READ_INDEXES:
+        index.create(connection)
+    install_search_indexes(connection)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -377,5 +387,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=11,
         name="add_effective_transactions",
         upgrade=_add_effective_transactions,
+    ),
+    Migration(
+        version=12,
+        name="scale_database_reads",
+        upgrade=_scale_database_reads,
     ),
 )

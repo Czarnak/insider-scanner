@@ -16,6 +16,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 
@@ -337,6 +338,56 @@ european_trades = metadata.tables["european_trades"]
 scan_coverage = metadata.tables["scan_coverage"]
 refresh_state = metadata.tables["refresh_state"]
 price_history = metadata.tables["price_history"]
+
+# Migration twelve replaces the unused US primary-source index with indexes
+# matching bounded feed, issuer, person and latest reads. Keep the original
+# snapshot intact so upgrades still reproduce historical schema versions.
+us_trades.indexes.difference_update(
+    {
+        index
+        for index in us_trades.indexes
+        if index.name == "ix_us_trades_source_filing_date"
+    }
+)
+READ_INDEXES: list[Index] = []
+for _table, _identifier, _person in (
+    (us_trades, "ticker", "insider_name"),
+    (congress_trades, "ticker", "official_name"),
+    (european_trades, "isin", "insider_name"),
+):
+    _order = (_table.c.trade_date.desc(), _table.c.filing_date.desc(), _table.c.id)
+    READ_INDEXES.extend(
+        (
+            Index(f"ix_{_table.name}_feed_date", *_order),
+            Index(f"ix_{_table.name}_feed_issuer", _table.c[_identifier], *_order),
+            Index(
+                f"ix_{_table.name}_feed_person",
+                func.casefold(_table.c[_person]),
+                *_order,
+            ),
+        )
+    )
+READ_INDEXES.extend(
+    (
+        Index(
+            "ix_us_trades_latest",
+            us_trades.c.filing_date.desc(),
+            us_trades.c.trade_date.desc(),
+            us_trades.c.canonical_key,
+        ),
+        Index(
+            "ix_european_trades_latest",
+            european_trades.c.trade_date.desc(),
+            european_trades.c.filing_date.desc(),
+            european_trades.c.canonical_key,
+        ),
+        Index(
+            "ix_refresh_state_domain_refreshed_at",
+            refresh_state.c.domain,
+            refresh_state.c.refreshed_at.desc(),
+        ),
+    )
+)
 
 # Migration eight removes explicit indexes already supplied by UNIQUE
 # constraints. Keep migration one's metadata intact for historical upgrades.

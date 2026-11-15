@@ -17,6 +17,7 @@ from insider_scanner.persistence.feed import (
     FeedSortField,
     TransactionDirection,
 )
+from insider_scanner.persistence.refresh import RefreshStateRepository
 from insider_scanner.persistence.repositories import (
     CongressTradeRepository,
     EuropeanTradeRepository,
@@ -168,9 +169,10 @@ def test_feed_repository_supports_validated_sorting(engine):
     ]
 
 
-def test_feed_freshness_uses_latest_created_timestamp(engine):
+def test_feed_freshness_uses_latest_successful_refresh(engine):
     _seed_all_markets(engine)
     now = datetime.now(UTC)
+    RefreshStateRepository(engine).set("us", "*", "secform4", "latest:200", now)
 
     page = FeedRepository(engine).query(FeedQuery(), now=now)
 

@@ -45,6 +45,11 @@ EXPECTED_TABLES = {
     "sec_archive_progress",
     "sec_archive_retries",
 }
+EXPECTED_TABLES.update(
+    f"{market}_trades_search{suffix}"
+    for market in ("us", "congress", "european")
+    for suffix in ("", "_config", "_content", "_data", "_docsize", "_idx")
+)
 
 EXPECTED_UNIQUE_CONSTRAINTS = {
     "us_trades": {"uq_us_trades_canonical_key"},
@@ -57,20 +62,33 @@ EXPECTED_UNIQUE_CONSTRAINTS = {
 EXPECTED_INDEXES = {
     "us_trades": {
         "ix_us_trades_ticker_filing_date",
-        "ix_us_trades_source_filing_date",
         "ix_us_trades_accession",
         "ix_us_trades_cik_issuer",
+        "ix_us_trades_feed_date",
+        "ix_us_trades_feed_issuer",
+        "ix_us_trades_feed_person",
+        "ix_us_trades_latest",
     },
     "congress_trades": {
         "ix_congress_trades_official_filing_date",
         "ix_congress_trades_source_filing_date",
+        "ix_congress_trades_feed_date",
+        "ix_congress_trades_feed_issuer",
+        "ix_congress_trades_feed_person",
     },
     "european_trades": {
         "ix_european_trades_isin_trade_date",
         "ix_european_trades_source_trade_date",
+        "ix_european_trades_feed_date",
+        "ix_european_trades_feed_issuer",
+        "ix_european_trades_feed_person",
+        "ix_european_trades_latest",
     },
     "scan_coverage": set(),
-    "refresh_state": {"ix_refresh_state_refreshed_at"},
+    "refresh_state": {
+        "ix_refresh_state_refreshed_at",
+        "ix_refresh_state_domain_refreshed_at",
+    },
     "price_history": set(),
 }
 
@@ -136,13 +154,28 @@ def test_bootstrap_creates_all_tables_constraints_and_indexes(engine):
 
     assert set(inspector.get_table_names()) == EXPECTED_TABLES
     for table_name, expected_names in EXPECTED_UNIQUE_CONSTRAINTS.items():
-        actual_names = {
-            constraint["name"]
-            for constraint in inspector.get_unique_constraints(table_name)
-        }
-        assert expected_names <= actual_names
+        with engine.connect() as connection:
+            definition = connection.execute(
+                text(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = :name"
+                ),
+                {"name": table_name},
+            ).scalar_one()
+        for constraint in expected_names:
+            assert f"CONSTRAINT {constraint} UNIQUE" in definition
     for table_name, expected_names in EXPECTED_INDEXES.items():
-        actual_names = {index["name"] for index in inspector.get_indexes(table_name)}
+        # SQLAlchemy cannot reflect SQLite expression indexes; inspect their
+        # persisted names directly so Unicode person indexes are checked too.
+        with engine.connect() as connection:
+            actual_names = set(
+                connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'index' "
+                        "AND tbl_name = :name AND name NOT LIKE 'sqlite_autoindex%'"
+                    ),
+                    {"name": table_name},
+                ).scalars()
+            )
         assert expected_names == actual_names
 
     coverage_checks = {
@@ -520,7 +553,14 @@ def test_bootstrap_v3_adds_sec_columns_and_indexes(engine):
     actual_columns = {col["name"] for col in inspector.get_columns("us_trades")}
     assert SEC_V3_COLUMNS <= actual_columns
 
-    actual_indexes = {idx["name"] for idx in inspector.get_indexes("us_trades")}
+    with engine.connect() as connection:
+        actual_indexes = set(
+            connection.execute(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'us_trades'"
+                )
+            ).scalars()
+        )
     assert SEC_V3_INDEXES <= actual_indexes
 
 

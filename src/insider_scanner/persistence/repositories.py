@@ -9,7 +9,7 @@ from itertools import islice
 from math import isnan
 from typing import Any
 
-from sqlalchemy import String, Table, and_, bindparam, func, or_, select, tuple_
+from sqlalchemy import String, Table, and_, bindparam, case, func, or_, select, tuple_
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DataError, IntegrityError, SQLAlchemyError, StatementError
@@ -55,6 +55,22 @@ def _wrap(operation: str, error: SQLAlchemyError) -> PersistenceError:
 def _validate_range(start_date: date | None, end_date: date | None) -> None:
     if start_date is not None and end_date is not None and start_date > end_date:
         raise ValueError("start_date must not be after end_date")
+
+
+def _source_condition(table: Table, sources: tuple[str, ...]) -> ColumnElement[bool]:
+    """Match primary or merged sources before applying a SQL row limit."""
+    provenance = case(
+        (
+            func.json_valid(table.c.source_provenance_json),
+            table.c.source_provenance_json,
+        ),
+        else_="[]",
+    )
+    values = func.json_each(provenance).table_valued("value")
+    return or_(
+        table.c.source.in_(sources),
+        select(1).select_from(values).where(values.c.value.in_(sources)).exists(),
+    )
 
 
 @dataclass(frozen=True)
@@ -447,6 +463,8 @@ class UsTradeRepository:
             raise ValueError("count must be positive")
         _validate_range(start_date, end_date)
         conditions = [visible_condition(us_trades, sources=sources)]
+        if sources:
+            conditions.append(_source_condition(us_trades, sources))
         if start_date is not None:
             conditions.append(us_trades.c.filing_date >= start_date)
         if end_date is not None:
@@ -461,18 +479,9 @@ class UsTradeRepository:
                         us_trades.c.filing_date.desc().nulls_last(),
                         us_trades.c.trade_date.desc().nulls_last(),
                         us_trades.c.canonical_key,
-                    )
+                    ).limit(count)
                 ).mappings()
-                requested_sources = (
-                    {sources} if isinstance(sources, str) else set(sources or ())
-                )
-                result = [
-                    us_from_row(row)
-                    for row in rows
-                    if not requested_sources
-                    or requested_sources.intersection(us_provenance(row))
-                ]
-                return result[:count]
+                return [us_from_row(row) for row in rows]
         except SQLAlchemyError as error:
             raise _wrap("latest US trade query", error) from error
 
@@ -628,9 +637,9 @@ class EuropeanTradeRepository:
             raise ValueError("count must be positive")
         _validate_range(start_date, end_date)
         conditions = []
-        requested_sources = (
-            {sources} if isinstance(sources, str) else set(sources or ())
-        )
+        sources = (sources,) if isinstance(sources, str) else tuple(sources or ())
+        if sources:
+            conditions.append(_source_condition(european_trades, sources))
         if start_date is not None:
             conditions.append(european_trades.c.trade_date >= start_date)
         if end_date is not None:
@@ -645,14 +654,8 @@ class EuropeanTradeRepository:
                         european_trades.c.trade_date.desc().nulls_last(),
                         european_trades.c.filing_date.desc().nulls_last(),
                         european_trades.c.canonical_key,
-                    )
+                    ).limit(count)
                 ).mappings()
-                result = [
-                    european_from_row(row)
-                    for row in rows
-                    if not requested_sources
-                    or requested_sources.intersection(european_provenance(row))
-                ]
-                return result[:count]
+                return [european_from_row(row) for row in rows]
         except SQLAlchemyError as error:
             raise _wrap("latest European trade query", error) from error
