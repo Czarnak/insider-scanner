@@ -783,11 +783,17 @@ def test_missing_filing_date_is_rejected():
         bulk_metadata_to_index_row(_meta(d=None))
 
 
-def test_malformed_accession_is_rejected():
+@pytest.mark.parametrize(
+    "accession",
+    [
+        "../etc/passwd",
+        "not-an-accession",
+        "0000320193-26-000061\n",
+    ],
+)
+def test_malformed_accession_is_rejected(accession):
     with pytest.raises(SecBulkError):
-        bulk_metadata_to_index_row(_meta(acc="../etc/passwd"))
-    with pytest.raises(SecBulkError):
-        bulk_metadata_to_index_row(_meta(acc="not-an-accession"))
+        bulk_metadata_to_index_row(_meta(acc=accession))
 
 
 def test_cik_filter_limits_yielded_records():

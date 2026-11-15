@@ -106,7 +106,7 @@ def bulk_metadata_to_index_row(meta: BulkFilingMetadata) -> SecMasterIndexRow:
         raise TypeError("meta must be a BulkFilingMetadata")
     if meta.filing_date is None:
         raise SecBulkError("bulk metadata has no filing_date")
-    if not _ACCESSION_RE.match(meta.accession_number):
+    if not _ACCESSION_RE.fullmatch(meta.accession_number):
         raise SecBulkError("bulk metadata has a malformed accession number")
     cik_no_zeros = str(int(meta.cik))  # meta.cik is 10-digit zero-padded
     archive_path = f"edgar/data/{cik_no_zeros}/{meta.accession_number}.txt"
