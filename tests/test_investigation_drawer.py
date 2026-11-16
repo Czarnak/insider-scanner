@@ -144,6 +144,12 @@ def _all_text(widget) -> str:
     return " ".join(parts)
 
 
+def _show_record(qtbot, drawer, record):
+    """Wait for debounced dispatch; inline pools then deliver detail synchronously."""
+    drawer.show_record(record)
+    qtbot.waitUntil(lambda: not drawer._load_timer.isActive())
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -186,7 +192,7 @@ class TestShowRecord:
         rec = _record()
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
@@ -202,7 +208,9 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(market=FeedMarket.CONGRESS, key="congress:1"))
+        _show_record(
+            qtbot, drawer, _record(market=FeedMarket.CONGRESS, key="congress:1")
+        )
 
         # Assert — market value appears
         text = _all_text(drawer)
@@ -216,7 +224,7 @@ class TestShowRecord:
         rec = _record(transaction_type="Buy")
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert — expose the chosen QColor via test accessor
         color: QColor = drawer.last_transaction_color()
@@ -235,7 +243,7 @@ class TestShowRecord:
         rec = _record(transaction_type="Sell")
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert — sale color is reddish
         color: QColor = drawer.last_transaction_color()
@@ -251,7 +259,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(transaction_type="Purchase"))
+        _show_record(qtbot, drawer, _record(transaction_type="Purchase"))
 
         # Assert
         color: QColor = drawer.last_transaction_color()
@@ -264,7 +272,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(transaction_type="Sale"))
+        _show_record(qtbot, drawer, _record(transaction_type="Sale"))
 
         # Assert
         color: QColor = drawer.last_transaction_color()
@@ -278,7 +286,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(transaction_type="Buy"))
+        _show_record(qtbot, drawer, _record(transaction_type="Buy"))
 
         # Assert
         text = _all_text(drawer)
@@ -291,8 +299,10 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(
-            _record(transaction_date=date(2026, 6, 14), filing_date=date(2026, 6, 15))
+        _show_record(
+            qtbot,
+            drawer,
+            _record(transaction_date=date(2026, 6, 14), filing_date=date(2026, 6, 15)),
         )
 
         # Assert
@@ -307,7 +317,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(quantity=500.0))
+        _show_record(qtbot, drawer, _record(quantity=500.0))
 
         # Assert — "500.00" in output
         text = _all_text(drawer)
@@ -320,7 +330,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(quantity=None))
+        _show_record(qtbot, drawer, _record(quantity=None))
 
         # Assert
         text = _all_text(drawer)
@@ -333,7 +343,9 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(value_display="$1,001 - $15,000", value_sort=None))
+        _show_record(
+            qtbot, drawer, _record(value_display="$1,001 - $15,000", value_sort=None)
+        )
 
         # Assert
         text = _all_text(drawer)
@@ -346,8 +358,10 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(
-            _record(value_display="", value_sort=105250.0, currency="USD")
+        _show_record(
+            qtbot,
+            drawer,
+            _record(value_display="", value_sort=105250.0, currency="USD"),
         )
 
         # Assert
@@ -362,7 +376,7 @@ class TestShowRecord:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record(value_display="", value_sort=None))
+        _show_record(qtbot, drawer, _record(value_display="", value_sort=None))
 
         # Assert
         text = _all_text(drawer)
@@ -379,7 +393,7 @@ class TestOwnershipBlock:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
@@ -394,7 +408,7 @@ class TestOwnershipBlock:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
@@ -407,7 +421,7 @@ class TestOwnershipBlock:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -424,7 +438,7 @@ class TestFootnotesBlock:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
@@ -439,7 +453,7 @@ class TestFootnotesBlock:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
@@ -463,7 +477,7 @@ class TestRecentActivity:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -476,7 +490,7 @@ class TestRecentActivity:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -499,7 +513,7 @@ class TestRecentActivity:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert — the line format includes issuer
         text = _all_text(drawer)
@@ -512,7 +526,7 @@ class TestRecentActivity:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -536,7 +550,7 @@ class TestKeyboardAndSignals:
         drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
         qtbot.addWidget(drawer)
         rec = _record(identifier="AAPL", market=FeedMarket.US)
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         emitted: list[tuple] = []
         drawer.openCompanyRequested.connect(
@@ -559,7 +573,7 @@ class TestKeyboardAndSignals:
         drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
         qtbot.addWidget(drawer)
         rec = _record(person="Jane Director", market=FeedMarket.US)
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         emitted: list[tuple] = []
         drawer.openInsiderRequested.connect(lambda p, m: emitted.append((p, m)))
@@ -578,7 +592,7 @@ class TestKeyboardAndSignals:
         repo = FakeRepository(detail_return=_detail())
         drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
         qtbot.addWidget(drawer)
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert — Alert/Compare remain placeholders
         for name in ("Alert", "Compare"):
@@ -592,7 +606,7 @@ class TestKeyboardAndSignals:
         drawer = InvestigationDrawer(repository=repo, thread_pool=InlinePool())
         qtbot.addWidget(drawer)
         rec = _record(key="us:7", identifier="MSFT", person="Bob Smith")
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         emitted: list = []
         drawer.watchRequested.connect(emitted.append)
@@ -615,7 +629,7 @@ class TestErrorPath:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -641,18 +655,18 @@ class TestErrorPath:
         rec2 = _record(key="us:2", issuer="NewCorp", person="Bob Smith")
 
         # Start first request — worker queued but not run
-        drawer.show_record(rec1)
+        _show_record(qtbot, drawer, rec1)
         first_worker = pool.workers[0]
 
         # Start another request while the first is pending.
-        drawer.show_record(rec2)
+        _show_record(qtbot, drawer, rec2)
 
         # Run the first (now stale) worker AFTER the second request has been issued
         first_worker.run()
 
         text = _all_text(drawer)
         assert "SupersededCorp" not in text
-        assert "NewCorp" not in text
+        assert "NewCorp" in text
         assert "Loading" in text
 
         pool.workers[1].run()
@@ -668,7 +682,7 @@ class TestNullRepository:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert — basic summary still shows
         text = _all_text(drawer)
@@ -681,7 +695,7 @@ class TestNullRepository:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -693,7 +707,7 @@ class TestNullRepository:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(_record())
+        _show_record(qtbot, drawer, _record())
 
         # Assert
         text = _all_text(drawer)
@@ -710,7 +724,7 @@ class TestMetadata:
         qtbot.addWidget(drawer)
 
         # Act
-        drawer.show_record(rec)
+        _show_record(qtbot, drawer, rec)
 
         # Assert
         text = _all_text(drawer)
