@@ -54,7 +54,7 @@ Repository = "https://github.com/Czarnak/insider-scanner"
 Issues = "https://github.com/Czarnak/insider-scanner/issues"
 
 [project.optional-dependencies]
-gui = ["pyqtgraph>=0.13,<0.14", "PySide6>=6.6,<7"]
+gui = ["pyqtgraph>=0.13,<0.15", "PySide6>=6.6,<7"]
 maintainer = ["pyyaml>=6.0,<7"]
 dev = [
     # Workflow assertions and Congress maintainer-script tests parse YAML.
