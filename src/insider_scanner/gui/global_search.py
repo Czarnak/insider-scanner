@@ -112,7 +112,9 @@ class GlobalSearchController(QObject):
         thread_pool: QThreadPool | None = None,
         debounce_ms: int = 200,
     ) -> None:
-        super().__init__(parent if parent is not None else line_edit)
+        # The application event filter and callbacks use anchor-owned widgets.
+        # Their lifetime must end with the anchor, even with a broader parent.
+        super().__init__(line_edit)
         self._line_edit = line_edit
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()

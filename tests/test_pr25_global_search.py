@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from shiboken6 import isValid
 
 from insider_scanner.gui.global_search import GlobalSearchController
 from insider_scanner.persistence.feed import EntityHit, EntitySearchResults, FeedMarket
@@ -255,3 +256,29 @@ def test_direct_new_search_hides_previous_choices_until_result(qtbot):
     pool.workers[1].run()
     assert controller.popup.isVisible()
     assert controller.popup.list_widget.item(0).text() == 'Filter feed for "msft"'
+
+
+def test_search_anchor_destruction_disconnects_events_and_pending_work(qtbot):
+    window = QWidget()
+    qtbot.addWidget(window)
+    line = QLineEdit(window)
+    pool = SearchPool(delayed=True)
+    controller = GlobalSearchController(
+        line, SearchRepository(), parent=window, thread_pool=pool
+    )
+    line.setText("app")
+    controller.search_now("app")
+
+    try:
+        with qtbot.captureExceptions() as exceptions:
+            line.deleteLater()
+            QCoreApplication.sendPostedEvents(line, QEvent.Type.DeferredDelete)
+            QCoreApplication.sendEvent(window, QEvent(QEvent.Type.Move))
+            pool.workers[0].run()
+
+        assert exceptions == []
+    finally:
+        if isValid(controller):
+            QApplication.instance().removeEventFilter(controller)
+            controller.deleteLater()
+            QCoreApplication.sendPostedEvents(controller, QEvent.Type.DeferredDelete)
