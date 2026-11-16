@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
+    QProgressBar,
+    QPushButton,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -53,10 +55,20 @@ class DateRangeGroup(QGroupBox):
         self.enabled.toggled.connect(self.end.setEnabled)
 
     def start_date(self) -> date | None:
-        return self.start.date().toPython() if self.enabled.isChecked() else None
+        value = self.start.date()
+        return (
+            date(value.year(), value.month(), value.day())
+            if self.enabled.isChecked()
+            else None
+        )
 
     def end_date(self) -> date | None:
-        return self.end.date().toPython() if self.enabled.isChecked() else None
+        value = self.end.date()
+        return (
+            date(value.year(), value.month(), value.day())
+            if self.enabled.isChecked()
+            else None
+        )
 
 
 class BaseScanTab(QWidget):
@@ -64,6 +76,10 @@ class BaseScanTab(QWidget):
 
     dataChanged = Signal()
     initial_status = "No scan results yet"
+    btn_save: QPushButton
+    btn_stop: QPushButton
+    progress: QProgressBar
+    _filing_button: QPushButton
 
     def __init__(self, service=None, parent=None, *, thread_pool=None):
         super().__init__(parent)
@@ -77,6 +93,18 @@ class BaseScanTab(QWidget):
         self._filtered_trades: list = []
         self._saving = False
         self._sized_columns: tuple[str, ...] = ()
+
+    def _build_result_actions(self, layout):
+        raise NotImplementedError
+
+    def _on_row_double_click(self, index):
+        raise NotImplementedError
+
+    def _set_scan_buttons_enabled(self, enabled: bool):
+        raise NotImplementedError
+
+    def _apply_filters(self):
+        raise NotImplementedError
 
     def _build_date_range_group(self):
         self.date_range = DateRangeGroup()
