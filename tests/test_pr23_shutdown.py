@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from threading import Event
 
+import pytest
 from PySide6.QtCore import QRunnable, QTimer
 
-from insider_scanner.gui.main_window import MainWindow
+from insider_scanner.gui.main_window import MainWindow, MainWindowInitializationError
 
 
 class HeldWorker(QRunnable):
@@ -89,3 +90,19 @@ def test_idle_window_closes_immediately(qtbot, tmp_path):
     window.show()
     assert window.close()
     assert not window.isVisible()
+
+
+def test_partial_window_initialization_can_close_safely(qtbot, tmp_path, monkeypatch):
+    def fail_recovery(_data_dir):
+        raise PermissionError("locked rename files")
+
+    monkeypatch.setattr(
+        "insider_scanner.gui.main_window.recover_watchlist_rename", fail_recovery
+    )
+    window = MainWindow.__new__(MainWindow)
+    with pytest.raises(MainWindowInitializationError, match="rename"):
+        window.__init__(state_path=tmp_path / "feed_state.json")
+    qtbot.addWidget(window)
+
+    assert window.centralWidget() is None
+    assert window.close()

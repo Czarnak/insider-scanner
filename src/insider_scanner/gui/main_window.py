@@ -790,7 +790,9 @@ class MainWindow(QMainWindow):
         self._shutdown_started_at = monotonic()
         if hasattr(self, "persist_timer"):
             self.persist_timer.stop()
-        self.centralWidget().setEnabled(False)
+        central = self.centralWidget()
+        if central is not None:
+            central.setEnabled(False)
         self.menuBar().setEnabled(False)
         self.request_cancellation()
 
