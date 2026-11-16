@@ -11,14 +11,12 @@ from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -40,6 +38,7 @@ from insider_scanner.gui.alerts_page import AlertsPage
 from insider_scanner.gui.entity_pages import CompanyPage, InsiderPage
 from insider_scanner.gui.feed_page import FeedPageWidget
 from insider_scanner.gui.global_search import GlobalSearchController
+from insider_scanner.gui.screens_menu import ScreensMenu
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
 from insider_scanner.gui.watchlist_page import WatchlistPage
@@ -174,6 +173,7 @@ class MainWindow(QMainWindow):
         self.navigation_group = QButtonGroup(self)
         self.navigation_group.setExclusive(True)
         self.navigation_buttons: dict[str, QToolButton] = {}
+        self.pages: dict[str, QWidget] = {}
 
         workspace = QWidget()
         workspace_layout = QVBoxLayout(workspace)
@@ -232,9 +232,11 @@ class MainWindow(QMainWindow):
         self.screens_button.setText("Screens")
         self.screens_button.setAccessibleName("Saved screens")
         self.screens_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.screens_menu = QMenu(self)
+        self.screens_menu = ScreensMenu(self)
         self.screens_button.setMenu(self.screens_menu)
-        self.screens_menu.aboutToShow.connect(self._rebuild_screens_menu)
+        self.screens_menu.saveRequested.connect(self._save_current_screen)
+        self.screens_menu.applyRequested.connect(self._apply_screen)
+        self.screens_menu.deleteRequested.connect(self._delete_screen)
         layout.addWidget(self.screens_button)
 
         # Notification indicator — visible on every page, shows unseen alert count.
@@ -244,12 +246,6 @@ class MainWindow(QMainWindow):
         self.alerts_button.setAccessibleName("Alerts and notifications")
         self.alerts_button.clicked.connect(partial(self._select_page, "Alerts"))
         layout.addWidget(self.alerts_button)
-
-        self.theme_selector = QComboBox()
-        self.theme_selector.setAccessibleName("Application theme")
-        self.theme_selector.addItems(["System", "Light", "Dark"])
-        self.theme_selector.currentIndexChanged.connect(self._on_theme_selected)
-        layout.addWidget(self.theme_selector)
 
         self._rebuild_screens_menu()
         return top_bar
@@ -320,6 +316,7 @@ class MainWindow(QMainWindow):
         button.clicked.connect(partial(self._select_page, name))
         self.navigation_group.addButton(button)
         self.navigation_buttons[name] = button
+        self.pages[name] = widget
         self.sidebar_layout.addWidget(button)
         self.page_stack.addWidget(widget)
 
@@ -556,9 +553,8 @@ class MainWindow(QMainWindow):
 
     def _select_page(self, name: str) -> None:
         button = self.navigation_buttons[name]
-        index = list(self.navigation_buttons).index(name)
         button.setChecked(True)
-        self.page_stack.setCurrentIndex(index)
+        self.page_stack.setCurrentWidget(self.pages[name])
         self.page_title.setText(name)
         is_feed = name == "Feed"
         self.global_search.setVisible(True)
@@ -570,9 +566,6 @@ class MainWindow(QMainWindow):
 
     def _toggle_filter_panel(self) -> None:
         self.feed_page.toggle_filter_panel()
-
-    def _apply_global_search(self) -> None:
-        self.feed_page.set_search(self.global_search.text())
 
     def _reload_feed(self) -> None:
         self.feed_page.reload()
@@ -594,22 +587,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _rebuild_screens_menu(self) -> None:
-        self.screens_menu.clear()
-        save_action = self.screens_menu.addAction("Save current as screen…")
-        save_action.triggered.connect(self._save_current_screen)
-        self.screens_menu.addSeparator()
-        screens = self._feed_state.screens
-        if not screens:
-            no_screens = self.screens_menu.addAction("No saved screens")
-            no_screens.setEnabled(False)
-            return
-        for screen in screens:
-            submenu = QMenu(screen.name, self.screens_menu)
-            apply_action = submenu.addAction("Apply")
-            apply_action.triggered.connect(partial(self._apply_screen, screen.name))
-            delete_action = submenu.addAction("Delete")
-            delete_action.triggered.connect(partial(self._delete_screen, screen.name))
-            self.screens_menu.addMenu(submenu)
+        self.screens_menu.set_screens(self._feed_state.screens)
 
     def _save_current_screen(self) -> None:
         name, ok = QInputDialog.getText(self, "Save Screen", "Screen name:")
@@ -623,6 +601,7 @@ class MainWindow(QMainWindow):
         capped = tuple(replaced[-200:])
         self._feed_state = dataclasses.replace(self._feed_state, screens=capped)
         self._persist_feed_state()
+        self._rebuild_screens_menu()
         self.log_status(f"Saved screen '{name}'")
 
     def _apply_screen(self, name: str) -> None:
@@ -712,31 +691,15 @@ class MainWindow(QMainWindow):
             self._theme_action_group.addAction(action)
             self.theme_menu.addAction(action)
             self._theme_actions[mode] = action
-        self.theme_menu.aboutToShow.connect(self._sync_theme_actions)
         self._sync_theme_actions()
 
     def _set_theme_mode(self, mode: ThemeMode) -> None:
         get_theme_manager().set_mode(mode)
-        self._sync_theme_actions()
-        self._sync_theme_selector()
-
-    def _on_theme_selected(self, index: int) -> None:
-        modes = (ThemeMode.SYSTEM, ThemeMode.LIGHT, ThemeMode.DARK)
-        if 0 <= index < len(modes) and get_theme_manager().mode() is not modes[index]:
-            self._set_theme_mode(modes[index])
 
     def _sync_theme_actions(self) -> None:
         action = self._theme_actions.get(get_theme_manager().mode())
         if action is not None and not action.isChecked():
             action.setChecked(True)
-
-    def _sync_theme_selector(self) -> None:
-        modes = (ThemeMode.SYSTEM, ThemeMode.LIGHT, ThemeMode.DARK)
-        index = modes.index(get_theme_manager().mode())
-        if self.theme_selector.currentIndex() != index:
-            self.theme_selector.blockSignals(True)
-            self.theme_selector.setCurrentIndex(index)
-            self.theme_selector.blockSignals(False)
 
     def _init_theme_indicator(self) -> None:
         manager = get_theme_manager()
@@ -745,7 +708,6 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.theme_indicator)
         self._theme_slot = self._on_palette_changed
         self._theme_connection = manager.paletteChanged.connect(self._theme_slot)
-        self._sync_theme_selector()
 
     @staticmethod
     def _theme_indicator_text(palette: ThemePalette) -> str:
@@ -754,7 +716,7 @@ class MainWindow(QMainWindow):
     def _on_palette_changed(self, palette: ThemePalette) -> None:
         if _is_valid(self.theme_indicator):
             self.theme_indicator.setText(self._theme_indicator_text(palette))
-        self._sync_theme_selector()
+        self._sync_theme_actions()
 
     def request_cancellation(self) -> None:
         self._alert_requests.invalidate()

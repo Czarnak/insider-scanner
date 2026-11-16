@@ -123,7 +123,7 @@ def test_top_bar_search_and_reload_delegate_to_feed(qtbot):
     window.feed_page.reload = lambda: calls.append(("reload", None))
 
     window.global_search.setText("AAPL")
-    window._apply_global_search()
+    window.global_search_controller.feedSearchRequested.emit("AAPL")
     qtbot.mouseClick(window.reload_button, Qt.MouseButton.LeftButton)
 
     assert calls == [("search", "AAPL"), ("reload", None)]
