@@ -215,3 +215,28 @@ def test_user_column_widths_survive_filtering_and_new_results(workflow):
     assert tab.trades_table.columnWidth(0) == 321
     tab._on_scan_done(trades)
     assert tab.trades_table.columnWidth(0) == 321
+
+
+def test_scan_retains_generated_edgar_links_without_mutating_source(qtbot, monkeypatch):
+    pool = QueuedPool()
+    tab = ScanTab(thread_pool=pool)
+    qtbot.addWidget(tab)
+    trade = us_trade(edgar_url="")
+    generated = "https://www.sec.gov/edgar/search/#/generated"
+    monkeypatch.setattr(
+        "insider_scanner.core.edgar.build_edgar_url_for_trade", lambda trade: generated
+    )
+    save = Mock(return_value="test-output")
+    monkeypatch.setattr("insider_scanner.core.merger.save_scan_results", save)
+    monkeypatch.setattr("PySide6.QtWidgets.QMessageBox.information", lambda *a: None)
+    tab._on_scan_done([trade])
+    column = next(
+        i
+        for i in range(tab.trades_model.columnCount())
+        if tab.trades_model.headerData(i, Qt.Orientation.Horizontal) == "edgar_url"
+    )
+    assert tab.trades_model.index(0, column).data() == generated
+    assert trade.edgar_url == ""
+    tab._save_results()
+    pool.workers[0].run()
+    assert save.call_args.args[0][0].edgar_url == generated

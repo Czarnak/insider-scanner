@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import webbrowser
+from dataclasses import replace
 from threading import Event
 
 from PySide6.QtCore import QThreadPool, Signal
@@ -356,8 +357,16 @@ class ScanTab(BaseScanTab):
     # ------------------------------------------------------------------
 
     def _display_trades(self, trades):
+        from insider_scanner.core.edgar import build_edgar_url_for_trade
         from insider_scanner.core.merger import trades_to_dataframe
 
+        # Enrich the view/export snapshot while leaving fetched records intact.
+        trades = [
+            trade
+            if trade.edgar_url
+            else replace(trade, edgar_url=build_edgar_url_for_trade(trade))
+            for trade in trades
+        ]
         df = trades_to_dataframe(trades)
         columns = [
             c

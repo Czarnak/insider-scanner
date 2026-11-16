@@ -48,9 +48,12 @@ def test_scan_table_and_details_distinguish_unknown_from_zero(qtbot):
     qtbot.addWidget(tab)
     tab._trades = [_trade(True), _trade(False)]
     tab._display_trades(tab._trades)
-    frame = tab.trades_model.dataframe
     for column in ("shares", "price", "value"):
-        col = frame.columns.get_loc(column)
+        col = next(
+            i
+            for i in range(tab.trades_model.columnCount())
+            if tab.trades_model.headerData(i, Qt.Orientation.Horizontal) == column
+        )
         assert (
             tab.trades_model.data(
                 tab.trades_model.index(0, col), Qt.ItemDataRole.DisplayRole
