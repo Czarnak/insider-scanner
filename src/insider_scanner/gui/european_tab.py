@@ -421,7 +421,7 @@ class EuropeanTab(QWidget):
         )
 
     def _stop_scan(self):
-        self.request_cancellation()
+        self._cancel_event.set()
         log.info("European scan cancellation requested")
 
     def request_cancellation(self) -> None:

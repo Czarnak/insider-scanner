@@ -439,7 +439,7 @@ class CongressTab(QWidget):
 
     def _stop_scan(self):
         """Signal the background scan to stop."""
-        self.request_cancellation()
+        self._cancel_event.set()
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Cancelling scan...")
 
