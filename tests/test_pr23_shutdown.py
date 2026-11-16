@@ -97,7 +97,7 @@ def test_partial_window_initialization_can_close_safely(qtbot, tmp_path, monkeyp
         raise PermissionError("locked rename files")
 
     monkeypatch.setattr(
-        "insider_scanner.gui.main_window.recover_watchlist_rename", fail_recovery
+        "insider_scanner.gui.user_state.recover_watchlist_rename", fail_recovery
     )
     window = MainWindow.__new__(MainWindow)
     with pytest.raises(MainWindowInitializationError, match="rename"):

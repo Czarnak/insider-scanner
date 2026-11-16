@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from insider_scanner.gui import main_window as mw
+from insider_scanner.gui import user_state
 
 
 @pytest.fixture
@@ -25,7 +26,7 @@ def test_persist_feed_state_permission_error_surfaces_writable_message(
     def boom(path, state):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(mw, "save_feed_state", boom)
+    monkeypatch.setattr(user_state, "save_feed_state", boom)
 
     window._persist_feed_state()  # must not raise
 
@@ -40,7 +41,7 @@ def test_persist_feed_state_generic_error_surfaces_message_without_writable(
     def boom(path, state):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(mw, "save_feed_state", boom)
+    monkeypatch.setattr(user_state, "save_feed_state", boom)
 
     window._persist_feed_state()
 
@@ -53,7 +54,7 @@ def test_persist_watchlists_permission_error_surfaces_message(window, monkeypatc
     def boom(path, store):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(mw, "save_watchlists", boom)
+    monkeypatch.setattr(user_state, "save_watchlists", boom)
 
     window._persist_watchlists()
 
@@ -66,7 +67,7 @@ def test_persist_alerts_permission_error_surfaces_message(window, monkeypatch):
     def boom(path, store):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(mw, "save_alerts", boom)
+    monkeypatch.setattr(user_state, "save_alerts", boom)
 
     window._persist_alerts()
 

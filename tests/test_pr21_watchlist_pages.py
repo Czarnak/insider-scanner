@@ -218,7 +218,9 @@ def test_unrecoverable_rename_blocks_startup_before_loading_partial_state(
     def fail_recovery(_data_dir):
         raise PermissionError("locked rename files")
 
-    monkeypatch.setattr(main_window, "recover_watchlist_rename", fail_recovery)
+    monkeypatch.setattr(
+        "insider_scanner.gui.user_state.recover_watchlist_rename", fail_recovery
+    )
     with pytest.raises(main_window.MainWindowInitializationError, match="rename"):
         win = main_window.MainWindow(state_path=tmp_path / "feed_state.json")
         qtbot.addWidget(win)

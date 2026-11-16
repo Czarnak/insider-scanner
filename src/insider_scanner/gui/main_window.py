@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from functools import partial
 from pathlib import Path
 from time import monotonic
@@ -41,34 +40,11 @@ from insider_scanner.gui.global_search import GlobalSearchController
 from insider_scanner.gui.screens_menu import ScreensMenu
 from insider_scanner.gui.theme import ThemeMode, get_theme_manager
 from insider_scanner.gui.theme.tokens import ThemePalette
+from insider_scanner.gui.user_state import UserStateInitializationError, UserStateStore
 from insider_scanner.gui.watchlist_page import WatchlistPage
-from insider_scanner.persistence.alerts import (
-    alerts_path,
-    load_alerts,
-    save_alerts,
-)
-from insider_scanner.persistence.errors import is_access_denied
 from insider_scanner.persistence.feed import FeedCriteria
-from insider_scanner.persistence.feed_state import (
-    SCHEMA_VERSION,
-    FeedState,
-    SavedScreen,
-    feed_state_path,
-    load_feed_state,
-    save_feed_state,
-)
-from insider_scanner.persistence.watchlist_rename import (
-    WatchlistRenamePendingError,
-    recover_watchlist_rename,
-    save_watchlist_rename,
-)
-from insider_scanner.persistence.watchlists import (
-    WatchEntry,
-    WatchlistError,
-    load_watchlists,
-    save_watchlists,
-    watchlists_path,
-)
+from insider_scanner.persistence.feed_state import feed_state_path
+from insider_scanner.persistence.watchlists import WatchEntry
 from insider_scanner.services.alerts import evaluate_alerts
 from insider_scanner.utils.config import DEFAULT_PATHS
 from insider_scanner.utils.logging import get_logger
@@ -104,31 +80,13 @@ class MainWindow(QMainWindow):
         self._shutdown_timer.setInterval(25)
         self._shutdown_timer.timeout.connect(self._poll_shutdown)
         self._alert_requests = LatestRequest(self, self._thread_pool)
-        self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
-        self._feed_state: FeedState = load_feed_state(self._state_path)
-        # Watchlists and alerts live alongside the feed-state file.
-        self._data_dir: Path = self._state_path.parent
-        self._watchlists_path: Path = watchlists_path(self._data_dir)
-        self._alerts_path: Path = alerts_path(self._data_dir)
         try:
-            recover_watchlist_rename(self._data_dir)
-        except (OSError, WatchlistError) as exc:
-            log.exception("Watchlist rename recovery failed")
-            raise MainWindowInitializationError(
-                "Could not recover a pending watchlist rename. "
-                "Check data folder access and restart."
-            ) from exc
-        migration_error = None
-        try:
-            self._watchlists = load_watchlists(
-                self._watchlists_path,
-                legacy_path=self._data_dir / "tickers_watchlist.txt",
+            self._user_state = UserStateStore(
+                state_path or feed_state_path(DEFAULT_PATHS.data_dir),
+                notify=self.log_status,
             )
-        except (OSError, WatchlistError) as exc:
-            log.exception("Legacy watchlist migration failed")
-            migration_error = exc
-            self._watchlists = load_watchlists(self._watchlists_path)
-        self._alerts = load_alerts(self._alerts_path)
+        except UserStateInitializationError as exc:
+            raise MainWindowInitializationError(str(exc)) from exc
         self.setWindowTitle("Insider Scanner")
         self.setMinimumSize(900, 550)
         self.resize(1200, 720)
@@ -144,12 +102,8 @@ class MainWindow(QMainWindow):
         self.persist_timer.setSingleShot(True)
         self.persist_timer.setInterval(500)
         self.persist_timer.timeout.connect(self._persist_feed_state)
-        if migration_error is not None:
-            self.log_status(
-                "Could not import legacy watchlist. Existing watchlists are available; "
-                "the import will retry on next startup.",
-                timeout_ms=10_000,
-            )
+        if self._user_state.startup_notice is not None:
+            self.log_status(self._user_state.startup_notice, timeout_ms=10_000)
 
     def _build_shell(self) -> None:
         shell = QWidget()
@@ -257,17 +211,19 @@ class MainWindow(QMainWindow):
             self.feed_page = FeedPageWidget(
                 repository,
                 thread_pool=self._thread_pool,
-                initial_criteria=self._feed_state.criteria,
+                initial_criteria=self._user_state.feed_state.criteria,
             )
             self.feed_page.resultCountChanged.connect(self._set_result_count)
             self.feed_page.freshnessChanged.connect(self.freshness_label.setText)
-            self.feed_page.restore_column_layout(self._feed_state.column_layout)
+            self.feed_page.restore_column_layout(
+                self._user_state.feed_state.column_layout
+            )
             self.feed_page.criteriaChanged.connect(self._on_criteria_changed)
             self.feed_page.resetRequested.connect(self._on_feed_reset)
             self.feed_page.openCompanyRequested.connect(self._open_company)
             self.feed_page.openInsiderRequested.connect(self._open_insider)
             self.global_search.blockSignals(True)
-            self.global_search.setText(self._feed_state.criteria.search)
+            self.global_search.setText(self._user_state.feed_state.criteria.search)
             self.global_search.blockSignals(False)
             self._add_page("Feed", self.feed_page)
         except Exception as exc:
@@ -339,7 +295,7 @@ class MainWindow(QMainWindow):
         try:
             self._add_section_label("Monitor")
             self.watchlist_page = WatchlistPage(
-                self._watchlists, rename_handler=self._on_watchlist_renamed
+                self._user_state.watchlists, rename_handler=self._on_watchlist_renamed
             )
             self.watchlist_page.watchlistsChanged.connect(self._on_watchlists_changed)
             self.watchlist_page.openCompanyRequested.connect(self._open_company)
@@ -348,7 +304,7 @@ class MainWindow(QMainWindow):
             self._add_page("Watchlists", self.watchlist_page)
 
             self.alerts_page = AlertsPage(
-                self._alerts, criteria_provider=self.feed_page.criteria
+                self._user_state.alerts, criteria_provider=self.feed_page.criteria
             )
             self.alerts_page.rulesChanged.connect(self._on_alerts_changed)
             self.alerts_page.matchCountChanged.connect(self._update_alert_badge)
@@ -391,8 +347,7 @@ class MainWindow(QMainWindow):
             self.log_status("Added to watchlist", timeout_ms=3_000)
 
     def _on_watchlists_changed(self, store) -> None:
-        self._watchlists = store
-        self._persist_watchlists()
+        self._user_state.save_watchlists(store)
         self.scan_tab.set_watchlists(store)
         if hasattr(self.analysis_tab, "set_watchlists"):
             self.analysis_tab.set_watchlists(store)
@@ -401,64 +356,29 @@ class MainWindow(QMainWindow):
         self._check_alerts()
 
     def _on_watchlist_renamed(self, watchlists, old: str, new: str) -> bool:
-        store = self.alerts_page.store().renamed_watchlist(old, new)
-        try:
-            save_watchlist_rename(self._data_dir, watchlists, store)
-        except WatchlistRenamePendingError:
-            log.exception("Watchlist rename is pending recovery")
-            self.log_status(
-                "Watchlist rename saved for recovery; some files could not be updated.",
-                timeout_ms=10_000,
-            )
-        except (OSError, WatchlistError) as exc:
-            log.exception("Could not save watchlist rename")
-            self._handle_save_failure("watchlist rename", exc)
+        if not self._user_state.rename_watchlist(
+            watchlists, old, new, alerts=self.alerts_page.store()
+        ):
             QMessageBox.warning(
                 self,
                 "Could not rename watchlist",
                 "The rename could not be saved. Please retry when the data folder is writable.",
             )
             return False
-        self._alerts = store
-        self.alerts_page.set_store(store)
+        self.alerts_page.set_store(self._user_state.alerts)
         self._alert_requests.invalidate()
         return True
 
     def _on_alerts_changed(self, store) -> None:
-        self._alerts = store
         self._alert_requests.invalidate()
-        self._persist_alerts()
+        self._user_state.save_alerts(store)
         self._check_alerts()
 
     def _persist_watchlists(self) -> None:
-        try:
-            recover_watchlist_rename(self._data_dir)
-            save_watchlists(self._watchlists_path, self._watchlists)
-        except Exception as exc:
-            log.exception("Failed to persist watchlists")
-            self._handle_save_failure("watchlists", exc)
+        self._user_state.save_watchlists()
 
     def _persist_alerts(self) -> None:
-        try:
-            recover_watchlist_rename(self._data_dir)
-            save_alerts(self._alerts_path, self._alerts)
-        except Exception as exc:
-            log.exception("Failed to persist alerts")
-            self._handle_save_failure("alerts", exc)
-
-    def _handle_save_failure(self, what: str, exc: BaseException) -> None:
-        """Surface a save failure without leaking technical detail.
-
-        Access/permission failures get an actionable hint; everything else gets
-        a generic message. The full exception is already in the logs.
-        """
-        if is_access_denied(exc):
-            self.log_status(
-                f"Couldn't save {what} — the data folder isn't writable.",
-                timeout_ms=6_000,
-            )
-        else:
-            self.log_status(f"Couldn't save {what}.", timeout_ms=6_000)
+        self._user_state.save_alerts(self.alerts_page.store())
 
     def _check_alerts(self) -> None:
         """Evaluate enabled alert rules against the local feed off the UI thread."""
@@ -516,7 +436,9 @@ class MainWindow(QMainWindow):
 
         service = None if self._services is None else self._services.us
         self.scan_tab = ScanTab(
-            service, thread_pool=self._thread_pool, watchlists=self._watchlists
+            service,
+            thread_pool=self._thread_pool,
+            watchlists=self._user_state.watchlists,
         )
         self.scan_tab.dataChanged.connect(self._on_data_changed)
         self._add_page("Insider Scan", self.scan_tab)
@@ -544,7 +466,7 @@ class MainWindow(QMainWindow):
             self.analysis_tab = AnalysisTab(
                 self._services,
                 thread_pool=self._thread_pool,
-                watchlists=self._watchlists,
+                watchlists=self._user_state.watchlists,
             )
         except Exception as exc:
             log.exception("Analysis page initialization failed")
@@ -587,25 +509,23 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _rebuild_screens_menu(self) -> None:
-        self.screens_menu.set_screens(self._feed_state.screens)
+        self.screens_menu.set_screens(self._user_state.feed_state.screens)
 
     def _save_current_screen(self) -> None:
         name, ok = QInputDialog.getText(self, "Save Screen", "Screen name:")
         if not ok or not name.strip():
             return
         name = name.strip()
-        new_screen = SavedScreen(name, self.feed_page.criteria())
-        existing = list(self._feed_state.screens)
-        replaced = [s for s in existing if s.name != name]
-        replaced.append(new_screen)
-        capped = tuple(replaced[-200:])
-        self._feed_state = dataclasses.replace(self._feed_state, screens=capped)
-        self._persist_feed_state()
+        self._user_state.set_screen(name, self.feed_page.criteria())
+        saved = self._persist_feed_state()
         self._rebuild_screens_menu()
-        self.log_status(f"Saved screen '{name}'")
+        if saved:
+            self.log_status(f"Saved screen '{name}'")
 
     def _apply_screen(self, name: str) -> None:
-        screen = next((s for s in self._feed_state.screens if s.name == name), None)
+        screen = next(
+            (s for s in self._user_state.feed_state.screens if s.name == name), None
+        )
         if screen is None:
             return
         if self._confirm_discard(f"Apply screen '{name}'"):
@@ -615,11 +535,11 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(self, "Delete screen", f"Delete screen '{name}'?")
         if answer != QMessageBox.StandardButton.Yes:
             return
-        remaining = tuple(s for s in self._feed_state.screens if s.name != name)
-        self._feed_state = dataclasses.replace(self._feed_state, screens=remaining)
-        self._persist_feed_state()
+        self._user_state.delete_screen(name)
+        saved = self._persist_feed_state()
         self._rebuild_screens_menu()
-        self.log_status(f"Deleted screen '{name}'")
+        if saved:
+            self.log_status(f"Deleted screen '{name}'")
 
     def _confirm_discard(self, action_label: str) -> bool:
         if not self.feed_page.criteria().is_nontrivial():
@@ -651,19 +571,10 @@ class MainWindow(QMainWindow):
         self.global_search.blockSignals(False)
         self.persist_timer.start()
 
-    def _persist_feed_state(self) -> None:
-        try:
-            state = FeedState(
-                version=SCHEMA_VERSION,
-                criteria=self.feed_page.criteria(),
-                column_layout=self.feed_page.column_layout(),
-                screens=self._feed_state.screens,
-            )
-            self._feed_state = state
-            save_feed_state(self._state_path, state)
-        except Exception as exc:
-            log.exception("Failed to persist feed state")
-            self._handle_save_failure("filters", exc)
+    def _persist_feed_state(self) -> bool:
+        return self._user_state.save_feed(
+            self.feed_page.criteria(), self.feed_page.column_layout()
+        )
 
     def log_status(self, message: str, timeout_ms: int = 0) -> None:
         """Show a concise user-facing status message."""
