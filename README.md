@@ -114,6 +114,16 @@ Existing alert timestamps remain readable. Their final second is checked again
 once to avoid losing matches to older timestamp precision. The database upgrade
 adds ingestion positions for existing records without changing transaction data.
 
+Top-bar search keeps typing focus while suggestions are visible. Use Up/Down to
+choose a company or insider, Enter to open it or filter the feed, and Escape to
+dismiss suggestions. Company and insider pages show their latest 200 transactions;
+summary counts describe those displayed rows. Selecting another entity clears the
+previous history while the new one loads.
+
+The investigation drawer shows the selected transaction immediately and loads
+extra context after a brief selection pause. Reloading, sorting or filtering the
+feed closes the previous drawer so its details and actions follow the current row.
+
 ![Unified Feed](img/feed.png)
 
 #### Insider Scan tool

@@ -109,7 +109,7 @@ def test_entity_summary_counts_exercise_and_leaves_neutral_transactions_unclassi
     )
 
     assert _build_summary(records) == (
-        "5 transactions · 2 buys · 1 sells · latest 2026-01-05"
+        "Showing latest 5 transactions · 2 buys · 1 sells · latest 2026-01-05"
     )
 
 

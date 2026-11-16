@@ -502,11 +502,13 @@ class FeedFilterChips(QWidget):
         chip = self._chips.pop(key, None)
         if chip is not None:
             self._layout.removeWidget(chip)
-            chip.setParent(None)  # type: ignore[call-overload]
+            chip.hide()
+            chip.deleteLater()
         self.chipRemoved.emit(key)
 
     def _remove_all_chips(self) -> None:
         for chip in list(self._chips.values()):
             self._layout.removeWidget(chip)
-            chip.setParent(None)  # type: ignore[call-overload]
+            chip.hide()
+            chip.deleteLater()
         self._chips.clear()

@@ -5,8 +5,8 @@ from __future__ import annotations
 import webbrowser
 from functools import partial
 
-from PySide6.QtCore import Qt, QThreadPool, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent
+from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QHideEvent, QKeyEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -21,7 +21,6 @@ from insider_scanner.core.trade_types import TransactionDirection, classify_dire
 from insider_scanner.gui.theme import get_theme_manager
 from insider_scanner.gui.trade_display import format_value
 from insider_scanner.persistence.feed import (
-    FeedMarket,
     FeedRecord,
     InvestigationBundle,
     load_investigation,
@@ -33,24 +32,11 @@ log = get_logger("gui.investigation_drawer")
 
 
 class InvestigationDrawer(QWidget):
-    """Slide-in detail panel that investigates a single FeedRecord.
+    """Show the selected record immediately and debounce its bounded detail query."""
 
-    Parameters
-    ----------
-    repository:
-        Duck-typed object with ``detail``, ``recent_by_person``,
-        ``recent_by_issuer`` methods.  Pass ``None`` to render a
-        summary-only view without async loading.
-    thread_pool:
-        Defaults to ``QThreadPool.globalInstance()``.
-    """
-
-    # Signals
-    openCompanyRequested = Signal(
-        object, object
-    )  # (identifier: str, market: FeedMarket)
-    openInsiderRequested = Signal(object, object)  # (person: str, market: FeedMarket)
-    watchRequested = Signal(object)  # (record: FeedRecord)
+    openCompanyRequested = Signal(object, object)
+    openInsiderRequested = Signal(object, object)
+    watchRequested = Signal(object)
     closeRequested = Signal()
 
     def __init__(
@@ -66,34 +52,34 @@ class InvestigationDrawer(QWidget):
         self._requests = LatestRequest(self, self._thread_pool)
         self._record: FeedRecord | None = None
         self._bundle: InvestigationBundle | None = None
+        self._needs_details = False
         self._palette = get_theme_manager().palette()
         self._mono_font = QFont("JetBrains Mono")
         self._mono_font.setStyleHint(QFont.StyleHint.Monospace)
-        # Expose the last chosen transaction QColor for tests
-        self._last_transaction_color: QColor = QColor()
-
+        self._last_transaction_color = QColor()
+        self._load_timer = QTimer(self)
+        self._load_timer.setSingleShot(True)
+        self._load_timer.setInterval(150)
+        self._load_timer.timeout.connect(self._load_details)
         self.setAccessibleName("Investigation details")
+        self._build_ui()
+        self._on_palette_changed(self._palette)
+        self._show_state("Select a transaction to investigate.")
         get_theme_manager().paletteChanged.connect(self._on_palette_changed)
 
-        self._build_ui()
-        self._show_state("Select a transaction to investigate.")
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def show_record(self, record: FeedRecord) -> None:
-        """Begin loading investigation data for *record*."""
-        self._record = record
-        if self._repository is None:
-            self._requests.invalidate()
-            # Render from record alone — no async fetch
-            bundle = InvestigationBundle(detail=None, by_person=(), by_issuer=())
-            self._render(record, bundle)
+        """Replace all prior detail now; only the final selection starts a query."""
+        self.request_cancellation()
+        self._render(record, None)
+        self._needs_details = self._repository is not None
+        if self._repository is not None:
+            self._show_state("Loading…", keep_content=True)
+            self._load_timer.start()
+
+    def _load_details(self) -> None:
+        record = self._record
+        if record is None:
             return
-
-        self._show_state("Loading…")
-
         self._requests.start(
             load_investigation,
             args=(self._repository, record),
@@ -102,316 +88,240 @@ class InvestigationDrawer(QWidget):
         )
 
     def last_transaction_color(self) -> QColor:
-        """Return the QColor last applied to the transaction-type label.
-
-        Exposed for tests so they can assert semantic coloring without
-        inspecting stylesheet strings.
-        """
+        """Return the semantic color applied to the current transaction label."""
         return self._last_transaction_color
 
     def request_cancellation(self) -> None:
-        """Invalidate any in-flight investigation load so its result is dropped."""
+        """Stop pending dispatch and suppress callbacks from submitted detail loads."""
+        self._load_timer.stop()
         self._requests.invalidate()
-
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-
-        # State label (empty prompt / loading / error)
         self._state_label = QLabel()
         self._state_label.setObjectName("drawerState")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._state_label.setWordWrap(True)
         self._state_label.setAccessibleName("Investigation status")
         outer.addWidget(self._state_label)
-
-        # Scroll area for the detail content
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.hide()
         outer.addWidget(self._scroll, stretch=1)
-
-        # Content container placed inside scroll area
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
         self._content_layout.setContentsMargins(12, 12, 12, 12)
         self._content_layout.setSpacing(8)
         self._scroll.setWidget(self._content)
+        identity = QHBoxLayout()
+        self._person_label = self._label("Insider name", identity, bold=True)
+        self._role_label = self._label("Insider role", identity)
+        self._market_label = self._label("Market", identity)
+        identity.addStretch()
+        self._content_layout.addLayout(identity)
+        self._add_separator()
+        self._type_label = self._label("Transaction type")
+        self._summary_labels = {
+            name: self._label(name)
+            for name in (
+                "Issuer",
+                "Ticker / ISIN",
+                "Trade date",
+                "Filing date",
+                "Quantity",
+                "Price",
+                "Value",
+            )
+        }
+        for name in ("Ticker / ISIN", "Quantity", "Price", "Value"):
+            self._summary_labels[name].setFont(self._mono_font)
+        self._add_separator()
+        self._ownership_label = self._label("Ownership information")
+        self._footnotes_label = self._label("Footnotes")
+        self._metadata_label = self._label("Filing metadata")
+        filing = QHBoxLayout()
+        self._reference_label = self._label("Filing reference", filing)
+        self._reference_label.setFont(self._mono_font)
+        self._filing_button = QPushButton("Open filing")
+        self._filing_button.setAccessibleName("Open filing URL")
+        self._filing_button.clicked.connect(self._open_filing)
+        filing.addWidget(self._filing_button)
+        filing.addStretch()
+        self._content_layout.addLayout(filing)
+        self._add_separator()
+        self._recent_person = self._build_recent("Recent activity by this insider")
+        self._recent_issuer = self._build_recent("Recent activity at this company")
+        self._add_separator()
+        self._build_actions()
+        self._content_layout.addStretch()
 
-    # ------------------------------------------------------------------
-    # Slots
-    # ------------------------------------------------------------------
+    def _label(
+        self, name: str, layout: QHBoxLayout | None = None, *, bold: bool = False
+    ) -> QLabel:
+        label = QLabel()
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        label.setAccessibleName(name)
+        if bold:
+            font = label.font()
+            font.setBold(True)
+            label.setFont(font)
+        (layout if layout is not None else self._content_layout).addWidget(label)
+        return label
+
+    def _build_recent(self, title: str) -> tuple[QLabel, tuple[QLabel, ...]]:
+        self._label(title, bold=True).setText(title)
+        empty = self._label(f"No activity for {title}")
+        empty.setText("No other recent activity.")
+        # load_investigation requests at most eight rows for each section.
+        rows = tuple(self._label(f"{title} {i + 1}") for i in range(8))
+        return empty, rows
+
+    def _build_actions(self) -> None:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self._company_button = QPushButton("Open company")
+        self._company_button.setAccessibleName("Open company page")
+        self._company_button.clicked.connect(self._emit_company)
+        row.addWidget(self._company_button)
+        self._insider_button = QPushButton("Open insider")
+        self._insider_button.setAccessibleName("Open insider page")
+        self._insider_button.clicked.connect(self._emit_insider)
+        row.addWidget(self._insider_button)
+        watch = QPushButton("Watch")
+        watch.setAccessibleName("Add to watchlist")
+        watch.setToolTip("Add this company and insider to a watchlist")
+        watch.clicked.connect(self._emit_watch)
+        row.addWidget(watch)
+        for name in ("Alert", "Compare"):
+            button = QPushButton(name)
+            button.setAccessibleName(name)
+            button.setEnabled(False)
+            button.setToolTip("Available in a future update")
+            row.addWidget(button)
+        row.addStretch()
+        self._content_layout.addLayout(row)
 
     def _on_result(self, record: FeedRecord, bundle: InvestigationBundle) -> None:
+        self._needs_details = False
         self._render(record, bundle)
 
     def _on_error(self, error_info: tuple) -> None:
+        self._needs_details = False
         log.error("Investigation load failed: %s", error_info[1])
-        self._show_state("Could not load investigation details.")
+        self._show_state("Could not load investigation details.", keep_content=True)
 
     def _on_palette_changed(self, palette) -> None:
         self._palette = palette
-        if self._record is not None and self._bundle is not None:
-            self._render(self._record, self._bundle)
+        # One stylesheet per drawer/theme, rather than per label/selection. The
+        # property selectors override the application's QWidget color rule.
+        self.setStyleSheet(
+            f'QLabel[drawerDirection="buy"] {{ color: {palette.purchase}; }}'
+            f'QLabel[drawerDirection="sell"] {{ color: {palette.sale}; }}'
+            f'QLabel[drawerDirection="other"] {{ color: {palette.text_primary}; }}'
+        )
+        if self._record is not None:
+            self._last_transaction_color = self._transaction_color(
+                self._record.transaction_type
+            )
 
-    # ------------------------------------------------------------------
-    # Rendering
-    # ------------------------------------------------------------------
-
-    def _render(self, record: FeedRecord, bundle: InvestigationBundle) -> None:
-        """Populate the scroll area with investigation content."""
+    def _render(self, record: FeedRecord, bundle: InvestigationBundle | None) -> None:
+        """Update the existing content tree; a missing bundle clears old details."""
+        self._record = record
         self._bundle = bundle
-        self._clear_content()
-
-        self._add_identity_line(record)
-        self._add_separator()
-        self._add_transaction_summary(record)
-        self._add_separator()
-        self._add_ownership_block(bundle)
-        self._add_footnotes_block(bundle)
-        if bundle.detail and bundle.detail.metadata:
-            self._add_metadata_rows(bundle.detail.metadata)
-        self._add_filing_block(record, bundle)
-        self._add_separator()
-        self._add_recent_section("Recent activity by this insider", bundle.by_person)
-        self._add_recent_section("Recent activity at this company", bundle.by_issuer)
-        self._add_separator()
-        self._add_action_buttons(record)
-
-        # Stretch to push content to the top
-        self._content_layout.addStretch()
-
+        self._person_label.setText(record.person or "—")
+        self._role_label.setText(record.role)
+        self._role_label.setVisible(bool(record.role))
+        self._market_label.setText(f"[{record.market.value}]")
+        self._type_label.setText(record.transaction_type)
+        self._set_direction(self._type_label, record.transaction_type)
+        self._last_transaction_color = self._transaction_color(record.transaction_type)
+        suffix = f" {record.currency}" if record.currency else ""
+        values = {
+            "Issuer": record.issuer,
+            "Ticker / ISIN": record.identifier or "—",
+            "Trade date": str(record.transaction_date)
+            if record.transaction_date
+            else "—",
+            "Filing date": str(record.filing_date) if record.filing_date else "—",
+            "Quantity": f"{record.quantity:,.2f}"
+            if record.quantity is not None
+            else "—",
+            "Price": f"{record.price:,.2f}{suffix}"
+            if record.price is not None
+            else "—",
+            "Value": self._format_value(record),
+        }
+        for key, value in values.items():
+            self._summary_labels[key].setText(f"{key}: {value}")
+        self._summary_labels["Issuer"].setVisible(bool(record.issuer))
+        detail = bundle.detail if bundle else None
+        ownership = (
+            f"Shares owned after: {detail.shares_owned_after:,.0f}"
+            if detail is not None and detail.shares_owned_after is not None
+            else "Ownership: Not disclosed"
+        )
+        self._ownership_label.setText(ownership)
+        self._footnotes_label.setText(
+            detail.footnotes if detail and detail.footnotes else "No footnotes"
+        )
+        metadata = (
+            "\n".join(f"{key}: {value}" for key, value in detail.metadata)
+            if detail
+            else ""
+        )
+        self._metadata_label.setText(metadata)
+        self._metadata_label.setVisible(bool(metadata))
+        self._reference_label.setText(
+            detail.reference if detail and detail.reference else "—"
+        )
+        self._filing_button.setEnabled(
+            record.source_url.startswith(("https://", "http://"))
+        )
+        self._company_button.setEnabled(bool(record.identifier))
+        self._insider_button.setEnabled(bool(record.person))
+        self._update_recent(self._recent_person, bundle.by_person if bundle else ())
+        self._update_recent(self._recent_issuer, bundle.by_issuer if bundle else ())
+        self._state_label.setText("")
         self._state_label.hide()
         self._scroll.show()
 
-    def _clear_content(self) -> None:
-        """Remove all widgets from the content layout."""
-        while self._content_layout.count():
-            item = self._content_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-    def _add_identity_line(self, record: FeedRecord) -> None:
-        row = QHBoxLayout()
-        row.setSpacing(6)
-
-        name_label = QLabel(record.person or "—")
-        name_label.setTextFormat(Qt.TextFormat.PlainText)
-        font = name_label.font()
-        font.setBold(True)
-        name_label.setFont(font)
-        name_label.setAccessibleName("Insider name")
-        row.addWidget(name_label)
-
-        if record.role:
-            role_label = QLabel(record.role)
-            role_label.setTextFormat(Qt.TextFormat.PlainText)
-            role_label.setAccessibleName("Insider role")
-            row.addWidget(role_label)
-
-        market_label = QLabel(f"[{record.market.value}]")
-        market_label.setTextFormat(Qt.TextFormat.PlainText)
-        market_label.setAccessibleName("Market")
-        row.addWidget(market_label)
-        row.addStretch()
-
-        container = QWidget()
-        container.setLayout(row)
-        self._content_layout.addWidget(container)
-
-    def _add_transaction_summary(self, record: FeedRecord) -> None:
-        layout = QVBoxLayout()
-        layout.setSpacing(4)
-
-        # Transaction type with semantic color
-        type_label = QLabel(record.transaction_type)
-        type_label.setTextFormat(Qt.TextFormat.PlainText)
-        color = self._transaction_color(record.transaction_type)
-        self._last_transaction_color = color
-        type_label.setStyleSheet(f"color: {color.name()};")
-        type_label.setAccessibleName("Transaction type")
-        layout.addWidget(type_label)
-
-        # Issuer
-        if record.issuer:
-            layout.addWidget(self._kv_label("Issuer", record.issuer))
-
-        # Identifier (mono)
-        layout.addWidget(self._kv_mono("Ticker / ISIN", record.identifier or "—"))
-
-        # Dates
-        trade_date = str(record.transaction_date) if record.transaction_date else "—"
-        filing_date = str(record.filing_date) if record.filing_date else "—"
-        layout.addWidget(self._kv_label("Trade date", trade_date))
-        layout.addWidget(self._kv_label("Filing date", filing_date))
-
-        # Quantity (mono)
-        qty = f"{record.quantity:,.2f}" if record.quantity is not None else "—"
-        layout.addWidget(self._kv_mono("Quantity", qty))
-
-        # Price (mono)
-        if record.price is not None:
-            suffix = f" {record.currency}" if record.currency else ""
-            price_str = f"{record.price:,.2f}{suffix}"
-        else:
-            price_str = "—"
-        layout.addWidget(self._kv_mono("Price", price_str))
-
-        # Value
-        value_str = self._format_value(record)
-        layout.addWidget(self._kv_mono("Value", value_str))
-
-        container = QWidget()
-        container.setLayout(layout)
-        self._content_layout.addWidget(container)
-
-    def _add_ownership_block(self, bundle: InvestigationBundle) -> None:
-        detail = bundle.detail
-        if detail is not None and detail.shares_owned_after is not None:
-            text = f"Shares owned after: {detail.shares_owned_after:,.0f}"
-        else:
-            text = "Ownership: Not disclosed"
-        label = QLabel(text)
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setAccessibleName("Ownership information")
-        self._content_layout.addWidget(label)
-
-    def _add_footnotes_block(self, bundle: InvestigationBundle) -> None:
-        detail = bundle.detail
-        if detail is not None and detail.footnotes:
-            text = detail.footnotes
-        else:
-            text = "No footnotes"
-        label = QLabel(text)
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
-        label.setAccessibleName("Footnotes")
-        self._content_layout.addWidget(label)
-
-    def _add_metadata_rows(self, metadata: tuple[tuple[str, str], ...]) -> None:
-        for label_text, value_text in metadata:
-            self._content_layout.addWidget(self._kv_label(label_text, value_text))
-
-    def _add_filing_block(
-        self, record: FeedRecord, bundle: InvestigationBundle
+    def _update_recent(
+        self,
+        section: tuple[QLabel, tuple[QLabel, ...]],
+        records: tuple[FeedRecord, ...],
     ) -> None:
-        layout = QHBoxLayout()
-        layout.setSpacing(6)
+        empty, rows = section
+        empty.setVisible(not records)
+        for i, label in enumerate(rows):
+            record = records[i] if i < len(records) else None
+            if record is None:
+                label.clear()
+                label.hide()
+            else:
+                date_str = (
+                    str(record.transaction_date) if record.transaction_date else "—"
+                )
+                label.setText(
+                    f"{date_str} · {record.transaction_type} · {record.issuer} · {self._format_value(record)}"
+                )
+                self._set_direction(label, record.transaction_type)
+                label.show()
 
-        reference = ""
-        if bundle.detail and bundle.detail.reference:
-            reference = bundle.detail.reference
-        ref_text = reference or "—"
-        ref_label = QLabel(ref_text)
-        ref_label.setTextFormat(Qt.TextFormat.PlainText)
-        ref_label.setFont(self._mono_font)
-        ref_label.setAccessibleName("Filing reference")
-        layout.addWidget(ref_label)
+    @staticmethod
+    def _set_direction(label: QLabel, transaction_type: str) -> None:
+        direction = classify_direction(transaction_type).value.lower()
+        if label.property("drawerDirection") != direction:
+            label.setProperty("drawerDirection", direction)
+            label.style().unpolish(label)
+            label.style().polish(label)
 
-        open_btn = QPushButton("Open filing")
-        open_btn.setAccessibleName("Open filing URL")
-        url = record.source_url or ""
-        valid_url = url.startswith(("https://", "http://"))
-        open_btn.setEnabled(valid_url)
-        if valid_url:
-            open_btn.clicked.connect(partial(webbrowser.open, url))
-        layout.addWidget(open_btn)
-        layout.addStretch()
-
-        container = QWidget()
-        container.setLayout(layout)
-        self._content_layout.addWidget(container)
-
-    def _add_recent_section(self, title: str, records: tuple[FeedRecord, ...]) -> None:
-        header = QLabel(title)
-        header.setTextFormat(Qt.TextFormat.PlainText)
-        header_font = header.font()
-        header_font.setBold(True)
-        header.setFont(header_font)
-        header.setAccessibleName(title)
-        self._content_layout.addWidget(header)
-
-        if not records:
-            empty = QLabel("No other recent activity.")
-            empty.setTextFormat(Qt.TextFormat.PlainText)
-            empty.setAccessibleName(f"No activity for {title}")
-            self._content_layout.addWidget(empty)
-            return
-
-        for rec in records:
-            line = self._recent_record_line(rec)
-            self._content_layout.addWidget(line)
-
-    def _recent_record_line(self, rec: FeedRecord) -> QLabel:
-        date_str = str(rec.transaction_date) if rec.transaction_date else "—"
-        value_str = self._format_value(rec)
-        text = f"{date_str} · {rec.transaction_type} · {rec.issuer} · {value_str}"
-        label = QLabel(text)
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
-        color = self._transaction_color(rec.transaction_type)
-        label.setStyleSheet(f"color: {color.name()};")
-        return label
-
-    def _add_action_buttons(self, record: FeedRecord) -> None:
-        layout = QHBoxLayout()
-        layout.setSpacing(6)
-
-        # Open company
-        company_btn = QPushButton("Open company")
-        company_btn.setAccessibleName("Open company page")
-        company_btn.setEnabled(bool(record.identifier))
-        company_btn.clicked.connect(
-            partial(self._emit_company, record.identifier, record.market)
-        )
-        layout.addWidget(company_btn)
-
-        # Open insider
-        insider_btn = QPushButton("Open insider")
-        insider_btn.setAccessibleName("Open insider page")
-        insider_btn.setEnabled(bool(record.person))
-        insider_btn.clicked.connect(
-            partial(self._emit_insider, record.person, record.market)
-        )
-        layout.addWidget(insider_btn)
-
-        # Watch — adds the record's entity to a watchlist via the host window.
-        watch_btn = QPushButton("Watch")
-        watch_btn.setAccessibleName("Add to watchlist")
-        watch_btn.setToolTip("Add this company and insider to a watchlist")
-        watch_btn.clicked.connect(partial(self._emit_watch, record))
-        layout.addWidget(watch_btn)
-
-        # Placeholder buttons — not yet implemented
-        _placeholder_tooltip = "Available in a future update"
-        for name in ("Alert", "Compare"):
-            btn = QPushButton(name)
-            btn.setAccessibleName(name)
-            btn.setEnabled(False)
-            btn.setToolTip(_placeholder_tooltip)
-            layout.addWidget(btn)
-
-        layout.addStretch()
-
-        container = QWidget()
-        container.setLayout(layout)
-        self._content_layout.addWidget(container)
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _show_state(self, message: str) -> None:
+    def _show_state(self, message: str, *, keep_content: bool = False) -> None:
         self._state_label.setText(message)
         self._state_label.show()
-        self._scroll.hide()
+        self._scroll.setVisible(keep_content)
 
     def _transaction_color(self, transaction_type: str) -> QColor:
         direction = classify_direction(transaction_type)
@@ -425,49 +335,36 @@ class InvestigationDrawer(QWidget):
     def _format_value(record: FeedRecord) -> str:
         return format_value(record)
 
-    def _kv_label(self, key: str, value: str) -> QLabel:
-        label = QLabel(f"{key}: {value}")
-        label.setTextFormat(Qt.TextFormat.PlainText)
-        label.setWordWrap(True)
-        return label
-
-    def _kv_mono(self, key: str, value: str) -> QWidget:
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        row.setContentsMargins(0, 0, 0, 0)
-
-        key_label = QLabel(f"{key}:")
-        key_label.setTextFormat(Qt.TextFormat.PlainText)
-        row.addWidget(key_label)
-
-        val_label = QLabel(value)
-        val_label.setTextFormat(Qt.TextFormat.PlainText)
-        val_label.setFont(self._mono_font)
-        row.addWidget(val_label)
-        row.addStretch()
-
-        container = QWidget()
-        container.setLayout(row)
-        return container
-
     def _add_separator(self) -> None:
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
         self._content_layout.addWidget(line)
 
-    def _emit_company(self, identifier: str, market: FeedMarket) -> None:
-        self.openCompanyRequested.emit(identifier, market)
+    def _open_filing(self) -> None:
+        if self._record and self._record.source_url.startswith(("https://", "http://")):
+            webbrowser.open(self._record.source_url)
 
-    def _emit_insider(self, person: str, market: FeedMarket) -> None:
-        self.openInsiderRequested.emit(person, market)
+    def _emit_company(self) -> None:
+        if self._record:
+            self.openCompanyRequested.emit(self._record.identifier, self._record.market)
 
-    def _emit_watch(self, record: FeedRecord) -> None:
-        self.watchRequested.emit(record)
+    def _emit_insider(self) -> None:
+        if self._record:
+            self.openInsiderRequested.emit(self._record.person, self._record.market)
 
-    # ------------------------------------------------------------------
-    # Event overrides
-    # ------------------------------------------------------------------
+    def _emit_watch(self) -> None:
+        if self._record:
+            self.watchRequested.emit(self._record)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self.request_cancellation()
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        if self._needs_details:
+            self._load_timer.start()
+        super().showEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:

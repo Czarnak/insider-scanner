@@ -39,14 +39,14 @@ def _latest_date(records: tuple[FeedRecord, ...]) -> date | None:
 
 
 def _build_summary(records: tuple[FeedRecord, ...]) -> str:
-    """Build summary line: "{n} transactions · {buys} buys · {sells} sells · latest {date}"."""
+    """Summarize only the bounded history displayed by the page."""
     n = len(records)
     directions = [classify_direction(r.transaction_type) for r in records]
     buys = directions.count(TransactionDirection.BUY)
     sells = directions.count(TransactionDirection.SELL)
     latest = _latest_date(records)
     date_str = latest.isoformat() if latest is not None else "—"
-    return f"{n} transactions · {buys} buys · {sells} sells · latest {date_str}"
+    return f"Showing latest {n} transactions · {buys} buys · {sells} sells · latest {date_str}"
 
 
 class EntityResearchPage(QWidget):
@@ -126,11 +126,13 @@ class EntityResearchPage(QWidget):
         """
         self._requests.invalidate()
         self._selection = (value, market) if value.strip() else None
+        self.progress.hide()
+        self.model.replace_records(())
+        self.summary_label.clear()
+        self.header_label.setText(
+            self._header_text(value, market, ()) if self._selection else ""
+        )
         if self._selection is None:
-            self.progress.hide()
-            self.model.replace_records(())
-            self.header_label.clear()
-            self.summary_label.clear()
             self._show_state(self._empty_prompt())
             return
 
@@ -220,6 +222,7 @@ class EntityResearchPage(QWidget):
     def request_cancellation(self) -> None:
         """Invalidate any in-flight load so its result is dropped on teardown."""
         self._requests.invalidate()
+        self.progress.hide()
 
 
 # ---------------------------------------------------------------------------

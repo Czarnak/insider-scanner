@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from functools import partial
 
-from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -28,12 +30,18 @@ class GlobalSearchPopup(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Popup)
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self.list_widget = QListWidget()
+        self.list_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.list_widget.setAccessibleName("Search results")
         layout.addWidget(self.list_widget)
 
@@ -104,7 +112,9 @@ class GlobalSearchController(QObject):
         thread_pool: QThreadPool | None = None,
         debounce_ms: int = 200,
     ) -> None:
-        super().__init__(parent if parent is not None else line_edit)
+        # The application event filter and callbacks use anchor-owned widgets.
+        # Their lifetime must end with the anchor, even with a broader parent.
+        super().__init__(line_edit)
         self._line_edit = line_edit
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
@@ -122,6 +132,9 @@ class GlobalSearchController(QObject):
 
         line_edit.textChanged.connect(self._on_text_changed)
         line_edit.returnPressed.connect(self._on_return_pressed)
+        application = QApplication.instance()
+        if application is not None:
+            application.installEventFilter(self)
 
         self.popup.list_widget.itemActivated.connect(self._activate_item)
         self.popup.list_widget.itemClicked.connect(self._activate_item)
@@ -132,14 +145,14 @@ class GlobalSearchController(QObject):
 
     def search_now(self, text: str) -> None:
         """Execute an entity search for *text* immediately (bypasses debounce)."""
+        self._debounce.stop()
+        self.popup.hide()
         stripped = text.strip()
         if not stripped:
             self._requests.invalidate()
-            self.popup.hide()
             return
         if self._repository is None:
             self._requests.invalidate()
-            self.popup.hide()
             return
 
         self._requests.start(
@@ -157,6 +170,11 @@ class GlobalSearchController(QObject):
 
     def _activate_item(self, item: QListWidgetItem) -> None:
         """Emit the appropriate navigation signal for the chosen list item."""
+        if (
+            not self.popup.isVisible()
+            or item.listWidget() is not self.popup.list_widget
+        ):
+            return
         data = item.data(Qt.ItemDataRole.UserRole)
         if data is None:
             return
@@ -167,12 +185,12 @@ class GlobalSearchController(QObject):
             and data[0] == _FEED_SENTINEL_KIND
         ):
             _, search_text = data
-            self.popup.hide()
+            self.request_cancellation()
             self.feedSearchRequested.emit(search_text)
             return
 
         if isinstance(data, EntityHit):
-            self.popup.hide()
+            self.request_cancellation()
             if data.kind == "company":
                 self.companyChosen.emit(data.identifier, data.market)
             elif data.kind == "insider":
@@ -182,22 +200,75 @@ class GlobalSearchController(QObject):
     # Private slots
     # ------------------------------------------------------------------
 
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """Keep editing in the search field while navigating its suggestions."""
+        event_type = event.type()
+        if event_type == QEvent.Type.MouseButtonPress and self.popup.isVisible():
+            if isinstance(watched, QWidget) and not (
+                watched is self.popup
+                or self.popup.isAncestorOf(watched)
+                or watched is self._line_edit
+                or self._line_edit.isAncestorOf(watched)
+            ):
+                self.request_cancellation()
+        elif event_type in (
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+            QEvent.Type.Hide,
+            QEvent.Type.Close,
+            QEvent.Type.WindowDeactivate,
+        ) and watched in (self._line_edit, self._line_edit.window()):
+            self.request_cancellation()
+        if watched is self._line_edit:
+            if event_type == QEvent.Type.FocusOut:
+                self.request_cancellation()
+            elif isinstance(event, QKeyEvent) and event_type == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self.request_cancellation()
+                    return True
+                if self.popup.isVisible() and event.key() in (
+                    Qt.Key.Key_Up,
+                    Qt.Key.Key_Down,
+                ):
+                    step = 1 if event.key() == Qt.Key.Key_Down else -1
+                    self._move_selection(step)
+                    return True
+        return super().eventFilter(watched, event)
+
+    def _move_selection(self, step: int) -> None:
+        """Move through selectable suggestions, leaving section headers alone."""
+        items = self.popup.list_widget
+        row = items.currentRow()
+        if row < 0 and step < 0:
+            row = items.count()
+        for candidate in range(row + step, items.count() if step > 0 else -1, step):
+            item = items.item(candidate)
+            if item.flags() & Qt.ItemFlag.ItemIsSelectable:
+                items.setCurrentRow(candidate)
+                items.scrollToItem(item)
+                return
+
     def _on_text_changed(self, text: str) -> None:
         self._requests.invalidate()
-        self._debounce.start()
+        self.popup.hide()
+        self._debounce.stop()
+        if text.strip():
+            self._debounce.start()
 
     def _on_debounce_timeout(self) -> None:
         self.search_now(self._line_edit.text())
 
     def _on_return_pressed(self) -> None:
-        current = self.popup.list_widget.currentItem()
+        current = (
+            self.popup.list_widget.currentItem() if self.popup.isVisible() else None
+        )
         if current is not None and bool(current.flags() & Qt.ItemFlag.ItemIsSelectable):
             self._activate_item(current)
             return
 
         text = self._line_edit.text().strip()
         if text:
-            self.popup.hide()
+            self.request_cancellation()
             self.feedSearchRequested.emit(text)
 
     def _on_search_result(

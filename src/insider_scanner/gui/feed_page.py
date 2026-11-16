@@ -318,6 +318,7 @@ class FeedPageWidget(QWidget):
         self.drawer.watchRequested.connect(self.watchRequested)
         self.drawer.closeRequested.connect(self._close_drawer)
         self._drawer_origin_row = -1
+        self.model.modelReset.connect(self._reset_drawer)
 
         self._content_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._content_splitter.addWidget(self.table)
@@ -629,22 +630,27 @@ class FeedPageWidget(QWidget):
             return
         indexes = selection.selectedRows()
         if not indexes:
-            self.drawer.hide()
-            self._drawer_origin_row = -1
+            self._reset_drawer()
             return
         self._show_drawer_for_row(indexes[0].row())
 
     def _show_drawer_for_row(self, row: int) -> None:
         if not 0 <= row < self.model.rowCount():
             return
-        if row == self._drawer_origin_row and not self.drawer.isHidden():
+        record = self.model.record_at(row)
+        if record is self.drawer._record and not self.drawer.isHidden():
             return
         self._drawer_origin_row = row
-        self.drawer.show_record(self.model.record_at(row))
+        self.drawer.show_record(record)
         self.drawer.show()
 
-    def _close_drawer(self) -> None:
+    def _reset_drawer(self) -> None:
+        self.drawer.request_cancellation()
         self.drawer.hide()
+        self._drawer_origin_row = -1
+
+    def _close_drawer(self) -> None:
+        self._reset_drawer()
         self.table.setFocus()
 
     @staticmethod

@@ -496,11 +496,11 @@ class TestReturnPressed:
     def test_return_pressed_with_selection_activates_selected_item(self, qtbot):
         # Arrange
         line_edit, controller = _make_controller(qtbot, _make_results())
+        line_edit.setText("app")
         controller.search_now("app")
         # Manually select the company item (index 2)
         company_item = controller.popup.list_widget.item(2)
         controller.popup.list_widget.setCurrentItem(company_item)
-        line_edit.setText("app")
 
         # Act / Assert
         with qtbot.waitSignal(controller.companyChosen, timeout=1000) as blocker:
