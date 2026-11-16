@@ -219,3 +219,12 @@ def test_congress_export_keeps_amount_bounds_and_default_label(tmp_path):
     assert record["amount_range"] == "$1,001 - $15,000"
     assert record["amount_low"] == 1001
     assert (tmp_path / "congress_scan.csv").exists()
+
+
+def test_export_keeps_filename_labels_inside_output_directory(tmp_path):
+    output = tmp_path / "exports"
+    save_table_results([InsiderTrade("AAA")], "../outside", output)
+    assert not (tmp_path / "outside.csv").exists()
+    assert not (tmp_path / "outside.json").exists()
+    assert len(list(output.glob("*.csv"))) == 1
+    assert len(list(output.glob("*.json"))) == 1

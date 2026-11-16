@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from insider_scanner.gui.widgets import ROW_OBJECT_ROLE, SortableTableModel
+from insider_scanner.services.trade_tables import safe_export_label
 from insider_scanner.utils.logging import get_logger
 from insider_scanner.utils.threading import LatestRequest
 
@@ -156,7 +157,7 @@ class BaseScanTab(QWidget):
         self._export_requests.start(
             save,
             args=(trades,),
-            kwargs={"label": label},
+            kwargs={"label": safe_export_label(label)},
             on_result=lambda out: QMessageBox.information(
                 self, "Saved", f"Results saved to:\n{out}"
             ),

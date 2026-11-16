@@ -762,7 +762,7 @@ src/insider_scanner/
 ├── gui/
 │   ├── main_window.py   # Main window (default OS style + tab management)
 │   ├── scan_tab.py      # Insider scan workflow: search, filters, table, EDGAR links
-│   ├── congress_tab.py  # Congress tab with sector filtering and save/export helpers
+│   ├── congress_tab.py  # Congress tab with member and sector controls
 │   ├── european_tab.py  # European tab with ISIN/watchlist scans and detail panel
 │   ├── analysis_tab.py  # Analysis tab integrating price history and trade markers
 │   ├── price_chart.py   # PyQtGraph price chart widget with crosshairs and scatter overlays
@@ -870,6 +870,13 @@ The **Congress Scan** tab provides a full GUI workflow for scanning congressiona
 - **Detail panel**: double-click a row to see full details including official's committee sectors
 - **Open Filing**: launches the original disclosure page (House PDF or Senate PTR) in browser
 - **Save**: exports filtered results to CSV + JSON
+
+The Scan and Congress Scan tables sort numeric values numerically; Congress
+amount ranges sort by their lower bound. Active filters also apply to new scan
+results. Details and filing links follow the displayed row after filtering or
+sorting. Save exports a snapshot of the filtered trades in the background,
+preserving raw numbers and metadata in CSV/JSON; it is disabled for empty results.
+Column widths remain adjustable and are retained when filtering or sorting.
 
 ### SEC EDGAR Compliance
 

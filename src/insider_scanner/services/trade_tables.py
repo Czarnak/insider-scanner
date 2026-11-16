@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -77,6 +78,11 @@ def table_trades_to_dataframe(
 congress_trades_to_dataframe = table_trades_to_dataframe
 
 
+def safe_export_label(label: str) -> str:
+    """Keep editable ticker/member labels within a single output filename."""
+    return re.sub(r"[^\w.-]", "_", label).strip(".") or "scan"
+
+
 def _sectors_for(official: str, mapping: dict[str, list[str]]) -> list[str]:
     if official in mapping:
         return mapping[official]
@@ -135,6 +141,7 @@ def save_table_results(
         ensure_dirs()
     out = output_dir if output_dir is not None else SCAN_OUTPUTS_DIR
     out.mkdir(parents=True, exist_ok=True)
+    label = safe_export_label(label)
     rows = [trade.to_dict() for trade in trades]
     csv_content = pd.DataFrame(rows).to_csv(index=False).encode("utf-8")
     json_content = json.dumps(rows, indent=2, ensure_ascii=False).encode("utf-8")

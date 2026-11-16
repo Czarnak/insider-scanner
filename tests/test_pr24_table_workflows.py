@@ -160,3 +160,58 @@ def test_scan_highlighting_retains_congress_metadata(qtbot):
 
     assert foreground is not None
     assert foreground.name() == get_theme_manager().palette().warning.lower()
+
+
+def test_export_label_cannot_escape_output_directory(workflow):
+    tab, trades, _, _, _, pool, saved = workflow
+    tab._on_scan_done(trades)
+    if isinstance(tab, ScanTab):
+        tab.ticker_edit.setText("../../escape")
+    else:
+        tab.official_combo.setCurrentText("..\\..\\escape")
+    tab._save_results()
+    pool.workers[0].run()
+    label = saved.call_args.kwargs["label"]
+    assert "/" not in label and "\\" not in label
+
+
+def test_export_errors_restore_controls_and_shutdown_suppresses_callbacks(
+    workflow, monkeypatch
+):
+    tab, trades, _, _, _, pool, saved = workflow
+    tab._on_scan_done(trades)
+    errors = Mock()
+    monkeypatch.setattr("PySide6.QtWidgets.QMessageBox.critical", errors)
+    saved.side_effect = OSError("disk unavailable")
+    tab._save_results()
+    assert not tab.btn_save.isEnabled()
+    pool.workers[0].run()
+    errors.assert_called_once()
+    assert tab.btn_save.isEnabled()
+    tab._save_results()
+    tab.request_cancellation()
+    pool.workers[1].run()
+    assert errors.call_count == 1
+
+
+def test_exports_use_independent_records_and_block_duplicate_writes(workflow):
+    tab, trades, _, _, name, pool, saved = workflow
+    tab._on_scan_done(trades)
+    tab._save_results()
+    tab._save_results()
+    assert len(pool.workers) == 1
+    setattr(trades[0], name, "Changed after export")
+    pool.workers[0].run()
+    assert getattr(saved.call_args.args[0][0], name) == "Excluded"
+    assert tab.btn_save.isEnabled()
+
+
+def test_user_column_widths_survive_filtering_and_new_results(workflow):
+    tab, trades, kind, _, _, _, _ = workflow
+    tab._on_scan_done(trades)
+    tab.trades_table.setColumnWidth(0, 321)
+    tab.type_combo.setCurrentText(kind)
+    tab._apply_filters()
+    assert tab.trades_table.columnWidth(0) == 321
+    tab._on_scan_done(trades)
+    assert tab.trades_table.columnWidth(0) == 321
