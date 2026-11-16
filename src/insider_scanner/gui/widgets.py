@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from numbers import Real
+
 import pandas as pd
 from PySide6 import QtWidgets
 from PySide6.QtCore import (
@@ -22,6 +25,11 @@ from insider_scanner.gui.theme.tokens import FONT_SIZE_XL, RADIUS_PANEL, ThemePa
 from insider_scanner.utils.logging import get_logger
 
 _log = get_logger("gui.widgets")
+
+# Separate the displayed text, sortable values and the domain object attached to
+# a row. The proxy forwards these roles through sorting without losing identity.
+SORT_ROLE = Qt.ItemDataRole.UserRole
+ROW_OBJECT_ROLE = Qt.ItemDataRole.UserRole + 1
 
 #: Columns that receive buy/sell foreground emphasis (kept narrow so names stay
 #: dominant and the whole row is not flooded with green/red).
@@ -45,7 +53,7 @@ def _build_mono_font() -> QFont:
 
 
 class PandasTableModel(QAbstractTableModel):
-    """Qt table model backed by a pandas DataFrame, themed via the theme manager."""
+    """DataFrame-backed table with cached cell presentation and row metadata."""
 
     def __init__(
         self,
@@ -54,17 +62,18 @@ class PandasTableModel(QAbstractTableModel):
         headers: list[str] | None = None,
     ):
         super().__init__(parent)
-        self._df = df if df is not None else pd.DataFrame()
         self._headers = headers or []
         self._palette: ThemePalette = get_theme_manager().palette()
         self._mono_font: QFont = _build_mono_font()
+        self.set_dataframe(df if df is not None else pd.DataFrame())
         get_theme_manager().paletteChanged.connect(self._on_palette_changed)
 
     def _on_palette_changed(self, palette: ThemePalette) -> None:
         """Refresh cached palette and repaint all cells so colors recolor live."""
         self._palette = palette
-        rows = len(self._df)
-        cols = len(self._df.columns)
+        self._cache_foregrounds()
+        rows = self.rowCount()
+        cols = self.columnCount()
         if rows == 0 or cols == 0:
             return
         self.dataChanged.emit(
@@ -72,60 +81,126 @@ class PandasTableModel(QAbstractTableModel):
             self.index(rows - 1, cols - 1),
         )
 
-    def set_dataframe(self, df: pd.DataFrame) -> None:
+    def set_dataframe(
+        self,
+        df: pd.DataFrame,
+        *,
+        visible_columns: list[str] | None = None,
+        row_objects: Sequence[object] | None = None,
+    ) -> None:
+        """Cache presentation once while keeping full, undisplayed row metadata.
+
+        ``row_objects`` associates each source row with its domain object. Reading
+        ``ROW_OBJECT_ROLE`` on a proxy index then returns the displayed object,
+        including after a sort. Congress amount ranges sort by ``amount_low``.
+        Explicit ``<column>_missing`` flags display as N/A and sort as missing,
+        while the original numeric value remains available in ``dataframe``.
+        """
+        columns = list(df.columns) if visible_columns is None else list(visible_columns)
+        missing = [column for column in columns if column not in df.columns]
+        if missing:
+            raise ValueError(f"Unknown table columns: {missing}")
+        if row_objects is not None and len(row_objects) != len(df):
+            raise ValueError("Table row objects must match the dataframe row count")
+
         self.beginResetModel()
         self._df = df.reset_index(drop=True)
+        self._columns = [str(column) for column in columns]
+        self._rows = self._df.to_dict(orient="records")
+        self._row_objects = (
+            list(row_objects) if row_objects is not None else [None] * len(df)
+        )
+        self._alignments = [
+            column_alignment(str(column), df[column].dtype) for column in columns
+        ]
+        self._monospace = [column_is_monospace(str(column)) for column in columns]
+        self._emphasized = [
+            str(column).lower() in _TRADE_FG_COLUMNS for column in columns
+        ]
+        self._display: list[list[str]] = []
+        self._sort: list[list[object]] = []
+        for row in self._rows:
+            missing_flags = [
+                self._raw_value(row.get(f"{column}_missing", False)) is True
+                for column in columns
+            ]
+            values = [
+                None if missing else self._raw_value(row[column])
+                for column, missing in zip(columns, missing_flags, strict=True)
+            ]
+            self._display.append(
+                [
+                    "N/A" if missing else self._display_value(value)
+                    for missing, value in zip(missing_flags, values, strict=True)
+                ]
+            )
+            self._sort.append(
+                [
+                    self._raw_value(row.get("amount_low"))
+                    if not missing
+                    and str(column).lower() == "amount_range"
+                    and "amount_low" in row
+                    else value
+                    for column, missing, value in zip(
+                        columns, missing_flags, values, strict=True
+                    )
+                ]
+            )
+        self._cache_foregrounds()
         self.endResetModel()
+
+    @staticmethod
+    def _raw_value(value):
+        """Normalize pandas missing scalars and numpy scalars once per reset."""
+        if pd.isna(value):
+            return None
+        return value.item() if hasattr(value, "item") else value
+
+    @staticmethod
+    def _display_value(value) -> str:
+        if value is None:
+            return ""
+        return f"{value:,.2f}" if isinstance(value, float) else str(value)
+
+    def _cache_foregrounds(self) -> None:
+        self._row_foreground: list[QColor | None] = []
+        self._congress_rows: list[bool] = []
+        for row in self._rows:
+            color = cell_foreground("", None, row, self._palette)
+            self._row_foreground.append(QColor(color) if color is not None else None)
+            self._congress_rows.append(color == self._palette.warning)
 
     def update_data(self, df: pd.DataFrame) -> None:
         """Backward-compatible alias used by older tabs."""
         self.set_dataframe(df)
 
     def rowCount(self, parent=QModelIndex()):  # noqa: B008 - Qt uses an immutable invalid index
-        return len(self._df)
+        return 0 if parent.isValid() else len(self._display)
 
     def columnCount(self, parent=QModelIndex()):  # noqa: B008 - Qt uses an immutable invalid index
-        return len(self._df.columns)
+        return 0 if parent.isValid() else len(self._columns)
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
-        if not index.isValid():
+        if not index.isValid() or not (
+            0 <= index.row() < self.rowCount()
+            and 0 <= index.column() < self.columnCount()
+        ):
             return None
 
-        col_name = str(self._df.columns[index.column()])
-
+        row, column = index.row(), index.column()
         if role == Qt.ItemDataRole.DisplayRole:
-            val = self._df.iloc[index.row(), index.column()]
-            # pandas stores None and np.nan as NaN in numeric columns.
-            # pd.isna() catches both; return empty string so cells appear
-            # blank rather than showing "nan" or "None".
-            if pd.isna(val):
-                return ""
-            if isinstance(val, float):
-                return f"{val:,.2f}"
-            return str(val)
-
+            return self._display[row][column]
+        if role == SORT_ROLE:
+            return self._sort[row][column]
+        if role == ROW_OBJECT_ROLE:
+            return self._row_objects[row]
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            return column_alignment(col_name, self._df.dtypes.iloc[index.column()])
-
+            return self._alignments[column]
         if role == Qt.ItemDataRole.FontRole:
-            if column_is_monospace(col_name):
-                return self._mono_font
-            return None
-
+            return self._mono_font if self._monospace[column] else None
         if role == Qt.ItemDataRole.ForegroundRole:
-            row = self._df.iloc[index.row()]
-            val = self._df.iloc[index.row(), index.column()]
-            fg = cell_foreground(col_name, val, row, self._palette)
-            if fg is None:
-                return None
-            # Congress is a row-level categorical state: color the whole row
-            # (amber) to preserve the prior whole-row emphasis.
-            if fg == self._palette.warning:
-                return QColor(fg)
-            # Buy/sell: scope the green/red to a couple of columns so the
-            # textual columns (names) stay dominant.
-            if col_name.lower() in _TRADE_FG_COLUMNS:
-                return QColor(fg)
+            if self._congress_rows[row] or self._emphasized[column]:
+                return self._row_foreground[row]
             return None
 
         return None
@@ -136,7 +211,7 @@ class PandasTableModel(QAbstractTableModel):
         if orientation == Qt.Orientation.Horizontal:
             if section < len(self._headers):
                 return self._headers[section]
-            return str(self._df.columns[section])
+            return self._columns[section] if 0 <= section < self.columnCount() else None
         return str(section + 1)
 
     @property
@@ -160,10 +235,33 @@ class SortableTableModel(QSortFilterProxyModel):
         super().__init__(parent)
         self._source = PandasTableModel(df=df, parent=self, headers=headers)
         self.setSourceModel(self._source)
+        self.setSortRole(SORT_ROLE)
         self.setDynamicSortFilter(True)
 
-    def set_dataframe(self, df: pd.DataFrame):
-        self._source.set_dataframe(df)
+    def set_dataframe(
+        self,
+        df: pd.DataFrame,
+        *,
+        visible_columns: list[str] | None = None,
+        row_objects: Sequence[object] | None = None,
+    ):
+        self._source.set_dataframe(
+            df, visible_columns=visible_columns, row_objects=row_objects
+        )
+
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        """Sort missing, numeric and textual scalars consistently, even if mixed."""
+        return self._sort_key(left.data(SORT_ROLE)) < self._sort_key(
+            right.data(SORT_ROLE)
+        )
+
+    @staticmethod
+    def _sort_key(value):
+        if value is None:
+            return (0, "")
+        if isinstance(value, Real):
+            return (1, value)
+        return (2, str(value))
 
     def update_data(self, df: pd.DataFrame):
         """Backward-compatible alias used by older tabs."""

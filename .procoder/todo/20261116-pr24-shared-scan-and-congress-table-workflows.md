@@ -1,0 +1,30 @@
+# PR24 shared Scan and Congress table workflows
+
+Status: open
+Created: 2026-11-16
+
+## Description
+
+Implement PR 24 from the review grouping. Share the Scan and Congress result
+workflow so displayed rows, selected trades and exported data agree under sorting
+and filtering. Keep raw values and metadata available to the table while caching
+display work, and move Congress filtering, serialization and member loading into
+services. Preserve the request ownership established by PR 23.
+
+## Acceptance criteria
+
+- [ ] Numeric columns sort numerically, Congress amount ranges sort by their lower bound, and cell rendering uses cached display and style values with raw metadata retained.
+- [ ] Both tabs retain active filters on new results; detail, filing actions and background exports use the displayed trades, including empty filtered sets.
+- [ ] Both tabs share date, results, cancellation and export plumbing; Congress helpers live in services and member metadata is parsed once with logged failures.
+- [ ] Table headers use bounded initial sizing and interactive resizing; Congress-flagged Scan rows receive the expected emphasis.
+- [ ] Meaningful sort and empty-input tests, focused red/green regressions, independent review, full offline tests and Procoder test/gate pass.
+
+## Implementation plan
+
+1. Add failing table-model regressions, cache raw/display/style data and implement sorting and row identity; verify and commit.
+2. Add failing helper/workflow regressions, extract services and common scan widgets, integrate both tabs and background exports; verify and commit.
+3. Independently review and commit any fixes, run required checks, record evidence and close the task through Procoder, then push and open the PR.
+
+## Evidence
+
+- Model RED: seven intended numeric-sort/cache/metadata failures (`.cache/pr24-model-red.txt`), plus three missing-flag failures (`.cache/pr24-model-missing-red.txt`). GREEN: 71 model/theme/compatibility cases passed (`.cache/pr24-model-missing-green.txt`). Root independently ran all 10 model regressions in the combined 83-test pass (`.cache/pr24-focused-green.txt`). Numeric raw values, missing flags, amount bounds, row identity, cached styling and palette changes are covered. Existing GUI sort tests now assert actual order, and empty ticker tests assert a warning and no dispatch.
