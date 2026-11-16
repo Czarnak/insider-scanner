@@ -2,37 +2,34 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import webbrowser
-from datetime import date
-from pathlib import Path
 
-import pandas as pd
-from PySide6.QtCore import QDate, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDateEdit,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSplitter,
-    QTableView,
     QVBoxLayout,
-    QWidget,
 )
 
-from insider_scanner.core.congress_identity import identity_for, name_matches
+from insider_scanner.core.congress_identity import identity_for
 from insider_scanner.core.fetch_outcome import describe_incomplete
-from insider_scanner.gui.widgets import SortableTableModel
+from insider_scanner.gui.scan_workflow import BaseScanTab
+from insider_scanner.services.trade_tables import (
+    _sectors_for,
+    congress_trades_to_dataframe,
+    filter_congress_trades,
+    load_congress_members,
+    save_congress_results,
+)
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("congress_tab")
 
@@ -64,148 +61,19 @@ DISPLAY_COLUMNS = [
 
 
 def _load_congress_names() -> list[str]:
-    """Load Congress member names from the JSON data file.
-
-    Returns a sorted list of display names (e.g. "Pelosi Nancy").
-    The first entry is always "All" to allow scanning all members.
-    """
-    from insider_scanner.utils.config import CONGRESS_FILE
-
-    names = []
-    if CONGRESS_FILE.exists():
-        try:
-            data = json.loads(CONGRESS_FILE.read_text(encoding="utf-8"))
-            for entry in data:
-                # Support both simple {"name": ...} and extended formats
-                name = entry.get("official_name") or entry.get("name", "")
-                if name:
-                    names.append(name)
-        except (json.JSONDecodeError, KeyError):
-            pass
-
-    names.sort()
-    return ["All"] + names
+    """Compatibility access to the service-owned member loader."""
+    return load_congress_members().names
 
 
 def _load_member_sectors() -> dict[str, list[str]]:
-    """Load official_name → sector list mapping from congress_members.json.
-
-    Returns a dict like {"Pelosi Nancy": ["Finance"], ...}.
-    """
-    from insider_scanner.utils.config import CONGRESS_FILE
-
-    mapping: dict[str, list[str]] = {}
-    if CONGRESS_FILE.exists():
-        try:
-            data = json.loads(CONGRESS_FILE.read_text(encoding="utf-8"))
-            for entry in data:
-                name = entry.get("official_name") or entry.get("name", "")
-                sector = entry.get("sector", ["Other"])
-                if isinstance(sector, str):
-                    sector = [sector]
-                if name:
-                    mapping[name] = sector
-        except (json.JSONDecodeError, KeyError):
-            pass
-    return mapping
+    """Compatibility access to the service-owned member loader."""
+    return load_congress_members().sectors
 
 
-def congress_trades_to_dataframe(trades: list) -> pd.DataFrame:
-    """Convert a list of CongressTrade to a pandas DataFrame."""
-    if not trades:
-        return pd.DataFrame()
-    return pd.DataFrame([t.to_dict() for t in trades])
-
-
-def _sectors_for(official: str, mapping: dict[str, list[str]]) -> list[str]:
-    if official in mapping:
-        return mapping[official]
-    matches = [
-        sectors for name, sectors in mapping.items() if name_matches(name, official)
-    ]
-    return matches[0] if len(matches) == 1 else ["Other"]
-
-
-def filter_congress_trades(
-    trades: list,
-    *,
-    trade_type: str | None = None,
-    min_value: float | None = None,
-    since: date | None = None,
-    until: date | None = None,
-    sector: str | None = None,
-    member_sectors: dict[str, list[str]] | None = None,
-) -> list:
-    """Filter CongressTrade records.
-
-    Parameters
-    ----------
-    trades : list of CongressTrade
-    trade_type : str or None
-        "Purchase", "Sale", "Exchange", or None for all.
-    min_value : float or None
-        Minimum amount_low value.
-    since, until : date or None
-        Filing date range.
-    sector : str or None
-        Sector to filter by (matches official's sectors from
-        congress_members.json).
-    member_sectors : dict or None
-        Mapping of official_name → list of sector strings.
-    """
-    result = trades
-
-    if trade_type:
-        result = [t for t in result if t.trade_type == trade_type]
-
-    if min_value is not None and min_value > 0:
-        result = [t for t in result if t.amount_low >= min_value]
-
-    if since:
-        result = [t for t in result if t.filing_date and t.filing_date >= since]
-
-    if until:
-        result = [t for t in result if t.filing_date and t.filing_date <= until]
-
-    if sector and sector != "All" and member_sectors:
-        result = [
-            t for t in result if sector in _sectors_for(t.official_name, member_sectors)
-        ]
-
-    return result
-
-
-def save_congress_results(
-    trades: list,
-    label: str = "congress_scan",
-) -> Path:
-    """Save Congress scan results as CSV and JSON.
-
-    Returns the output directory.
-    """
-    from insider_scanner.utils.config import SCAN_OUTPUTS_DIR, ensure_dirs
-
-    ensure_dirs()
-    out = SCAN_OUTPUTS_DIR
-    out.mkdir(parents=True, exist_ok=True)
-
-    # CSV
-    df = congress_trades_to_dataframe(trades)
-    csv_path = out / f"{label}.csv"
-    df.to_csv(csv_path, index=False)
-
-    # JSON
-    json_path = out / f"{label}.json"
-    with open(json_path, "w") as f:
-        json.dump([t.to_dict() for t in trades], f, indent=2, default=str)
-
-    return out
-
-
-class CongressTab(QWidget):
+class CongressTab(BaseScanTab):
     """Congress trade scanner: select official → scan sources → filter → view."""
 
-    dataChanged = Signal()
+    initial_status = "Select a Congress member and click Scan Trades"
 
     def __init__(
         self,
@@ -214,14 +82,10 @@ class CongressTab(QWidget):
         *,
         thread_pool: QThreadPool | None = None,
     ):
-        super().__init__(parent)
-        self._service = service
-        self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._requests = LatestRequest(self, self._thread_pool)
-        self._trades: list = []
-        self._filtered_trades: list = []
-        self._cancel_event = threading.Event()
-        self._member_sectors: dict[str, list[str]] = {}
+        super().__init__(service, parent, thread_pool=thread_pool)
+        self._requests = self._scan_requests
+        self._members = load_congress_members()
+        self._member_sectors = self._members.sectors
         self._build_ui()
 
     def _build_ui(self):
@@ -237,7 +101,7 @@ class CongressTab(QWidget):
 
         official_l.addWidget(QLabel("Official:"))
         self.official_combo = QComboBox()
-        self.official_combo.addItems(_load_congress_names())
+        self.official_combo.addItems(self._members.names)
         self.official_combo.setMinimumWidth(250)
         self.official_combo.setEditable(True)
         self.official_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -286,33 +150,6 @@ class CongressTab(QWidget):
         src_l.addWidget(self.chk_senate)
         return src_grp
 
-    def _build_date_range_group(self) -> QGroupBox:
-        date_grp = QGroupBox("Filing Date Range")
-        date_l = QHBoxLayout(date_grp)
-
-        self.chk_use_dates = QCheckBox("Enable")
-        self.chk_use_dates.setChecked(False)
-        self.chk_use_dates.toggled.connect(self._on_date_toggle)
-        date_l.addWidget(self.chk_use_dates)
-
-        date_l.addWidget(QLabel("Start:"))
-        self.start_date = QDateEdit()
-        self.start_date.setCalendarPopup(True)
-        self.start_date.setDisplayFormat("yyyy-MM-dd")
-        self.start_date.setDate(QDate.currentDate().addMonths(-6))
-        self.start_date.setEnabled(False)
-        date_l.addWidget(self.start_date)
-
-        date_l.addWidget(QLabel("End:"))
-        self.end_date = QDateEdit()
-        self.end_date.setCalendarPopup(True)
-        self.end_date.setDisplayFormat("yyyy-MM-dd")
-        self.end_date.setDate(QDate.currentDate())
-        self.end_date.setEnabled(False)
-        date_l.addWidget(self.end_date)
-
-        return date_grp
-
     def _build_filters_group(self) -> QGroupBox:
         filt_grp = QGroupBox("Filters")
         filt_l = QHBoxLayout(filt_grp)
@@ -350,83 +187,17 @@ class CongressTab(QWidget):
         self.progress.setTextVisible(True)
         return self.progress
 
-    def _build_results_splitter(self) -> QSplitter:
-        splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # Table
-        table_widget = QWidget()
-        table_l = QVBoxLayout(table_widget)
-        table_l.setContentsMargins(0, 0, 0, 0)
-
-        self.status_label = QLabel("Select a Congress member and click Scan Trades")
-        table_l.addWidget(self.status_label)
-
-        self.trades_model = SortableTableModel()
-        self.trades_table = QTableView()
-        self.trades_table.setModel(self.trades_model)
-        self.trades_table.setSortingEnabled(True)
-        self.trades_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.trades_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.trades_table.doubleClicked.connect(self._on_row_double_click)
-        table_l.addWidget(self.trades_table)
-
-        splitter.addWidget(table_widget)
-
-        # Bottom: action buttons + detail
-        bottom = QWidget()
-        bottom_l = QHBoxLayout(bottom)
-
-        self.btn_open_filing = QPushButton("Open Filing")
-        self.btn_open_filing.setToolTip("Open the disclosure filing in browser")
-        self.btn_open_filing.clicked.connect(self._open_filing)
-        self.btn_open_filing.setEnabled(False)
-        bottom_l.addWidget(self.btn_open_filing)
-
-        self.btn_save = QPushButton("Save Results")
-        self.btn_save.clicked.connect(self._save_results)
-        self.btn_save.setEnabled(False)
-        bottom_l.addWidget(self.btn_save)
-
-        bottom_l.addStretch()
-
-        self.detail_label = QLabel("")
-        self.detail_label.setWordWrap(True)
-        bottom_l.addWidget(self.detail_label, stretch=1)
-
-        splitter.addWidget(bottom)
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 1)
-
-        return splitter
-
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _on_date_toggle(self, checked: bool):
-        self.start_date.setEnabled(checked)
-        self.end_date.setEnabled(checked)
-
-    def _get_start_date(self) -> date | None:
-        if not self.chk_use_dates.isChecked():
-            return None
-        qd = self.start_date.date()
-        return date(qd.year(), qd.month(), qd.day())
-
-    def _get_end_date(self) -> date | None:
-        if not self.chk_use_dates.isChecked():
-            return None
-        qd = self.end_date.date()
-        return date(qd.year(), qd.month(), qd.day())
-
     def _refresh_member_list(self):
-        """Reload congress_members.json and repopulate the dropdown."""
+        """Refresh names and sectors together from one seed read."""
+        self._members = load_congress_members()
+        self._member_sectors = self._members.sectors
         current = self.official_combo.currentText()
         self.official_combo.clear()
-        names = _load_congress_names()
-        self.official_combo.addItems(names)
+        self.official_combo.addItems(self._members.names)
         idx = self.official_combo.findText(current)
         if idx >= 0:
             self.official_combo.setCurrentIndex(idx)
@@ -436,17 +207,6 @@ class CongressTab(QWidget):
         self.btn_scan.setEnabled(enabled)
         self.btn_refresh_list.setEnabled(enabled)
         self.btn_stop.setEnabled(not enabled)
-
-    def _stop_scan(self):
-        """Signal the background scan to stop."""
-        self._cancel_event.set()
-        self.btn_stop.setEnabled(False)
-        self.status_label.setText("Cancelling scan...")
-
-    def request_cancellation(self) -> None:
-        """Request cooperative cancellation without blocking the GUI thread."""
-        self._cancel_event.set()
-        self._requests.invalidate()
 
     # ------------------------------------------------------------------
     # Scan — wire to House + Senate backends
@@ -468,9 +228,6 @@ class CongressTab(QWidget):
                 "Select at least one source (House or Senate).",
             )
             return
-
-        # Load sectors for filtering
-        self._member_sectors = _load_member_sectors()
 
         self._cancel_event.set()
         self._cancel_event = threading.Event()
@@ -513,56 +270,17 @@ class CongressTab(QWidget):
             on_error=self._on_scan_error,
         )
 
-    @Slot(object)
-    def _on_scan_done(self, trades):
-        cancelled = self._cancel_event.is_set()
-        self._cancel_event.clear()
-        self._trades = trades
-        self._filtered_trades = trades
-        self.progress.setVisible(False)
-        self._set_scan_buttons_enabled(True)
-        self.btn_save.setEnabled(bool(trades))
-        self._display_trades(trades)
-        if cancelled:
-            self.status_label.setText(
-                self.status_label.text() + "  (scan was cancelled)"
-            )
-        self.dataChanged.emit()
-
-    @Slot(tuple)
-    def _on_scan_error(self, error_info):
-        self._cancel_event.clear()
-        self.progress.setVisible(False)
-        self._set_scan_buttons_enabled(True)
-        exc_type, exc_value, _ = error_info
-        log.error(
-            "Congress scan failed",
-            exc_info=(exc_type, exc_value, error_info[2]),
-        )
-        self.dataChanged.emit()
-        QMessageBox.critical(
-            self,
-            "Scan Error",
-            "Scan failed. See logs for details.",
-        )
-
     # ------------------------------------------------------------------
     # Display + filter
     # ------------------------------------------------------------------
 
     def _display_trades(self, trades):
-        if not trades:
-            self._set_results_status("No trades found.")
-            self.trades_model.set_dataframe(pd.DataFrame())
-            self.btn_open_filing.setEnabled(False)
-            return
-
         df = congress_trades_to_dataframe(trades)
-
-        # Select display columns that exist
-        cols = [c for c in DISPLAY_COLUMNS if c in df.columns]
-        self.trades_model.set_dataframe(df[cols])
-        self._set_results_status(f"{len(trades)} congress trades found")
+        columns = [c for c in DISPLAY_COLUMNS if c in df.columns]
+        self._set_displayed_trades(trades, df, columns)
+        self._set_results_status(
+            f"{len(trades)} congress trades found" if trades else "No trades found."
+        )
 
     def _set_results_status(self, text):
         if warning := describe_incomplete(self._trades):
@@ -570,9 +288,6 @@ class CongressTab(QWidget):
         self.status_label.setText(text)
 
     def _apply_filters(self):
-        if not self._trades:
-            return
-
         trade_type = self.type_combo.currentText()
         if trade_type == "All":
             trade_type = None
@@ -593,55 +308,48 @@ class CongressTab(QWidget):
             member_sectors=self._member_sectors,
         )
         self._display_trades(self._filtered_trades)
-        self.btn_save.setEnabled(bool(self._filtered_trades))
 
     # ------------------------------------------------------------------
     # Filing details + open
     # ------------------------------------------------------------------
 
     def _on_row_double_click(self, index):
-        source_index = self.trades_model.mapToSource(index)
-        row = source_index.row()
-        trades = self._filtered_trades or self._trades
-        if row < len(trades):
-            trade = trades[row]
-            sectors = _sectors_for(trade.official_name, self._member_sectors)
-            detail = (
-                f"Official: {trade.official_name}  |  "
-                f"Chamber: {trade.chamber}  |  "
-                f"Sector: {', '.join(sectors)}\n"
-                f"Asset: {trade.asset_description}\n"
-                f"Type: {trade.trade_type}  |  Owner: {trade.owner}  |  "
-                f"Amount: {trade.amount_range}  |  "
-                f"Source: {trade.source}"
-            )
-            self.detail_label.setText(detail)
-            self.btn_open_filing.setEnabled(bool(trade.source_url))
+        trade = self._trade_at(index)
+        if trade is None:
+            return
+        sectors = _sectors_for(trade.official_name, self._member_sectors)
+        detail = (
+            f"Official: {trade.official_name}  |  Chamber: {trade.chamber}  |  "
+            f"Sector: {', '.join(sectors)}\nAsset: {trade.asset_description}\n"
+            f"Type: {trade.trade_type}  |  Owner: {trade.owner}  |  "
+            f"Amount: {trade.amount_range}  |  Source: {trade.source}"
+        )
+        self.detail_label.setText(detail)
+        self.btn_open_filing.setEnabled(bool(trade.source_url))
 
     def _open_filing(self):
-        indexes = self.trades_table.selectionModel().selectedRows()
-        if not indexes:
-            return
-
-        source_index = self.trades_model.mapToSource(indexes[0])
-        row = source_index.row()
-        trades = self._filtered_trades or self._trades
-        if row < len(trades):
-            trade = trades[row]
-            if trade.source_url:
-                webbrowser.open(trade.source_url)
+        trade = self._selected_trade()
+        if trade is not None and trade.source_url:
+            webbrowser.open(trade.source_url)
 
     # ------------------------------------------------------------------
     # Save
     # ------------------------------------------------------------------
 
     def _save_results(self):
-        trades = self._filtered_trades or self._trades
-        if not trades:
-            return
-
         selected = (
             self.official_combo.currentText().strip().replace(" ", "_") or "congress"
         )
-        out = save_congress_results(trades, label=f"{selected}_congress_scan")
-        QMessageBox.information(self, "Saved", f"Results saved to:\n{out}")
+        self._start_export(save_congress_results, f"{selected}_congress_scan")
+
+    def _build_result_actions(self, layout):
+        self.btn_open_filing = QPushButton("Open Filing")
+        self.btn_open_filing.setToolTip("Open the disclosure filing in browser")
+        self.btn_open_filing.clicked.connect(self._open_filing)
+        self.btn_open_filing.setEnabled(False)
+        self._filing_button = self.btn_open_filing
+        layout.addWidget(self.btn_open_filing)
+        self.btn_save = QPushButton("Save Results")
+        self.btn_save.clicked.connect(self._save_results)
+        self.btn_save.setEnabled(False)
+        layout.addWidget(self.btn_save)

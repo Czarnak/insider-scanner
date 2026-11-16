@@ -3,29 +3,23 @@
 from __future__ import annotations
 
 import webbrowser
-from datetime import date
+from dataclasses import replace
 from threading import Event
 
-import pandas as pd
-from PySide6.QtCore import QDate, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDateEdit,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
-    QSplitter,
-    QTableView,
     QVBoxLayout,
-    QWidget,
 )
 
 from insider_scanner.core.fetch_outcome import (
@@ -35,8 +29,8 @@ from insider_scanner.core.fetch_outcome import (
     as_fetch_result,
     describe_incomplete,
 )
+from insider_scanner.gui.scan_workflow import BaseScanTab
 from insider_scanner.gui.sec_backfill_info import build_sec_backfill_info_group
-from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.persistence.watchlists import WatchlistStore
 from insider_scanner.services.common import ScanError
 from insider_scanner.utils.logging import get_logger
@@ -46,7 +40,7 @@ from insider_scanner.utils.trade_display import format_reported_number
 log = get_logger("scan_tab")
 
 
-class ScanTab(QWidget):
+class ScanTab(BaseScanTab):
     """Full scan workflow: enter ticker → select sources → scan → view → EDGAR."""
 
     dataChanged = Signal()
@@ -59,14 +53,9 @@ class ScanTab(QWidget):
         thread_pool: QThreadPool | None = None,
         watchlists: WatchlistStore | None = None,
     ):
-        super().__init__(parent)
-        self._service = service
-        self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._scan_requests = LatestRequest(self, self._thread_pool)
+        super().__init__(service, parent, thread_pool=thread_pool)
         self._cik_requests = LatestRequest(self, self._thread_pool)
         self._watchlists = watchlists if watchlists is not None else WatchlistStore()
-        self._trades: list = []
-        self._cancel_event = Event()
         self._build_ui()
         self.ticker_edit.textChanged.connect(self._invalidate_cik)
 
@@ -136,33 +125,6 @@ class ScanTab(QWidget):
         src_l.addWidget(self.chk_openinsider)
         return src_grp
 
-    def _build_date_range_group(self) -> QGroupBox:
-        date_grp = QGroupBox("Filing Date Range")
-        date_l = QHBoxLayout(date_grp)
-
-        self.chk_use_dates = QCheckBox("Enable")
-        self.chk_use_dates.setChecked(False)
-        self.chk_use_dates.toggled.connect(self._on_date_toggle)
-        date_l.addWidget(self.chk_use_dates)
-
-        date_l.addWidget(QLabel("Start:"))
-        self.start_date = QDateEdit()
-        self.start_date.setCalendarPopup(True)
-        self.start_date.setDisplayFormat("yyyy-MM-dd")
-        self.start_date.setDate(QDate.currentDate().addMonths(-6))
-        self.start_date.setEnabled(False)
-        date_l.addWidget(self.start_date)
-
-        date_l.addWidget(QLabel("End:"))
-        self.end_date = QDateEdit()
-        self.end_date.setCalendarPopup(True)
-        self.end_date.setDisplayFormat("yyyy-MM-dd")
-        self.end_date.setDate(QDate.currentDate())
-        self.end_date.setEnabled(False)
-        date_l.addWidget(self.end_date)
-
-        return date_grp
-
     def _build_filters_group(self) -> QGroupBox:
         filt_grp = QGroupBox("Filters")
         filt_l = QHBoxLayout(filt_grp)
@@ -204,79 +166,9 @@ class ScanTab(QWidget):
 
         return progress_row
 
-    def _build_results_splitter(self) -> QSplitter:
-        splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # Table
-        table_widget = QWidget()
-        table_l = QVBoxLayout(table_widget)
-        table_l.setContentsMargins(0, 0, 0, 0)
-
-        self.status_label = QLabel("No scan results yet")
-        table_l.addWidget(self.status_label)
-
-        self.trades_model = SortableTableModel()
-        self.trades_table = QTableView()
-        self.trades_table.setModel(self.trades_model)
-        self.trades_table.setSortingEnabled(True)
-        self.trades_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.trades_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.trades_table.doubleClicked.connect(self._on_row_double_click)
-        table_l.addWidget(self.trades_table)
-
-        splitter.addWidget(table_widget)
-
-        # Bottom: action buttons + detail
-        bottom = QWidget()
-        bottom_l = QHBoxLayout(bottom)
-
-        self.btn_edgar = QPushButton("Open EDGAR Filing")
-        self.btn_edgar.clicked.connect(self._open_edgar)
-        self.btn_edgar.setEnabled(False)
-        bottom_l.addWidget(self.btn_edgar)
-
-        self.btn_save = QPushButton("Save Results")
-        self.btn_save.clicked.connect(self._save_results)
-        self.btn_save.setEnabled(False)
-        bottom_l.addWidget(self.btn_save)
-
-        self.btn_resolve_cik = QPushButton("Resolve CIK")
-        self.btn_resolve_cik.clicked.connect(self._resolve_cik)
-        bottom_l.addWidget(self.btn_resolve_cik)
-
-        bottom_l.addStretch()
-
-        self.detail_label = QLabel("")
-        self.detail_label.setWordWrap(True)
-        bottom_l.addWidget(self.detail_label, stretch=1)
-
-        splitter.addWidget(bottom)
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 1)
-
-        return splitter
-
     # ------------------------------------------------------------------
     # Date range helpers
     # ------------------------------------------------------------------
-
-    def _on_date_toggle(self, checked: bool):
-        self.start_date.setEnabled(checked)
-        self.end_date.setEnabled(checked)
-
-    def _get_start_date(self) -> date | None:
-        if not self.chk_use_dates.isChecked():
-            return None
-        qd = self.start_date.date()
-        return date(qd.year(), qd.month(), qd.day())
-
-    def _get_end_date(self) -> date | None:
-        if not self.chk_use_dates.isChecked():
-            return None
-        qd = self.end_date.date()
-        return date(qd.year(), qd.month(), qd.day())
 
     # ------------------------------------------------------------------
     # Scan
@@ -290,16 +182,8 @@ class ScanTab(QWidget):
         # Stop button is opposite: visible when scanning
         self.btn_stop.setVisible(not enabled)
 
-    def _stop_scan(self):
-        """Signal the running watchlist scan to stop."""
-        self._cancel_event.set()
-        self.btn_stop.setEnabled(False)
-        self.progress.setFormat("Stopping...")
-
     def request_cancellation(self) -> None:
-        """Request cooperative cancellation without blocking the GUI thread."""
-        self._cancel_event.set()
-        self._scan_requests.invalidate()
+        super().request_cancellation()
         self._cik_requests.invalidate()
 
     def _run_scan(self):
@@ -468,40 +352,6 @@ class ScanTab(QWidget):
             on_progress=self.progress.setValue,
         )
 
-    @Slot(object)
-    def _on_scan_done(self, trades):
-        cancelled = self._cancel_event.is_set()
-        self._cancel_event.clear()
-        self._trades = trades
-        self.progress.setVisible(False)
-        self.btn_stop.setEnabled(True)
-        self._set_scan_buttons_enabled(True)
-        self.btn_save.setEnabled(True)
-        self._display_trades(trades)
-        if cancelled:
-            self.status_label.setText(
-                self.status_label.text() + "  (scan was cancelled)"
-            )
-        self.dataChanged.emit()
-
-    @Slot(tuple)
-    def _on_scan_error(self, error_info):
-        self._cancel_event.clear()
-        self.progress.setVisible(False)
-        self.btn_stop.setEnabled(True)
-        self._set_scan_buttons_enabled(True)
-        exc_type, exc_value, _ = error_info
-        log.error(
-            "Scan failed",
-            exc_info=(exc_type, exc_value, error_info[2]),
-        )
-        self.dataChanged.emit()
-        QMessageBox.critical(
-            self,
-            "Scan Error",
-            "Scan failed. See logs for details.",
-        )
-
     # ------------------------------------------------------------------
     # Display + filter
     # ------------------------------------------------------------------
@@ -510,24 +360,15 @@ class ScanTab(QWidget):
         from insider_scanner.core.edgar import build_edgar_url_for_trade
         from insider_scanner.core.merger import trades_to_dataframe
 
-        # Auto-generate edgar_url for trades that don't have one
-        for trade in trades:
-            if not trade.edgar_url:
-                trade.edgar_url = build_edgar_url_for_trade(trade)
-
+        # Enrich the view/export snapshot while leaving fetched records intact.
+        trades = [
+            trade
+            if trade.edgar_url
+            else replace(trade, edgar_url=build_edgar_url_for_trade(trade))
+            for trade in trades
+        ]
         df = trades_to_dataframe(trades)
-        if df.empty:
-            self._set_results_status("No trades found.")
-            self.trades_model.set_dataframe(pd.DataFrame())
-            return
-
-        for column in ("shares", "price", "value"):
-            df[column] = (
-                df[column].astype(object).where(~df[f"{column}_missing"], "N/A")
-            )
-
-        # Select display columns
-        display_cols = [
+        columns = [
             c
             for c in [
                 "filing_date",
@@ -544,7 +385,10 @@ class ScanTab(QWidget):
             ]
             if c in df.columns
         ]
-        self.trades_model.set_dataframe(df[display_cols])
+        self._set_displayed_trades(trades, df, columns)
+        if not trades:
+            self._set_results_status("No trades found.")
+            return
         congress_count = sum(1 for t in trades if t.is_congress)
         self._set_results_status(
             f"{len(trades)} trades found  |  {congress_count} congress-flagged"
@@ -567,9 +411,6 @@ class ScanTab(QWidget):
         self.status_label.setText(text)
 
     def _apply_filters(self):
-        if not self._trades:
-            return
-
         from insider_scanner.core.merger import filter_trades
 
         trade_type = self.type_combo.currentText()
@@ -595,45 +436,32 @@ class ScanTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_row_double_click(self, index):
-        row = index.row()
-        source_index = self.trades_model.mapToSource(index)
-        if row < len(self._trades):
-            trade = self._trades[source_index.row()]
-            shares = format_reported_number(trade.shares, missing=trade.shares_missing)
-            price = format_reported_number(
-                trade.price, missing=trade.price_missing, decimals=2, currency=True
-            )
-            value = format_reported_number(
-                trade.value, missing=trade.value_missing, currency=True
-            )
-            detail = (
-                f"Name: {trade.insider_name}  |  Title: {trade.insider_title}\n"
-                f"Type: {trade.trade_type}  |  Shares: {shares}  |  "
-                f"Price: {price}  |  Value: {value}\n"
-                f"Source: {trade.source}"
-            )
-            if trade.is_congress:
-                detail += f"  |  Congress: {trade.congress_member}"
-            self.detail_label.setText(detail)
-            self.btn_edgar.setEnabled(True)
+        trade = self._trade_at(index)
+        if trade is None:
+            return
+        shares = format_reported_number(trade.shares, missing=trade.shares_missing)
+        price = format_reported_number(
+            trade.price, missing=trade.price_missing, decimals=2, currency=True
+        )
+        value = format_reported_number(
+            trade.value, missing=trade.value_missing, currency=True
+        )
+        detail = (
+            f"Name: {trade.insider_name}  |  Title: {trade.insider_title}\n"
+            f"Type: {trade.trade_type}  |  Shares: {shares}  |  "
+            f"Price: {price}  |  Value: {value}\nSource: {trade.source}"
+        )
+        if trade.is_congress:
+            detail += f"  |  Congress: {trade.congress_member}"
+        self.detail_label.setText(detail)
+        self.btn_edgar.setEnabled(True)
 
     def _open_edgar(self):
-        # Get selected row
-        indexes = self.trades_table.selectionModel().selectedRows()
-        if not indexes:
-            return
+        trade = self._selected_trade()
+        if trade is not None:
+            from insider_scanner.core.edgar import build_edgar_url_for_trade
 
-        source_index = self.trades_model.mapToSource(indexes[0])
-        row = source_index.row()
-        if row < len(self._trades):
-            trade = self._trades[row]
-            if trade.edgar_url:
-                webbrowser.open(trade.edgar_url)
-            else:
-                from insider_scanner.core.edgar import build_edgar_url_for_trade
-
-                url = build_edgar_url_for_trade(trade)
-                webbrowser.open(url)
+            webbrowser.open(trade.edgar_url or build_edgar_url_for_trade(trade))
 
     def _invalidate_cik(self) -> None:
         self._cik_requests.invalidate()
@@ -674,11 +502,21 @@ class ScanTab(QWidget):
     # ------------------------------------------------------------------
 
     def _save_results(self):
-        if not self._trades:
-            return
-
         from insider_scanner.core.merger import save_scan_results
 
         ticker = self.ticker_edit.text().strip().upper() or "latest"
-        out = save_scan_results(self._trades, label=f"{ticker}_scan")
-        QMessageBox.information(self, "Saved", f"Results saved to:\n{out}")
+        self._start_export(save_scan_results, f"{ticker}_scan")
+
+    def _build_result_actions(self, layout):
+        self.btn_edgar = QPushButton("Open EDGAR Filing")
+        self.btn_edgar.clicked.connect(self._open_edgar)
+        self.btn_edgar.setEnabled(False)
+        self._filing_button = self.btn_edgar
+        layout.addWidget(self.btn_edgar)
+        self.btn_save = QPushButton("Save Results")
+        self.btn_save.clicked.connect(self._save_results)
+        self.btn_save.setEnabled(False)
+        layout.addWidget(self.btn_save)
+        self.btn_resolve_cik = QPushButton("Resolve CIK")
+        self.btn_resolve_cik.clicked.connect(self._resolve_cik)
+        layout.addWidget(self.btn_resolve_cik)

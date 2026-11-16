@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
 import pandas as pd
 from PySide6.QtCore import Qt
 
@@ -37,11 +39,16 @@ class TestSortableTableModel:
         from insider_scanner.gui.widgets import SortableTableModel
 
         model = SortableTableModel()
-        df = pd.DataFrame({"name": ["B", "A", "C"], "val": [2, 1, 3]})
+        df = pd.DataFrame({"name": ["B", "A", "C"], "val": [200, 95, 1_000_000]})
         model.set_dataframe(df)
-        assert model.rowCount() == 3
         model.sort(1, Qt.SortOrder.AscendingOrder)
-        assert model.rowCount() == 3
+        assert [model.data(model.index(row, 0)) for row in range(3)] == ["A", "B", "C"]
+        model.sort(1, Qt.SortOrder.DescendingOrder)
+        assert [model.data(model.index(row, 0)) for row in range(3)] == ["C", "B", "A"]
+        model.sort(0, Qt.SortOrder.AscendingOrder)
+        assert model.data(model.index(0, 0)) == "A"
+        model.sort(0, Qt.SortOrder.DescendingOrder)
+        assert model.data(model.index(0, 0)) == "C"
 
 
 class TestScanTab:
@@ -53,24 +60,29 @@ class TestScanTab:
         assert tab.btn_scan is not None
         assert tab.btn_latest is not None
         assert tab.ticker_edit is not None
+        assert tab.trades_table.model() is tab.trades_model
+        assert tab.btn_watchlist.isEnabled()
+        assert tab.btn_stop.isHidden()
 
-    def test_empty_ticker_warning(self, qtbot):
+    def test_empty_ticker_warning(self, qtbot, monkeypatch):
+        from PySide6.QtWidgets import QMessageBox
+
         from insider_scanner.gui.scan_tab import ScanTab
 
         tab = ScanTab()
         qtbot.addWidget(tab)
-        # Ticker is empty, scan should not crash
-        tab.ticker_edit.setText("")
-        # _run_scan shows a warning but doesn't crash
+        warning = Mock()
+        dispatch = Mock()
+        monkeypatch.setattr(QMessageBox, "warning", warning)
+        monkeypatch.setattr(tab._scan_requests, "start", dispatch)
+        tab.ticker_edit.setText("   ")
 
-    def test_date_widgets_exist(self, qtbot):
-        from insider_scanner.gui.scan_tab import ScanTab
+        tab._run_scan()
 
-        tab = ScanTab()
-        qtbot.addWidget(tab)
-        assert tab.start_date is not None
-        assert tab.end_date is not None
-        assert tab.chk_use_dates is not None
+        warning.assert_called_once_with(tab, "Input", "Enter a ticker symbol.")
+        dispatch.assert_not_called()
+        assert tab.btn_scan.isEnabled()
+        assert tab.progress.isHidden()
 
     def test_date_toggle_enables_fields(self, qtbot):
         from insider_scanner.gui.scan_tab import ScanTab
@@ -113,31 +125,14 @@ class TestScanTab:
         assert tab._get_start_date() == date(2025, 3, 15)
         assert tab._get_end_date() == date(2025, 9, 30)
 
-    def test_latest_count_spin_exists(self, qtbot):
+    def test_latest_count_constraints(self, qtbot):
         from insider_scanner.gui.scan_tab import ScanTab
 
         tab = ScanTab()
         qtbot.addWidget(tab)
-        assert tab.latest_count_spin is not None
         assert tab.latest_count_spin.value() == 100
         assert tab.latest_count_spin.minimum() == 10
         assert tab.latest_count_spin.maximum() == 500
-
-    def test_latest_count_spin_change(self, qtbot):
-        from insider_scanner.gui.scan_tab import ScanTab
-
-        tab = ScanTab()
-        qtbot.addWidget(tab)
-        tab.latest_count_spin.setValue(250)
-        assert tab.latest_count_spin.value() == 250
-
-    def test_watchlist_button_exists(self, qtbot):
-        from insider_scanner.gui.scan_tab import ScanTab
-
-        tab = ScanTab()
-        qtbot.addWidget(tab)
-        assert tab.btn_watchlist is not None
-        assert tab.btn_watchlist.isEnabled()
 
     def test_set_scan_buttons_enabled(self, qtbot):
         from insider_scanner.gui.scan_tab import ScanTab
@@ -154,15 +149,6 @@ class TestScanTab:
         assert tab.btn_latest.isEnabled()
         assert tab.btn_watchlist.isEnabled()
         assert tab.btn_stop.isHidden()  # stop hidden when idle
-
-    def test_stop_button_exists(self, qtbot):
-        from insider_scanner.gui.scan_tab import ScanTab
-
-        tab = ScanTab()
-        qtbot.addWidget(tab)
-        assert tab.btn_stop is not None
-        # Initially hidden
-        assert tab.btn_stop.isHidden()
 
     def test_stop_scan_sets_cancel_event(self, qtbot):
         from insider_scanner.gui.scan_tab import ScanTab

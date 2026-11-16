@@ -212,11 +212,10 @@ def test_congress_tab_shows_incomplete_warning_and_retains_rows(qtbot, with_rows
     assert "Incomplete results (house 12345: missing pdf)" in tab.status_label.text()
 
 
-def test_scan_tab_service_error_is_concise(monkeypatch, qtbot):
+def test_scan_tab_service_error_is_concise(monkeypatch, qtbot, caplog):
     from insider_scanner.gui import scan_tab
 
     messages = []
-    logs = []
     service = FakeService(error=RuntimeError("database internals"))
     monkeypatch.setattr(scan_tab.QThreadPool, "globalInstance", lambda: InlinePool())
     monkeypatch.setattr(
@@ -224,18 +223,18 @@ def test_scan_tab_service_error_is_concise(monkeypatch, qtbot):
         "critical",
         lambda parent, title, message: messages.append((title, message)),
     )
-    monkeypatch.setattr(
-        scan_tab.log,
-        "error",
-        lambda *args, **kwargs: logs.append((args, kwargs)),
-    )
     tab = scan_tab.ScanTab(service)
     qtbot.addWidget(tab)
     tab.ticker_edit.setText("AAPL")
 
     tab._run_scan()
 
-    assert logs
+    assert any(
+        record.levelname == "ERROR"
+        and record.exc_info
+        and str(record.exc_info[1]) == "database internals"
+        for record in caplog.records
+    )
     assert messages == [("Scan Error", "Scan failed. See logs for details.")]
     assert tab.btn_scan.isEnabled()
 
