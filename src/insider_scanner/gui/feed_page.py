@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import webbrowser
 from datetime import datetime
-from functools import partial
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -45,7 +44,7 @@ from insider_scanner.persistence.feed import (
     TransactionDirection,
 )
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.feed_page")
 
@@ -209,8 +208,7 @@ class FeedPageWidget(QWidget):
         super().__init__(parent)
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._request_id = 0
-        self._workers: dict[int, Worker] = {}
+        self._requests = LatestRequest(self, self._thread_pool)
         self._criteria: FeedCriteria = initial_criteria or FeedCriteria()
         self._total_count = 0
         self._next_cursor: FeedCursor | None = None
@@ -378,7 +376,7 @@ class FeedPageWidget(QWidget):
         return self._freshness_text
 
     def request_cancellation(self) -> None:
-        self._request_id += 1
+        self._requests.invalidate()
         self.drawer.request_cancellation()
 
     def column_layout(self) -> str | None:
@@ -483,8 +481,7 @@ class FeedPageWidget(QWidget):
         if self._repository is None:
             self._show_state("Local transaction data is unavailable.")
             return
-        self._request_id += 1
-        request_id = self._request_id
+        self._requests.invalidate()
         if not append:
             self._next_cursor = None
         try:
@@ -502,21 +499,14 @@ class FeedPageWidget(QWidget):
         if not append:
             self._hide_stale_banner()
             self._show_state("Loading transactions...")
-        worker = Worker(self._repository.query, query)
-        worker.signals.result.connect(
-            lambda page: self._on_result(request_id, append, page)
+        self._requests.start(
+            self._repository.query,
+            args=(query,),
+            on_result=lambda page: self._on_result(append, page),
+            on_error=self._on_error,
         )
-        worker.signals.error.connect(lambda error: self._on_error(request_id, error))
-        worker.signals.finished.connect(partial(self._release_worker, request_id))
-        self._workers[request_id] = worker
-        self._thread_pool.start(worker)
 
-    def _release_worker(self, request_id: int) -> None:
-        self._workers.pop(request_id, None)
-
-    def _on_result(self, request_id: int, append: bool, page: FeedPage) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_result(self, append: bool, page: FeedPage) -> None:
         if append:
             self.model.append_records(page.records)
         else:
@@ -545,9 +535,7 @@ class FeedPageWidget(QWidget):
             else:
                 self._hide_stale_banner()
 
-    def _on_error(self, request_id: int, error_info) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_error(self, error_info) -> None:
         exc = error_info[1] if len(error_info) > 1 else None
         log.error("Unified feed query failed: %s", exc)
         self.progress.hide()

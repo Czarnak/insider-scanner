@@ -468,7 +468,8 @@ def test_main_window_close_cancels_and_drains_real_worker_before_service_close(q
     win._thread_pool.start(BlockingRunnable())
     assert started.wait(timeout=1)
 
-    assert win.close()
+    win.close()
+    qtbot.waitUntil(lambda: not win.isVisible())
     services.close()
 
     assert events == ["worker-finished", "services-closed"]
@@ -504,12 +505,15 @@ def test_main_window_close_timeout_is_logged_and_ignored(qtbot, caplog):
 
     with caplog.at_level("WARNING"):
         assert not win.close()
+        qtbot.waitUntil(
+            lambda: "Timed out waiting for GUI workers to stop" in caplog.text
+        )
 
     assert win.isVisible()
     assert "Timed out waiting for GUI workers to stop" in caplog.text
     release.set()
-    assert win._thread_pool.waitForDone(1_000)
-    assert win.close()
+    qtbot.waitUntil(lambda: not win.isVisible())
+    assert win._thread_pool.activeThreadCount() == 0
 
 
 @pytest.mark.parametrize(

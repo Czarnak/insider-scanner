@@ -197,10 +197,9 @@ def test_analysis_tab_discards_result_after_symbol_changes(qtbot, monkeypatch):
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
-    payload = pool.worker.fn()
     tab.symbol_combo.setCurrentText("MSFT")
     tab.status_label.setText("Waiting for MSFT")
-    tab._on_loaded(payload)
+    pool.worker.run()
 
     assert rendered == []
     assert tab.status_label.text() == "Waiting for MSFT"
@@ -223,10 +222,9 @@ def test_analysis_tab_keeps_result_stale_after_switching_away_and_back(
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
-    payload = pool.worker.fn()
     tab.symbol_combo.setCurrentText("MSFT")
     tab.symbol_combo.setCurrentText("AAPL")
-    tab._on_loaded(payload)
+    pool.worker.run()
 
     assert rendered == []
 
@@ -241,12 +239,9 @@ def test_analysis_tab_discards_error_after_symbol_changes(qtbot, monkeypatch):
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
-    request_id = tab._request_id
     tab.symbol_combo.setCurrentText("MSFT")
-    tab._on_error(
-        request_id,
-        "AAPL",
-        (RuntimeError, RuntimeError("old request failed"), None),
+    pool.worker.signals.error.emit(
+        (RuntimeError, RuntimeError("old request failed"), None)
     )
 
     assert "old request failed" not in tab.status_label.text()
@@ -264,14 +259,11 @@ def test_analysis_tab_keeps_error_stale_after_switching_away_and_back(
 
     tab.symbol_combo.setCurrentText("AAPL")
     tab._load_selected()
-    request_id = tab._request_id
     tab.symbol_combo.setCurrentText("MSFT")
     tab.symbol_combo.setCurrentText("AAPL")
     tab.status_label.setText("Current selection is AAPL")
-    tab._on_error(
-        request_id,
-        "AAPL",
-        (RuntimeError, RuntimeError("old request failed"), None),
+    pool.worker.signals.error.emit(
+        (RuntimeError, RuntimeError("old request failed"), None)
     )
 
     assert tab.status_label.text() == "Current selection is AAPL"
@@ -291,14 +283,12 @@ def test_request_cancellation_suppresses_late_analysis_result(qtbot, monkeypatch
     monkeypatch.setattr(tab, "_render", lambda *args: rendered.append(args))
 
     tab._load_selected()
-    payload = pool.worker.fn()
     tab.status_label.setText("Closing")
     tab.request_cancellation()
-    tab._on_loaded(payload)
+    pool.worker.run()
 
     assert rendered == []
     assert tab.status_label.text() == "Closing"
-    assert tab._active_request is None
 
 
 def test_analysis_load_uses_application_services_without_bootstrap(qtbot, monkeypatch):
@@ -316,10 +306,12 @@ def test_analysis_load_uses_application_services_without_bootstrap(qtbot, monkey
     pool = CapturingPool()
     tab = AnalysisTab(services, thread_pool=pool, watchlists=watchlists)
     qtbot.addWidget(tab)
+    rendered = []
+    monkeypatch.setattr(tab, "_render", lambda *args: rendered.append(args))
     tab._load_selected()
-    result = pool.worker.fn()
+    pool.worker.run()
 
-    assert result[2] == bars
+    assert rendered == [(bars, [])]
     services.prices.get_history.assert_called_once()
     kwargs = services.persistence.congress_trades.query.call_args.kwargs
     assert kwargs["ticker"] == "AAPL"

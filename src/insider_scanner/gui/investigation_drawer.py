@@ -27,7 +27,7 @@ from insider_scanner.persistence.feed import (
     load_investigation,
 )
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.investigation_drawer")
 
@@ -63,7 +63,7 @@ class InvestigationDrawer(QWidget):
         super().__init__(parent)
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._request_id: int = 0
+        self._requests = LatestRequest(self, self._thread_pool)
         self._record: FeedRecord | None = None
         self._bundle: InvestigationBundle | None = None
         self._palette = get_theme_manager().palette()
@@ -85,10 +85,8 @@ class InvestigationDrawer(QWidget):
     def show_record(self, record: FeedRecord) -> None:
         """Begin loading investigation data for *record*."""
         self._record = record
-        self._request_id += 1
-        request_id = self._request_id
-
         if self._repository is None:
+            self._requests.invalidate()
             # Render from record alone — no async fetch
             bundle = InvestigationBundle(detail=None, by_person=(), by_issuer=())
             self._render(record, bundle)
@@ -96,14 +94,12 @@ class InvestigationDrawer(QWidget):
 
         self._show_state("Loading…")
 
-        worker = Worker(load_investigation, self._repository, record)
-        worker.signals.result.connect(
-            lambda bundle: self._on_result(request_id, record, bundle)
+        self._requests.start(
+            load_investigation,
+            args=(self._repository, record),
+            on_result=partial(self._on_result, record),
+            on_error=self._on_error,
         )
-        worker.signals.error.connect(
-            lambda error_info: self._on_error(request_id, error_info)
-        )
-        self._thread_pool.start(worker)
 
     def last_transaction_color(self) -> QColor:
         """Return the QColor last applied to the transaction-type label.
@@ -115,7 +111,7 @@ class InvestigationDrawer(QWidget):
 
     def request_cancellation(self) -> None:
         """Invalidate any in-flight investigation load so its result is dropped."""
-        self._request_id += 1
+        self._requests.invalidate()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -152,16 +148,10 @@ class InvestigationDrawer(QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_result(
-        self, request_id: int, record: FeedRecord, bundle: InvestigationBundle
-    ) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_result(self, record: FeedRecord, bundle: InvestigationBundle) -> None:
         self._render(record, bundle)
 
-    def _on_error(self, request_id: int, error_info: tuple) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_error(self, error_info: tuple) -> None:
         log.error("Investigation load failed: %s", error_info[1])
         self._show_state("Could not load investigation details.")
 

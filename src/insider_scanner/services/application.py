@@ -10,6 +10,7 @@ from insider_scanner.core.sec_security import (
     DEFAULT_SEC_SECURITY_POLICY,
     SecSecurityPolicy,
 )
+from insider_scanner.persistence.feed import FeedRepository
 from insider_scanner.services.congress import CongressScanService
 from insider_scanner.services.context import PersistenceContext, open_persistence
 from insider_scanner.services.european import EuropeanScanService
@@ -31,9 +32,11 @@ class ApplicationServices:
     congress: CongressScanService
     european: EuropeanScanService
     prices: PriceService = field(init=False)
+    feed: FeedRepository = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "prices", PriceService(self.persistence.engine))
+        object.__setattr__(self, "feed", FeedRepository(self.persistence.engine))
 
     def close(self) -> None:
         try:

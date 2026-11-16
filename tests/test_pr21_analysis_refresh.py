@@ -45,16 +45,12 @@ def _loading_tab(qtbot):
 
 def test_unrelated_watchlist_edit_keeps_inflight_chart_load(qtbot):
     tab, pool = _loading_tab(qtbot)
-    request = tab._active_request
 
     tab.set_watchlists(_watchlists("MSFT", "AAPL", "NVDA"))
 
-    assert tab._active_request == request
     assert not tab.btn_load.isEnabled()
     assert tab.symbol_combo.currentText() == "AAPL"
-    payload = pool.worker.fn()
-    tab._on_loaded(payload)
-    tab._on_finished(payload[0])
+    pool.worker.run()
     assert tab.status_label.text() == "AAPL: 1 bars, 0 trades"
     assert list(tab.chart.price_curve.getData()[1]) == [1.5]
     assert tab.btn_load.isEnabled()
@@ -65,9 +61,9 @@ def test_removing_selected_symbol_invalidates_inflight_chart_load(qtbot):
 
     tab.set_watchlists(_watchlists("MSFT"))
 
-    assert tab._active_request is None
     assert tab.symbol_combo.currentText() == "MSFT"
     assert tab.btn_load.isEnabled()
     tab.status_label.setText("Select MSFT")
-    tab._on_loaded(pool.worker.fn())
+    pool.worker.run()
     assert tab.status_label.text() == "Select MSFT"
+    assert tab.chart.price_curve is None

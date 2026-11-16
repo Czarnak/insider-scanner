@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from functools import partial
 
 from PySide6.QtCore import QThreadPool, Slot
 from PySide6.QtWidgets import (
@@ -21,7 +20,7 @@ from insider_scanner.gui.price_chart import PriceChartWidget
 from insider_scanner.persistence.watchlists import WatchlistStore
 from insider_scanner.services.application import ApplicationServices
 from insider_scanner.services.context import PersistenceContext
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 
 def load_trades_for_ticker(
@@ -63,8 +62,8 @@ class AnalysisTab(QWidget):
         self._services = services
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
         self._watchlists = watchlists if watchlists is not None else WatchlistStore()
-        self._request_id = 0
-        self._active_request: tuple[int, str] | None = None
+        self._requests = LatestRequest(self, self._thread_pool)
+        self._active_symbol: str | None = None
         self._build_ui()
         self._refresh_symbols()
 
@@ -128,9 +127,7 @@ class AnalysisTab(QWidget):
 
         end = date.today()
         start = end - timedelta(days=365 * 2)
-        self._request_id += 1
-        request_id = self._request_id
-        self._active_request = (request_id, symbol)
+        self._active_symbol = symbol
         services = self._services
 
         def work():
@@ -138,13 +135,14 @@ class AnalysisTab(QWidget):
             trades = load_trades_for_ticker(
                 symbol, start, end, persistence=services.persistence
             )
-            return request_id, symbol, bars, trades
+            return symbol, bars, trades
 
-        worker = Worker(work)
-        worker.signals.result.connect(self._on_loaded)
-        worker.signals.error.connect(partial(self._on_error, request_id, symbol))
-        worker.signals.finished.connect(partial(self._on_finished, request_id))
-        self._thread_pool.start(worker)
+        self._requests.start(
+            work,
+            on_result=self._on_loaded,
+            on_error=self._on_error,
+            on_finished=self._on_finished,
+        )
 
     def request_cancellation(self) -> None:
         """Invalidate pending callbacks during window shutdown."""
@@ -152,37 +150,27 @@ class AnalysisTab(QWidget):
 
     @Slot(str)
     def _on_symbol_changed(self, _symbol: str) -> None:
-        if self._active_request is None:
+        if self._active_symbol is None:
             return
         self._invalidate_active_request()
         self.btn_load.setEnabled(True)
 
     @Slot(object)
     def _on_loaded(self, payload) -> None:
-        request_id, symbol, bars, trades = payload
-        if not self._is_current_request(request_id, symbol):
-            return
+        symbol, bars, trades = payload
         self._render(bars, trades)
         self.status_label.setText(f"{symbol}: {len(bars)} bars, {len(trades)} trades")
 
-    def _on_error(self, request_id: int, symbol: str, error_info) -> None:
-        if not self._is_current_request(request_id, symbol):
-            return
+    def _on_error(self, error_info) -> None:
         self.status_label.setText(f"Load failed: {error_info[1]}")
 
-    def _on_finished(self, request_id: int) -> None:
-        if self._active_request is None or self._active_request[0] != request_id:
-            return
-        self._active_request = None
+    def _on_finished(self) -> None:
+        self._active_symbol = None
         self.btn_load.setEnabled(True)
 
-    def _is_current_request(self, request_id: int, symbol: str) -> bool:
-        current_symbol = self.symbol_combo.currentText().strip().upper()
-        return self._active_request == (request_id, symbol) and current_symbol == symbol
-
     def _invalidate_active_request(self) -> None:
-        self._request_id += 1
-        self._active_request = None
+        self._requests.invalidate()
+        self._active_symbol = None
 
     def _render(
         self, bars: list[PriceBar], trades: list[InsiderTrade | CongressTrade]

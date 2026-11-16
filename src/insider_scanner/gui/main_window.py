@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from functools import partial
 from pathlib import Path
+from time import monotonic
 
 from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QActionGroup
@@ -48,7 +49,7 @@ from insider_scanner.persistence.alerts import (
     save_alerts,
 )
 from insider_scanner.persistence.errors import is_access_denied
-from insider_scanner.persistence.feed import FeedCriteria, FeedRepository
+from insider_scanner.persistence.feed import FeedCriteria
 from insider_scanner.persistence.feed_state import (
     SCHEMA_VERSION,
     FeedState,
@@ -72,7 +73,7 @@ from insider_scanner.persistence.watchlists import (
 from insider_scanner.services.alerts import evaluate_alerts
 from insider_scanner.utils.config import DEFAULT_PATHS
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.main_window")
 
@@ -97,8 +98,13 @@ class MainWindow(QMainWindow):
         self._services = services
         self._thread_pool = QThreadPool(self)
         self._shutdown_timeout_ms = shutdown_timeout_ms
-        self._alert_request_id = 0
-        self._alert_workers: dict[int, Worker] = {}
+        self._closing = False
+        self._shutdown_started_at = 0.0
+        self._shutdown_warning_shown = False
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setInterval(25)
+        self._shutdown_timer.timeout.connect(self._poll_shutdown)
+        self._alert_requests = LatestRequest(self, self._thread_pool)
         self._state_path: Path = state_path or feed_state_path(DEFAULT_PATHS.data_dir)
         self._feed_state: FeedState = load_feed_state(self._state_path)
         # Watchlists and alerts live alongside the feed-state file.
@@ -250,13 +256,7 @@ class MainWindow(QMainWindow):
 
     def _initialize_pages(self) -> None:
         try:
-            persistence = (
-                None
-                if self._services is None
-                else getattr(self._services, "persistence", None)
-            )
-            engine = None if persistence is None else persistence.engine
-            repository = FeedRepository(engine) if engine is not None else None
+            repository = getattr(self._services, "feed", None)
             self._repository = repository
             self.feed_page = FeedPageWidget(
                 repository,
@@ -399,7 +399,7 @@ class MainWindow(QMainWindow):
         self.scan_tab.set_watchlists(store)
         if hasattr(self.analysis_tab, "set_watchlists"):
             self.analysis_tab.set_watchlists(store)
-        self._alert_request_id += 1
+        self._alert_requests.invalidate()
         self.alerts_page.display_hits(())
         self._check_alerts()
 
@@ -424,12 +424,12 @@ class MainWindow(QMainWindow):
             return False
         self._alerts = store
         self.alerts_page.set_store(store)
-        self._alert_request_id += 1
+        self._alert_requests.invalidate()
         return True
 
     def _on_alerts_changed(self, store) -> None:
         self._alerts = store
-        self._alert_request_id += 1
+        self._alert_requests.invalidate()
         self._persist_alerts()
         self._check_alerts()
 
@@ -465,37 +465,25 @@ class MainWindow(QMainWindow):
 
     def _check_alerts(self) -> None:
         """Evaluate enabled alert rules against the local feed off the UI thread."""
-        self._alert_request_id += 1
-        request_id = self._alert_request_id
-        if self._repository is None:
+        self._alert_requests.invalidate()
+        if self._closing or self._repository is None:
             return
         store = self.alerts_page.store()
         if not any(rule.enabled for rule in store.rules):
             self.alerts_page.display_hits(())
             return
         watchlists = self.watchlist_page.store()
-        worker = Worker(evaluate_alerts, self._repository, store, watchlists)
-        worker.signals.result.connect(
-            lambda hits: self._on_alerts_evaluated(request_id, hits)
+        self._alert_requests.start(
+            evaluate_alerts,
+            args=(self._repository, store, watchlists),
+            on_result=self._on_alerts_evaluated,
+            on_error=self._on_alerts_error,
         )
-        worker.signals.error.connect(
-            lambda error_info: self._on_alerts_error(request_id, error_info)
-        )
-        worker.signals.finished.connect(lambda: self._release_alert_worker(request_id))
-        self._alert_workers[request_id] = worker
-        self._thread_pool.start(worker)
 
-    def _release_alert_worker(self, request_id: int) -> None:
-        self._alert_workers.pop(request_id, None)
-
-    def _on_alerts_evaluated(self, request_id: int, hits) -> None:
-        if request_id != self._alert_request_id:
-            return
+    def _on_alerts_evaluated(self, hits) -> None:
         self.alerts_page.display_hits(hits)
 
-    def _on_alerts_error(self, request_id: int, error_info: tuple) -> None:
-        if request_id != self._alert_request_id:
-            return
+    def _on_alerts_error(self, error_info: tuple) -> None:
         log.error("Alert evaluation failed: %s", error_info[1])
 
     def _update_alert_badge(self, count: int) -> None:
@@ -769,7 +757,7 @@ class MainWindow(QMainWindow):
         self._sync_theme_selector()
 
     def request_cancellation(self) -> None:
-        self._alert_request_id += 1
+        self._alert_requests.invalidate()
         for name in (
             "feed_page",
             "company_page",
@@ -785,7 +773,8 @@ class MainWindow(QMainWindow):
                 page.request_cancellation()
 
     def shutdown_workers(self) -> bool:
-        self.request_cancellation()
+        """Bounded drain for cleanup after the application event loop stops."""
+        self._begin_shutdown()
         if self._thread_pool.waitForDone(self._shutdown_timeout_ms):
             return True
         log.warning(
@@ -794,8 +783,39 @@ class MainWindow(QMainWindow):
         )
         return False
 
+    def _begin_shutdown(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+        self._shutdown_started_at = monotonic()
+        if hasattr(self, "persist_timer"):
+            self.persist_timer.stop()
+        central = self.centralWidget()
+        if central is not None:
+            central.setEnabled(False)
+        self.menuBar().setEnabled(False)
+        self.request_cancellation()
+
+    def _poll_shutdown(self) -> None:
+        if self._thread_pool.activeThreadCount() == 0:
+            self._shutdown_timer.stop()
+            self.close()
+        elif (
+            not self._shutdown_warning_shown
+            and (monotonic() - self._shutdown_started_at) * 1_000
+            >= self._shutdown_timeout_ms
+        ):
+            self._shutdown_warning_shown = True
+            log.warning(
+                "Timed out waiting for GUI workers to stop after %d ms",
+                self._shutdown_timeout_ms,
+            )
+            self.log_status("Still waiting for background tasks to stop…")
+
     def closeEvent(self, event) -> None:
-        if self.shutdown_workers():
+        self._begin_shutdown()
+        if self._thread_pool.activeThreadCount() == 0:
+            self._shutdown_timer.stop()
             try:
                 if hasattr(self, "persist_timer"):
                     self.persist_timer.stop()
@@ -808,6 +828,9 @@ class MainWindow(QMainWindow):
             event.accept()
         else:
             event.ignore()
+            if not self._shutdown_timer.isActive():
+                self.log_status("Stopping background tasks…")
+                self._shutdown_timer.start()
 
     def _disconnect_theme(self) -> None:
         connection = getattr(self, "_theme_connection", None)

@@ -32,7 +32,7 @@ from insider_scanner.core.congress_identity import identity_for, name_matches
 from insider_scanner.core.fetch_outcome import describe_incomplete
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import dispatch
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("congress_tab")
 
@@ -217,6 +217,7 @@ class CongressTab(QWidget):
         super().__init__(parent)
         self._service = service
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._requests = LatestRequest(self, self._thread_pool)
         self._trades: list = []
         self._filtered_trades: list = []
         self._cancel_event = threading.Event()
@@ -438,13 +439,14 @@ class CongressTab(QWidget):
 
     def _stop_scan(self):
         """Signal the background scan to stop."""
-        self.request_cancellation()
+        self._cancel_event.set()
         self.btn_stop.setEnabled(False)
         self.status_label.setText("Cancelling scan...")
 
     def request_cancellation(self) -> None:
         """Request cooperative cancellation without blocking the GUI thread."""
         self._cancel_event.set()
+        self._requests.invalidate()
 
     # ------------------------------------------------------------------
     # Scan — wire to House + Senate backends
@@ -470,7 +472,8 @@ class CongressTab(QWidget):
         # Load sectors for filtering
         self._member_sectors = _load_member_sectors()
 
-        self._cancel_event.clear()
+        self._cancel_event.set()
+        self._cancel_event = threading.Event()
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # indeterminate
@@ -478,6 +481,7 @@ class CongressTab(QWidget):
         sd = self._get_start_date()
         ed = self._get_end_date()
         cancel = self._cancel_event
+        service = self._service
         sources = tuple(
             source
             for source, enabled in (
@@ -494,7 +498,7 @@ class CongressTab(QWidget):
         member = selected if selected == "All" else identity_for(selected)
 
         def work():
-            return self._service.scan(
+            return service.scan(
                 member,
                 sources=sources,
                 start_date=sd,
@@ -503,8 +507,7 @@ class CongressTab(QWidget):
                 cancelled=cancel.is_set,
             )
 
-        dispatch(
-            self._thread_pool,
+        self._requests.start(
             work,
             on_result=self._on_scan_done,
             on_error=self._on_scan_error,

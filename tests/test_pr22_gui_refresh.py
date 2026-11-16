@@ -16,7 +16,7 @@ from insider_scanner.core.models import InsiderTrade
 from insider_scanner.gui.alerts_page import AlertsPage
 from insider_scanner.gui.entity_pages import CompanyPage, InsiderPage
 from insider_scanner.persistence.alerts import AlertRule, AlertStore
-from insider_scanner.persistence.feed import FeedMarket, FeedRecord
+from insider_scanner.persistence.feed import FeedMarket, FeedRecord, FeedRepository
 from insider_scanner.persistence.watchlists import WatchlistStore
 from insider_scanner.services.alerts import AlertHit
 from insider_scanner.services.context import open_persistence
@@ -63,7 +63,11 @@ def window(qtbot, tmp_path):
 
     persistence = open_persistence(tmp_path / "refresh.sqlite3")
     services = SimpleNamespace(
-        persistence=persistence, us=None, congress=None, european=None
+        persistence=persistence,
+        feed=FeedRepository(persistence.engine),
+        us=None,
+        congress=None,
+        european=None,
     )
     widget = MainWindow(services, state_path=tmp_path / "feed_state.json")
     qtbot.addWidget(widget)
@@ -229,14 +233,16 @@ def test_scan_completion_refreshes_feed_entities_and_alerts(
     assert calls == ["feed_page", "company_page", "insider_page", "alerts"]
 
 
-def test_disabling_all_rules_invalidates_inflight_evaluation(window):
+def test_disabling_all_rules_invalidates_inflight_evaluation(window, monkeypatch):
+    workers = []
+    monkeypatch.setattr(window._thread_pool, "start", workers.append)
     rule = AlertRule("A")
     window.alerts_page.set_store(AlertStore(rules=(rule,)))
-    old_request = window._alert_request_id
+    window._check_alerts()
     window.alerts_page.set_store(AlertStore(rules=(replace(rule, enabled=False),)))
 
     window._check_alerts()
-    window._on_alerts_evaluated(old_request, (AlertHit("A", (_record(),), 1),))
+    workers[0].signals.result.emit((AlertHit("A", (_record(),), 1),))
 
     assert window.alerts_page.new_match_count() == 0
     assert window.alerts_button.text() == "Alerts"
@@ -263,18 +269,20 @@ def test_alert_worker_survives_until_queued_signals_are_delivered(window, monkey
 
 
 def test_rule_changes_clear_badge_and_schedule_new_evaluation(window, monkeypatch):
+    workers = []
+    monkeypatch.setattr(window._thread_pool, "start", workers.append)
     window.alerts_page.set_store(AlertStore(rules=(AlertRule("A"),)))
+    window._check_alerts()
     window.alerts_page.display_hits((AlertHit("A", (_record(),), 1),))
     window._update_alert_badge(1)
     calls = []
     monkeypatch.setattr(window, "_check_alerts", lambda: calls.append("check"))
-    old_request = window._alert_request_id
 
     window.alerts_page.rules_table.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
 
     assert window.alerts_button.text() == "Alerts"
     assert calls == ["check"]
-    window._on_alerts_evaluated(old_request, (AlertHit("A", (_record(),), 1),))
+    workers[0].signals.result.emit((AlertHit("A", (_record(),), 1),))
     assert window.alerts_page.new_match_count() == 0
 
 

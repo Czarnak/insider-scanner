@@ -5,7 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGroupBox, QLabel, QVBoxLayout
 
-from insider_scanner.cli import SEC_BULK_SUBMISSIONS_URL
+from insider_scanner.core.sec_bulk import SEC_BULK_SUBMISSIONS_URL
 
 
 def build_sec_backfill_info_group() -> QGroupBox:

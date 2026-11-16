@@ -57,6 +57,14 @@ class UsScanService:
             raise ValueError("latest_overlap_count must be positive")
         self._latest_overlap_count = latest_overlap_count
 
+    def resolve_cik(self, ticker: str) -> tuple[str, str] | None:
+        """Resolve a company identifier and its filings URL through SEC lookup."""
+        from insider_scanner.core.edgar import get_filing_url, resolve_cik
+
+        identifier = normalize_identifier(ticker, "ticker").upper()
+        cik = resolve_cik(identifier)
+        return (cik, get_filing_url(cik)) if cik is not None else None
+
     def scan(
         self,
         ticker: str,
