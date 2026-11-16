@@ -192,9 +192,11 @@ bodies or credentials. Live provider availability is separate from offline tests
 #### Appearance & themes
 
 - A single semantic design-token system drives both **light** and **dark** themes (WCAG AA contrast).
-- Switch from the top bar or **View ▸ Theme** (System / Light / Dark); the
+- Switch from **View ▸ Theme** (System / Light / Dark); the
   choice is remembered between sessions, and **System** follows the OS color
   scheme.
+- Native dialogs and controls, alert transaction colors and filter errors follow
+  the selected theme immediately.
 - Transaction colors are semantic and always paired with text/sign (green = purchase, red = sale, amber = flagged/congress); tickers, dates, and monetary values use a monospace face for tabular alignment.
 - The UI bundles the open-source **Inter** (sans) and **JetBrains Mono** (monospace) fonts, falling back to system fonts (Segoe UI / Consolas) when unavailable.
 
@@ -770,7 +772,10 @@ src/insider_scanner/
 │   ├── eu_scan.py       # Dispatcher that runs the selected European scrapers
 │   └── rns_investegate.py # UK RNS announcements via Investegate
 ├── gui/
-│   ├── main_window.py   # Main window (default OS style + tab management)
+│   ├── main_window.py   # Application shell, page registry and cooperative shutdown
+│   ├── user_state.py    # User-state snapshots, safe saves and rename recovery
+│   ├── alert_controller.py # Latest alert evaluation, cancellation and badge updates
+│   ├── screens_menu.py  # Saved-screen actions and submenu ownership
 │   ├── scan_tab.py      # Insider scan workflow: search, filters, table, EDGAR links
 │   ├── congress_tab.py  # Congress tab with member and sector controls
 │   ├── european_tab.py  # European tab with ISIN/watchlist scans and detail panel

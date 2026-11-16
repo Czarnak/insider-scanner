@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover
         return True
 
 
+from insider_scanner.gui.alert_controller import AlertController
 from insider_scanner.gui.alerts_page import AlertsPage
 from insider_scanner.gui.entity_pages import CompanyPage, InsiderPage
 from insider_scanner.gui.feed_page import FeedPageWidget
@@ -45,10 +46,8 @@ from insider_scanner.gui.watchlist_page import WatchlistPage
 from insider_scanner.persistence.feed import FeedCriteria
 from insider_scanner.persistence.feed_state import feed_state_path
 from insider_scanner.persistence.watchlists import WatchEntry
-from insider_scanner.services.alerts import evaluate_alerts
 from insider_scanner.utils.config import DEFAULT_PATHS
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.main_window")
 
@@ -79,7 +78,9 @@ class MainWindow(QMainWindow):
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(25)
         self._shutdown_timer.timeout.connect(self._poll_shutdown)
-        self._alert_requests = LatestRequest(self, self._thread_pool)
+        self.alert_controller = AlertController(
+            getattr(services, "feed", None), thread_pool=self._thread_pool, parent=self
+        )
         try:
             self._user_state = UserStateStore(
                 state_path or feed_state_path(DEFAULT_PATHS.data_dir),
@@ -307,7 +308,11 @@ class MainWindow(QMainWindow):
                 self._user_state.alerts, criteria_provider=self.feed_page.criteria
             )
             self.alerts_page.rulesChanged.connect(self._on_alerts_changed)
-            self.alerts_page.matchCountChanged.connect(self._update_alert_badge)
+            self.alerts_page.matchCountChanged.connect(
+                self.alert_controller.update_match_count
+            )
+            self.alert_controller.hitsChanged.connect(self.alerts_page.display_hits)
+            self.alert_controller.badgeChanged.connect(self._update_alert_badge)
             self.alerts_page.checkRequested.connect(self._check_alerts)
             self.alerts_page.openCompanyRequested.connect(self._open_company)
             self.alerts_page.openInsiderRequested.connect(self._open_insider)
@@ -351,8 +356,7 @@ class MainWindow(QMainWindow):
         self.scan_tab.set_watchlists(store)
         if hasattr(self.analysis_tab, "set_watchlists"):
             self.analysis_tab.set_watchlists(store)
-        self._alert_requests.invalidate()
-        self.alerts_page.display_hits(())
+        self.alert_controller.invalidate()
         self._check_alerts()
 
     def _on_watchlist_renamed(self, watchlists, old: str, new: str) -> bool:
@@ -366,11 +370,11 @@ class MainWindow(QMainWindow):
             )
             return False
         self.alerts_page.set_store(self._user_state.alerts)
-        self._alert_requests.invalidate()
+        self.alert_controller.invalidate()
         return True
 
     def _on_alerts_changed(self, store) -> None:
-        self._alert_requests.invalidate()
+        self.alert_controller.invalidate()
         self._user_state.save_alerts(store)
         self._check_alerts()
 
@@ -381,27 +385,9 @@ class MainWindow(QMainWindow):
         self._user_state.save_alerts(self.alerts_page.store())
 
     def _check_alerts(self) -> None:
-        """Evaluate enabled alert rules against the local feed off the UI thread."""
-        self._alert_requests.invalidate()
-        if self._closing or self._repository is None:
-            return
-        store = self.alerts_page.store()
-        if not any(rule.enabled for rule in store.rules):
-            self.alerts_page.display_hits(())
-            return
-        watchlists = self.watchlist_page.store()
-        self._alert_requests.start(
-            evaluate_alerts,
-            args=(self._repository, store, watchlists),
-            on_result=self._on_alerts_evaluated,
-            on_error=self._on_alerts_error,
+        self.alert_controller.check(
+            self.alerts_page.store(), self.watchlist_page.store()
         )
-
-    def _on_alerts_evaluated(self, hits) -> None:
-        self.alerts_page.display_hits(hits)
-
-    def _on_alerts_error(self, error_info: tuple) -> None:
-        log.error("Alert evaluation failed: %s", error_info[1])
 
     def _update_alert_badge(self, count: int) -> None:
         self.alerts_button.setText("Alerts" if count <= 0 else f"Alerts ({count})")
@@ -630,7 +616,7 @@ class MainWindow(QMainWindow):
         self._sync_theme_actions()
 
     def request_cancellation(self) -> None:
-        self._alert_requests.invalidate()
+        self.alert_controller.request_cancellation()
         for name in (
             "feed_page",
             "company_page",

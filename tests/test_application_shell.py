@@ -577,7 +577,7 @@ def test_alert_badge_updates_on_evaluation(qtbot, tmp_path):
     qtbot.addWidget(window)
     try:
         hits = (AlertHit(rule_name="A", records=(_feed_record(),), match_count=1),)
-        window._on_alerts_evaluated(hits)
+        window.alert_controller.hitsChanged.emit(hits)
         assert window.alerts_button.text() == "Alerts (1)"
         assert window.alerts_page.new_match_count() == 1
     finally:
