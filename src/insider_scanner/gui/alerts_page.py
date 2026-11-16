@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from insider_scanner.core.trade_types import TransactionDirection, classify_direction
-from insider_scanner.gui.theme import get_theme_manager
+from insider_scanner.gui.theme import ThemePalette, get_theme_manager
 from insider_scanner.gui.trade_display import format_value
 from insider_scanner.persistence.alerts import AlertRule, AlertStore, AlertStoreError
 from insider_scanner.persistence.feed import FeedCriteria, FeedRecord
@@ -96,6 +96,11 @@ class AlertsPage(QWidget):
         self._palette = get_theme_manager().palette()
         self._build_ui()
         self._refresh_rules()
+        get_theme_manager().paletteChanged.connect(self._on_palette_changed)
+
+    def _on_palette_changed(self, palette: ThemePalette) -> None:
+        self._palette = palette
+        self._refresh_results()
 
     # ------------------------------------------------------------------
     # Public API
