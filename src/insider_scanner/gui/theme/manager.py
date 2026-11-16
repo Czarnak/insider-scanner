@@ -29,7 +29,7 @@ class ThemeManager(QObject):
 
     Responsibilities:
     - Hold the current ``ThemeMode`` and resolved ``ThemePalette``.
-    - Apply QSS + re-polish all top-level widgets on demand.
+    - Apply the native Fusion palette and QSS together on demand.
     - Persist and restore the user's mode choice via ``QSettings``.
     - React to OS color-scheme changes when mode is ``SYSTEM``.
 
@@ -60,14 +60,6 @@ class ThemeManager(QObject):
                 app.setStyle("Fusion")  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001
             _log.warning("setStyle failed: %s", exc)
-
-        try:
-            if hasattr(app, "setPalette"):
-                fusion_palette = self._build_fusion_palette()
-                if fusion_palette is not None:
-                    app.setPalette(fusion_palette)  # type: ignore[union-attr]
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("setPalette failed: %s", exc)
 
         try:
             load_application_fonts()
@@ -150,7 +142,7 @@ class ThemeManager(QObject):
         return LIGHT
 
     def apply(self) -> None:
-        """Resolve the palette, set QSS, and re-polish top-level widgets."""
+        """Resolve once and apply the native palette and stylesheet together."""
         try:
             self._palette = self._resolve()
         except Exception as exc:  # noqa: BLE001
@@ -159,25 +151,19 @@ class ThemeManager(QObject):
 
         try:
             app = QApplication.instance()
+            if app is not None and hasattr(app, "setPalette"):
+                fusion_palette = self._build_fusion_palette(self._palette)
+                if fusion_palette is not None:
+                    app.setPalette(fusion_palette)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("setPalette failed: %s", exc)
+
+        try:
+            app = QApplication.instance()
             if app is not None and hasattr(app, "setStyleSheet"):
                 app.setStyleSheet(build_stylesheet(self._palette))
         except Exception as exc:  # noqa: BLE001
             _log.warning("setStyleSheet failed: %s", exc)
-
-        try:
-            app = QApplication.instance()
-            if app is not None and hasattr(app, "topLevelWidgets"):
-                for widget in list(app.topLevelWidgets()):
-                    if not _is_valid(widget) or not widget.isVisible():
-                        continue
-                    try:
-                        widget.style().unpolish(widget)
-                        widget.style().polish(widget)
-                        widget.update()
-                    except Exception as exc:  # noqa: BLE001
-                        _log.debug("Re-polish skipped for widget: %s", exc)
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("Re-polish loop failed: %s", exc)
 
         try:
             self.paletteChanged.emit(self._palette)
@@ -200,7 +186,7 @@ class ThemeManager(QObject):
         except (RuntimeError, TypeError) as exc:
             _log.debug("colorSchemeChanged disconnect skipped: %s", exc)
 
-    def _build_fusion_palette(self):  # type: ignore[return]
+    def _build_fusion_palette(self, palette: ThemePalette | None = None):  # type: ignore[return]
         """Build a QPalette from palette tokens for the Fusion style.
 
         Returns ``None`` on any error so the caller can guard.
@@ -208,7 +194,7 @@ class ThemeManager(QObject):
         try:
             from PySide6.QtGui import QColor, QPalette
 
-            p = self._resolve()
+            p = palette or self._palette
             pal = QPalette()
             pal.setColor(QPalette.ColorRole.Window, QColor(p.bg_page))
             pal.setColor(QPalette.ColorRole.WindowText, QColor(p.text_primary))

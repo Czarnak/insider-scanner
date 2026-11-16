@@ -119,6 +119,11 @@ QLabel#feedStateHeading {{
     background-color: transparent;
 }}
 
+QLabel#filterError {{
+    color: {p.error};
+    background-color: transparent;
+}}
+
 QLabel#feedStateMessage {{
     color: {p.text_secondary};
     background-color: transparent;

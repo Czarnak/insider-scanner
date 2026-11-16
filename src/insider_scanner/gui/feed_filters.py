@@ -187,7 +187,7 @@ class FeedFilterPanel(QWidget):
 
         self.lbl_error = QLabel()
         self.lbl_error.setVisible(False)
-        self.lbl_error.setStyleSheet("color: red;")
+        self.lbl_error.setObjectName("filterError")
         h.addWidget(self.lbl_error)
 
         h.addStretch()

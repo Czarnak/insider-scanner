@@ -123,7 +123,7 @@ def test_top_bar_search_and_reload_delegate_to_feed(qtbot):
     window.feed_page.reload = lambda: calls.append(("reload", None))
 
     window.global_search.setText("AAPL")
-    window._apply_global_search()
+    window.global_search_controller.feedSearchRequested.emit("AAPL")
     qtbot.mouseClick(window.reload_button, Qt.MouseButton.LeftButton)
 
     assert calls == [("search", "AAPL"), ("reload", None)]
@@ -577,7 +577,7 @@ def test_alert_badge_updates_on_evaluation(qtbot, tmp_path):
     qtbot.addWidget(window)
     try:
         hits = (AlertHit(rule_name="A", records=(_feed_record(),), match_count=1),)
-        window._on_alerts_evaluated(hits)
+        window.alert_controller.hitsChanged.emit(hits)
         assert window.alerts_button.text() == "Alerts (1)"
         assert window.alerts_page.new_match_count() == 1
     finally:
