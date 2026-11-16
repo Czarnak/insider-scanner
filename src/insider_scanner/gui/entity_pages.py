@@ -1,8 +1,8 @@
 """Entity research pages: CompanyPage and InsiderPage.
 
 Each page shows a header, a one-line summary, and a history table driven by
-FeedTableModel (reused verbatim from feed_page).  Background data fetching
-mirrors the Worker / request-id guard pattern used in FeedPageWidget.
+FeedTableModel (reused verbatim from feed_page). Background data fetching
+uses the same owned latest-request helper as the other GUI pages.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from insider_scanner.gui.feed_page import FeedTableModel
 from insider_scanner.gui.trade_display import make_feed_table
 from insider_scanner.persistence.feed import FeedMarket, FeedRecord
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.entity_pages")
 
@@ -68,9 +68,8 @@ class EntityResearchPage(QWidget):
         self._thread_pool: QThreadPool | object = (
             thread_pool or QThreadPool.globalInstance()
         )
-        self._request_id: int = 0
+        self._requests = LatestRequest(self, self._thread_pool)
         self._selection: tuple[str, FeedMarket] | None = None
-        self._workers: dict[int, Worker] = {}
         self._build_ui()
         self._show_state(self._empty_prompt())
 
@@ -125,8 +124,7 @@ class EntityResearchPage(QWidget):
         Shows an empty prompt immediately if *value* is blank.
         Shows unavailable if *repository* is None.
         """
-        self._request_id += 1
-        request_id = self._request_id
+        self._requests.invalidate()
         self._selection = (value, market) if value.strip() else None
         if self._selection is None:
             self.progress.hide()
@@ -143,26 +141,21 @@ class EntityResearchPage(QWidget):
         self.progress.show()
         self._show_state(f"Loading {self._noun()} activity…")
 
-        worker = Worker(self._fetch, value, market)
-        worker.signals.result.connect(
-            lambda records: self._on_result(request_id, value, market, records)
+        self._requests.start(
+            self._fetch,
+            args=(value, market),
+            on_result=lambda records: self._on_result(value, market, records),
+            on_error=self._on_error,
+            on_finished=self._on_finished,
         )
-        worker.signals.error.connect(
-            lambda error_info: self._on_error(request_id, error_info)
-        )
-        worker.signals.finished.connect(lambda: self._on_finished(request_id))
-        self._workers[request_id] = worker
-        self._thread_pool.start(worker)
 
     def reload(self) -> None:
         """Refresh the selected company or insider while retaining its identity."""
         if self._selection is not None:
             self.load(*self._selection)
 
-    def _on_finished(self, request_id: int) -> None:
-        self._workers.pop(request_id, None)
-        if request_id == self._request_id:
-            self.progress.hide()
+    def _on_finished(self) -> None:
+        self.progress.hide()
 
     # ------------------------------------------------------------------
     # Abstract hooks (override in subclasses)
@@ -192,18 +185,13 @@ class EntityResearchPage(QWidget):
 
     def _on_result(
         self,
-        request_id: int,
         value: str,
         market: FeedMarket,
         records: tuple[FeedRecord, ...],
     ) -> None:
-        if request_id != self._request_id:
-            return
         self._populate(value, market, records)
 
-    def _on_error(self, request_id: int, error_info: tuple) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_error(self, error_info: tuple) -> None:
         log.error("Entity page load failed: %s", error_info[1])
         self.progress.hide()
         self._show_state(f"Could not load {self._noun()} activity.")
@@ -231,7 +219,7 @@ class EntityResearchPage(QWidget):
 
     def request_cancellation(self) -> None:
         """Invalidate any in-flight load so its result is dropped on teardown."""
-        self._request_id += 1
+        self._requests.invalidate()
 
 
 # ---------------------------------------------------------------------------

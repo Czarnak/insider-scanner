@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, TypedDict
 from insider_scanner import __version__
 from insider_scanner.core import edgar
 from insider_scanner.core.fetch_outcome import describe_incomplete
-from insider_scanner.core.sec_bulk import SecBulkError
+from insider_scanner.core.sec_bulk import (
+    SEC_BULK_INSTRUCTIONS,
+    SEC_BULK_SUBMISSIONS_URL,  # noqa: F401 - retain the public CLI import
+    SecBulkError,
+)
 from insider_scanner.core.sec_client import SecBlockedError
 from insider_scanner.core.sec_security import DEFAULT_SEC_SECURITY_POLICY
 from insider_scanner.services.application import (
@@ -39,25 +43,6 @@ if TYPE_CHECKING:
 
 log = get_logger("cli")
 
-# SEC submissions metadata archive for bounded legacy ingestion and XML repairs.
-# Verified reachable: ranged GET with a compliant SEC User-Agent returned HTTP 206,
-# Content-Type application/zip, ~1.55 GB. Host www.sec.gov is in the SEC client allowlist.
-SEC_BULK_SUBMISSIONS_URL = (
-    "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
-)
-SEC_BULK_INSTRUCTIONS = (
-    "For history from 2006 Q1, use quarterly SEC datasets:\n"
-    "   insider-scanner-cli sec-backfill-dataset --since 2006-01-01\n"
-    "For 2003–2005 or targeted XML repairs, use the SEC 'submissions' archive "
-    "(multi-GB, refreshed nightly).\n"
-    "1. Download it once:\n"
-    f"   {SEC_BULK_SUBMISSIONS_URL}\n"
-    "2. Run backfill against the local file:\n"
-    "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
-    "Use --since/--until to bound filing dates, and --cik for targeted repairs.\n"
-    "Add --force to a scoped repair to replace an already-ingested dataset filing.\n"
-    "Backfill is resumable: re-run the same command after an interruption to continue."
-)
 DEFAULT_US_SCAN_SOURCES = ("secform4", "openinsider")
 DEFAULT_US_LATEST_SOURCES = ("openinsider",)
 

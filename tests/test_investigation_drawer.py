@@ -621,8 +621,8 @@ class TestErrorPath:
         text = _all_text(drawer)
         assert "Could not load investigation details" in text
 
-    def test_stale_request_id_result_is_dropped(self, qtbot):
-        """A result arriving for an old request id must not overwrite the current state."""
+    def test_superseded_record_result_is_dropped(self, qtbot):
+        """An older investigation must not overwrite a newer record selection."""
 
         # Arrange — capturing pool that stores but does not run workers
         class CapturingPool:
@@ -637,27 +637,28 @@ class TestErrorPath:
         drawer = InvestigationDrawer(repository=repo, thread_pool=pool)
         qtbot.addWidget(drawer)
 
-        rec1 = _record(key="us:1")
+        rec1 = _record(key="us:1", issuer="SupersededCorp")
         rec2 = _record(key="us:2", issuer="NewCorp", person="Bob Smith")
 
         # Start first request — worker queued but not run
         drawer.show_record(rec1)
         first_worker = pool.workers[0]
 
-        # Start second request — bumps the request id
+        # Start another request while the first is pending.
         drawer.show_record(rec2)
 
         # Run the first (now stale) worker AFTER the second request has been issued
         first_worker.run()
 
-        # The result for rec1 must be dropped — "NewCorp" must NOT appear yet
-        # (the second worker is still pending)
         text = _all_text(drawer)
-        assert "Example Corp" not in text or "NewCorp" not in text
-        # Specifically rec1's issuer "Example Corp" should NOT be rendered
-        # because we are now waiting for rec2's worker
-        # The drawer must still be in "Loading" state
+        assert "SupersededCorp" not in text
+        assert "NewCorp" not in text
         assert "Loading" in text
+
+        pool.workers[1].run()
+        text = _all_text(drawer)
+        assert "NewCorp" in text
+        assert "SupersededCorp" not in text
 
 
 class TestNullRepository:

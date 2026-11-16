@@ -40,7 +40,7 @@ from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.persistence.watchlists import WatchlistStore
 from insider_scanner.services.common import ScanError
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker, dispatch
+from insider_scanner.utils.threading import LatestRequest
 from insider_scanner.utils.trade_display import format_reported_number
 
 log = get_logger("scan_tab")
@@ -62,10 +62,13 @@ class ScanTab(QWidget):
         super().__init__(parent)
         self._service = service
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._scan_requests = LatestRequest(self, self._thread_pool)
+        self._cik_requests = LatestRequest(self, self._thread_pool)
         self._watchlists = watchlists if watchlists is not None else WatchlistStore()
         self._trades: list = []
         self._cancel_event = Event()
         self._build_ui()
+        self.ticker_edit.textChanged.connect(self._invalidate_cik)
 
     def set_watchlists(self, store: WatchlistStore) -> None:
         """Use the application's current managed watchlists for the next scan."""
@@ -289,13 +292,15 @@ class ScanTab(QWidget):
 
     def _stop_scan(self):
         """Signal the running watchlist scan to stop."""
-        self.request_cancellation()
+        self._cancel_event.set()
         self.btn_stop.setEnabled(False)
         self.progress.setFormat("Stopping...")
 
     def request_cancellation(self) -> None:
         """Request cooperative cancellation without blocking the GUI thread."""
         self._cancel_event.set()
+        self._scan_requests.invalidate()
+        self._cik_requests.invalidate()
 
     def _run_scan(self):
         ticker = self.ticker_edit.text().strip().upper()
@@ -303,7 +308,10 @@ class ScanTab(QWidget):
             QMessageBox.warning(self, "Input", "Enter a ticker symbol.")
             return
 
-        self._cancel_event.clear()
+        self._cancel_event.set()
+        self._cancel_event = Event()
+        cancel = self._cancel_event
+        service = self._service
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
@@ -328,24 +336,26 @@ class ScanTab(QWidget):
         ed = self._get_end_date()
 
         def work():
-            return self._service.scan(
+            return service.scan(
                 ticker,
                 sources=sources,
                 start_date=sd,
                 end_date=ed,
                 use_cache=True,
-                cancelled=self._cancel_event.is_set,
+                cancelled=cancel.is_set,
             )
 
-        dispatch(
-            self._thread_pool,
+        self._scan_requests.start(
             work,
             on_result=self._on_scan_done,
             on_error=self._on_scan_error,
         )
 
     def _run_latest(self):
-        self._cancel_event.clear()
+        self._cancel_event.set()
+        self._cancel_event = Event()
+        cancel = self._cancel_event
+        service = self._service
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
@@ -356,17 +366,16 @@ class ScanTab(QWidget):
         count = self.latest_count_spin.value()
 
         def work():
-            return self._service.latest(
+            return service.latest(
                 count=count,
                 sources=("openinsider",),
                 start_date=sd,
                 end_date=ed,
                 use_cache=True,
-                cancelled=self._cancel_event.is_set,
+                cancelled=cancel.is_set,
             )
 
-        dispatch(
-            self._thread_pool,
+        self._scan_requests.start(
             work,
             on_result=self._on_scan_done,
             on_error=self._on_scan_error,
@@ -382,7 +391,8 @@ class ScanTab(QWidget):
             )
             return
 
-        self._cancel_event.clear()
+        self._cancel_event.set()
+        self._cancel_event = Event()
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, len(tickers))
@@ -394,6 +404,7 @@ class ScanTab(QWidget):
         sd = self._get_start_date()
         ed = self._get_end_date()
         cancel = self._cancel_event
+        service = self._service
         sources = tuple(
             source
             for source, enabled in (
@@ -408,7 +419,7 @@ class ScanTab(QWidget):
             QMessageBox.warning(self, "Sources", "Select at least one source.")
             return
 
-        def work():
+        def work(progress_callback):
             from insider_scanner.core.merger import merge_trades
 
             all_lists = []
@@ -418,7 +429,7 @@ class ScanTab(QWidget):
                     break
                 try:
                     result = as_fetch_result(
-                        self._service.scan(
+                        service.scan(
                             ticker,
                             sources=sources,
                             start_date=sd,
@@ -430,13 +441,13 @@ class ScanTab(QWidget):
                 except ScanError:
                     log.exception("Watchlist scan failed for %s", ticker)
                     issues.append(FetchIssue("scan_failed", identifier=ticker))
-                    worker.signals.progress.emit(i + 1)
+                    progress_callback(i + 1)
                     continue
                 all_lists.append(result)
                 issues.extend(result.issues)
                 if not result.complete and not result.issues:
                     issues.append(FetchIssue(result.status.value, identifier=ticker))
-                worker.signals.progress.emit(i + 1)
+                progress_callback(i + 1)
 
             if cancel.is_set():
                 issues.append(FetchIssue("cancelled"))
@@ -450,11 +461,12 @@ class ScanTab(QWidget):
             )
             return FetchResult(trades, status=status, issues=issues)
 
-        worker = Worker(work)
-        worker.signals.result.connect(self._on_scan_done)
-        worker.signals.error.connect(self._on_scan_error)
-        worker.signals.progress.connect(self.progress.setValue)
-        self._thread_pool.start(worker)
+        self._scan_requests.start(
+            work,
+            on_result=self._on_scan_done,
+            on_error=self._on_scan_error,
+            on_progress=self.progress.setValue,
+        )
 
     @Slot(object)
     def _on_scan_done(self, trades):
@@ -623,20 +635,39 @@ class ScanTab(QWidget):
                 url = build_edgar_url_for_trade(trade)
                 webbrowser.open(url)
 
+    def _invalidate_cik(self) -> None:
+        self._cik_requests.invalidate()
+        self.btn_resolve_cik.setEnabled(True)
+
     def _resolve_cik(self):
         ticker = self.ticker_edit.text().strip().upper()
         if not ticker:
             return
 
-        from insider_scanner.core.edgar import get_filing_url, resolve_cik
+        self.btn_resolve_cik.setEnabled(False)
+        self.detail_label.setText(f"Resolving CIK for {ticker}...")
 
-        cik = resolve_cik(ticker)
-        if cik:
-            url = get_filing_url(cik)
+        def show_result(result):
+            if result is None:
+                self.detail_label.setText(f"Could not resolve CIK for {ticker}")
+                return
+            cik, url = result
             self.detail_label.setText(f"{ticker} → CIK {cik}\nFilings: {url}")
             webbrowser.open(url)
-        else:
-            self.detail_label.setText(f"Could not resolve CIK for {ticker}")
+
+        def show_error(error_info):
+            log.error("CIK lookup failed for %s", ticker, exc_info=error_info)
+            self.detail_label.setText(
+                f"Could not resolve CIK for {ticker}. See logs for details."
+            )
+
+        self._cik_requests.start(
+            self._service.resolve_cik,
+            args=(ticker,),
+            on_result=show_result,
+            on_error=show_error,
+            on_finished=lambda: self.btn_resolve_cik.setEnabled(True),
+        )
 
     # ------------------------------------------------------------------
     # Save

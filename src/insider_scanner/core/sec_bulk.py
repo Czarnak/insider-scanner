@@ -39,6 +39,24 @@ _log = get_logger("sec_bulk")
 # Public constants
 # ---------------------------------------------------------------------------
 
+# SEC submissions metadata archive for bounded legacy ingestion and XML repairs.
+SEC_BULK_SUBMISSIONS_URL = (
+    "https://www.sec.gov/Archives/edgar/daily-index/bulkdata/submissions.zip"
+)
+SEC_BULK_INSTRUCTIONS = (
+    "For history from 2006 Q1, use quarterly SEC datasets:\n"
+    "   insider-scanner-cli sec-backfill-dataset --since 2006-01-01\n"
+    "For 2003–2005 or targeted XML repairs, use the SEC 'submissions' archive "
+    "(multi-GB, refreshed nightly).\n"
+    "1. Download it once:\n"
+    f"   {SEC_BULK_SUBMISSIONS_URL}\n"
+    "2. Run backfill against the local file:\n"
+    "   insider-scanner-cli sec-backfill --zip PATH\\TO\\submissions.zip --confirm-full-backfill\n"
+    "Use --since/--until to bound filing dates, and --cik for targeted repairs.\n"
+    "Add --force to a scoped repair to replace an already-ingested dataset filing.\n"
+    "Backfill is resumable: re-run the same command after an interruption to continue."
+)
+
 
 # ---------------------------------------------------------------------------
 # Filename patterns

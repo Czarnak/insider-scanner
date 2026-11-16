@@ -300,46 +300,31 @@ class TestSearchNow:
         # Assert
         assert not controller.popup.isVisible()
 
-    def test_search_now_stale_request_id_discards_result(self, qtbot):
-        """Simulate a race: bump _request_id after the worker is created but
-        before it completes.  The result must be discarded."""
+    def test_search_now_discards_superseded_result(self, qtbot):
+        """A superseded worker must not display its results over a newer search."""
 
-        # Arrange
-        call_count = 0
-        original_results = _make_results()
-
-        class SlowRepo:
-            def search_entities(
-                self, text: str, *, limit: int = 8
-            ) -> EntitySearchResults:
-                nonlocal call_count
-                call_count += 1
-                return original_results
-
-        class BumpingPool:
-            """Bumps controller._request_id before running the worker."""
-
-            def __init__(self, ctrl_ref: list) -> None:
-                self._ctrl_ref = ctrl_ref
+        class CapturingPool:
+            def __init__(self) -> None:
+                self.workers = []
 
             def start(self, worker) -> None:
-                # Simulate a newer request arriving and bumping the id
-                self._ctrl_ref[0]._request_id += 1
-                worker.run()
+                self.workers.append(worker)
 
-        ctrl_ref: list = [None]
         line_edit = QLineEdit()
         qtbot.addWidget(line_edit)
-        pool = BumpingPool(ctrl_ref)
-        controller = GlobalSearchController(line_edit, SlowRepo(), thread_pool=pool)
+        pool = CapturingPool()
+        controller = GlobalSearchController(
+            line_edit, FakeRepository(_make_results()), thread_pool=pool
+        )
         qtbot.addWidget(controller.popup)
-        ctrl_ref[0] = controller
-
-        # Act
         controller.search_now("app")
+        controller.search_now("apple")
 
-        # Assert: result is discarded — popup list stays empty
+        pool.workers[0].run()
         assert controller.popup.list_widget.count() == 0
+
+        pool.workers[1].run()
+        assert controller.popup.list_widget.count() > 0
 
 
 # ---------------------------------------------------------------------------

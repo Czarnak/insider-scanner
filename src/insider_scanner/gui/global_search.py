@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from PySide6.QtCore import QObject, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (
     QLineEdit,
@@ -13,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from insider_scanner.persistence.feed import EntityHit, EntitySearchResults
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("gui.global_search")
 
@@ -102,11 +104,11 @@ class GlobalSearchController(QObject):
         thread_pool: QThreadPool | None = None,
         debounce_ms: int = 200,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent if parent is not None else line_edit)
         self._line_edit = line_edit
         self._repository = repository
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
-        self._request_id = 0
+        self._requests = LatestRequest(self, self._thread_pool)
 
         # Parent the popup to the line edit so its lifetime is tied to the
         # window — avoids a dangling top-level popup after teardown.
@@ -132,27 +134,25 @@ class GlobalSearchController(QObject):
         """Execute an entity search for *text* immediately (bypasses debounce)."""
         stripped = text.strip()
         if not stripped:
+            self._requests.invalidate()
             self.popup.hide()
             return
         if self._repository is None:
+            self._requests.invalidate()
             self.popup.hide()
             return
 
-        self._request_id += 1
-        request_id = self._request_id
-
-        worker = Worker(self._repository.search_entities, stripped)
-        worker.signals.result.connect(
-            lambda results: self._on_search_result(request_id, stripped, results)
+        self._requests.start(
+            self._repository.search_entities,
+            args=(stripped,),
+            on_result=partial(self._on_search_result, stripped),
+            on_error=self._on_search_error,
         )
-        worker.signals.error.connect(
-            lambda error_info: self._on_search_error(request_id, error_info)
-        )
-        self._thread_pool.start(worker)
 
     def request_cancellation(self) -> None:
         """Invalidate any in-flight search and hide the popup on teardown."""
-        self._request_id += 1
+        self._debounce.stop()
+        self._requests.invalidate()
         self.popup.hide()
 
     def _activate_item(self, item: QListWidgetItem) -> None:
@@ -183,6 +183,7 @@ class GlobalSearchController(QObject):
     # ------------------------------------------------------------------
 
     def _on_text_changed(self, text: str) -> None:
+        self._requests.invalidate()
         self._debounce.start()
 
     def _on_debounce_timeout(self) -> None:
@@ -201,17 +202,12 @@ class GlobalSearchController(QObject):
 
     def _on_search_result(
         self,
-        request_id: int,
         text: str,
         results: EntitySearchResults,
     ) -> None:
-        if request_id != self._request_id:
-            return
         self.popup.populate(text, results)
         self.popup.show_below(self._line_edit)
 
-    def _on_search_error(self, request_id: int, error_info: tuple) -> None:
-        if request_id != self._request_id:
-            return
+    def _on_search_error(self, error_info: tuple) -> None:
         log.error("Entity search failed: %s", error_info[1])
         self.popup.hide()

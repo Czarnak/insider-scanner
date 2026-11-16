@@ -316,7 +316,7 @@ class TestCompanyPageLoad:
         assert not page.state_label.isHidden()
         assert "unavailable" in page.state_label.text().lower()
 
-    def test_stale_request_id_result_is_ignored(self, qtbot):
+    def test_superseded_load_result_is_ignored(self, qtbot):
         """Result arriving after a new load() call (stale request) must not update the model."""
         from insider_scanner.gui.entity_pages import CompanyPage
 
@@ -336,15 +336,20 @@ class TestCompanyPageLoad:
         # First load — worker queued but not run yet
         page.load("AAPL", FeedMarket.US)
 
-        # Second load before first finishes — bumps request_id
+        # Start another load before the first finishes.
         repo2 = FakeRepository(issuer_records=())
         page._repository = repo2
         page.load("MSFT", FeedMarket.US)
 
         # Complete the FIRST (now stale) worker — result should be ignored
-        pool.workers[0].run()
+        pool.workers[0].signals.result.emit(records)
+        pool.workers[0].signals.finished.emit()
 
-        assert page.model.rowCount() == 0  # second load returned empty, first ignored
+        assert page.model.rowCount() == 0
+        assert not page.progress.isHidden()
+
+        pool.workers[1].run()
+        assert page.progress.isHidden()
 
 
 class TestCompanyPageNullRepositoryConstruction:
@@ -505,7 +510,7 @@ class TestInsiderPageLoad:
         assert not page.state_label.isHidden()
         assert "unavailable" in page.state_label.text().lower()
 
-    def test_stale_request_id_result_is_ignored(self, qtbot):
+    def test_superseded_load_result_is_ignored(self, qtbot):
         """Result from a superseded load() must not populate the model."""
         from insider_scanner.gui.entity_pages import InsiderPage
 
@@ -528,9 +533,14 @@ class TestInsiderPageLoad:
         page._repository = repo2
         page.load("Nancy Pelosi", FeedMarket.CONGRESS)
 
-        pool.workers[0].run()
+        pool.workers[0].signals.result.emit(records)
+        pool.workers[0].signals.finished.emit()
 
         assert page.model.rowCount() == 0
+        assert not page.progress.isHidden()
+
+        pool.workers[1].run()
+        assert page.progress.isHidden()
 
     def test_does_not_call_issuer_method(self, qtbot):
         """InsiderPage must never call recent_by_issuer."""

@@ -50,7 +50,7 @@ from insider_scanner.core.eu_models import EuropeanInsiderTrade
 from insider_scanner.gui.widgets import SortableTableModel
 from insider_scanner.utils.config import EU_WATCHLIST_FILE, load_eu_watchlist
 from insider_scanner.utils.logging import get_logger
-from insider_scanner.utils.threading import Worker, dispatch
+from insider_scanner.utils.threading import LatestRequest
 
 log = get_logger("european_tab")
 
@@ -92,6 +92,7 @@ class EuropeanTab(QWidget):
         super().__init__(parent)
         self._service = service
         self._thread_pool = thread_pool or QThreadPool.globalInstance()
+        self._requests = LatestRequest(self, self._thread_pool)
         self._trades: list[EuropeanInsiderTrade] = []
         self._filtered_trades: list[EuropeanInsiderTrade] | None = None
         self._cancel_event = Event()
@@ -313,23 +314,23 @@ class EuropeanTab(QWidget):
         date_from = self._get_start_date()
         date_to = self._get_end_date()
 
-        self._cancel_event.clear()
+        cancel = self._new_scan_cancellation()
+        service = self._service
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # indeterminate
 
         def task():
-            return self._service.scan(
+            return service.scan(
                 isin,
                 country=country,
                 start_date=date_from,
                 end_date=date_to,
                 use_cache=True,
-                cancelled=self._cancel_event.is_set,
+                cancelled=cancel.is_set,
             )
 
-        dispatch(
-            self._thread_pool,
+        self._requests.start(
             task,
             on_result=self._on_scan_result,
             on_error=self._on_scan_error,
@@ -351,35 +352,37 @@ class EuropeanTab(QWidget):
         date_from = self._get_start_date()
         date_to = self._get_end_date()
 
-        self._cancel_event.clear()
+        cancel = self._new_scan_cancellation()
+        service = self._service
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, len(isins))
         self.progress.setValue(0)
 
-        def task():
+        def task(*, progress_callback):
             all_trades: list[EuropeanInsiderTrade] = []
             for i, isin in enumerate(isins):
-                if self._cancel_event.is_set():
+                if cancel.is_set():
                     break
-                batch = self._service.scan(
+                batch = service.scan(
                     isin,
                     country=country,
                     start_date=date_from,
                     end_date=date_to,
                     use_cache=True,
-                    cancelled=self._cancel_event.is_set,
+                    cancelled=cancel.is_set,
                 )
                 all_trades.extend(batch)
-                worker.signals.progress.emit(i + 1)
+                progress_callback(i + 1)
             return merge_eu_trades(all_trades)
 
-        worker = Worker(task)
-        worker.signals.result.connect(self._on_scan_result)
-        worker.signals.error.connect(self._on_scan_error)
-        worker.signals.progress.connect(self._on_watchlist_progress)
-        worker.signals.finished.connect(self._on_scan_finished)
-        self._thread_pool.start(worker)
+        self._requests.start(
+            task,
+            on_result=self._on_scan_result,
+            on_error=self._on_scan_error,
+            on_progress=self._on_watchlist_progress,
+            on_finished=self._on_scan_finished,
+        )
 
     def _run_latest(self):
         """Fetch the N most recent trades from each EU source globally (no ISIN filter).
@@ -392,7 +395,8 @@ class EuropeanTab(QWidget):
         date_from = self._get_start_date()
         date_to = self._get_end_date()
 
-        self._cancel_event.clear()
+        cancel = self._new_scan_cancellation()
+        service = self._service
         self._set_scan_buttons_enabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(
@@ -400,17 +404,16 @@ class EuropeanTab(QWidget):
         )  # indeterminate — scraper runs in one blocking call
 
         def task():
-            return self._service.latest(
+            return service.latest(
                 count=count,
                 country=country,
                 start_date=date_from,
                 end_date=date_to,
                 use_cache=True,
-                cancelled=self._cancel_event.is_set,
+                cancelled=cancel.is_set,
             )
 
-        dispatch(
-            self._thread_pool,
+        self._requests.start(
             task,
             on_result=self._on_scan_result,
             on_error=self._on_scan_error,
@@ -424,6 +427,13 @@ class EuropeanTab(QWidget):
     def request_cancellation(self) -> None:
         """Request cooperative cancellation without blocking the GUI thread."""
         self._cancel_event.set()
+        self._requests.invalidate()
+
+    def _new_scan_cancellation(self) -> Event:
+        """Keep a superseded scan cancelled when its replacement starts."""
+        self._cancel_event.set()
+        self._cancel_event = Event()
+        return self._cancel_event
 
     # ------------------------------------------------------------------
     # Worker slots

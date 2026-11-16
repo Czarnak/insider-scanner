@@ -10,7 +10,12 @@ from PySide6.QtWidgets import QMessageBox
 from insider_scanner.persistence import bootstrap_database, create_sqlite_engine
 from insider_scanner.persistence.alerts import load_alerts
 from insider_scanner.persistence.coverage import CoverageRepository
-from insider_scanner.persistence.feed import FeedCriteria, FeedMarket, FeedRecord
+from insider_scanner.persistence.feed import (
+    FeedCriteria,
+    FeedMarket,
+    FeedRecord,
+    FeedRepository,
+)
 from insider_scanner.persistence.feed_state import (
     FeedState,
     SavedScreen,
@@ -41,6 +46,7 @@ def _services(tmp_path):
     )
     return SimpleNamespace(
         persistence=persistence,
+        feed=FeedRepository(persistence.engine),
         us=None,
         congress=None,
         european=None,
@@ -337,9 +343,11 @@ def test_close_event_persists_criteria(qtbot, tmp_path):
     services = _services(tmp_path)
     window = MainWindow(services, state_path=state_path)
     qtbot.addWidget(window)
+    window.show()
 
     window.feed_page.set_criteria(FeedCriteria(search="close-test"))
     window.close()
+    qtbot.waitUntil(lambda: not window.isVisible())
 
     on_disk = load_feed_state(state_path)
     assert on_disk.criteria.search == "close-test"
@@ -569,7 +577,7 @@ def test_alert_badge_updates_on_evaluation(qtbot, tmp_path):
     qtbot.addWidget(window)
     try:
         hits = (AlertHit(rule_name="A", records=(_feed_record(),), match_count=1),)
-        window._on_alerts_evaluated(window._alert_request_id, hits)
+        window._on_alerts_evaluated(hits)
         assert window.alerts_button.text() == "Alerts (1)"
         assert window.alerts_page.new_match_count() == 1
     finally:

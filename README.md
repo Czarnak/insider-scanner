@@ -124,6 +124,13 @@ adds ingestion positions for existing records without changing transaction data.
 - View sortable tables that display filing/trade dates, highlight congressional filings, show EDGAR links, and let you export CSV/JSON.
 - Cancel long-running scans and resolve any ticker to its SEC CIK + filing page.
 
+CIK lookup runs in the background; changing the ticker discards the previous
+lookup before it can update the details or open a browser. Background requests
+across the GUI display only their latest results. Closing the window requests
+cooperative cancellation and shows a stopping message while work drains, keeping
+the window responsive. An active network call finishes under its existing timeout
+before the application closes its database and HTTP sessions.
+
 ![insider_scanners](img/insiderTab.png)
 
 #### Congress Scan tool

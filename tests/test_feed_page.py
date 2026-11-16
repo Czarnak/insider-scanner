@@ -34,7 +34,10 @@ class FakeFeedRepository:
 
     def query(self, query):
         self.queries.append(query)
-        return self.pages.pop(0)
+        page = self.pages.pop(0)
+        if isinstance(page, Exception):
+            raise page
+        return page
 
 
 def _record(key: str, identifier: str) -> FeedRecord:
@@ -188,6 +191,7 @@ def test_feed_page_distinguishes_empty_matches_stale_and_error(qtbot):
         [
             _page([_record("us:1", "AAPL")]),
             _page([], stale=True),
+            RuntimeError("database offline"),
         ]
     )
     page = FeedPageWidget(repository, thread_pool=pool)
@@ -199,7 +203,8 @@ def test_feed_page_distinguishes_empty_matches_stale_and_error(qtbot):
     assert page.state_label.text() == "No transactions match your search."
     assert "stale" in page.freshness_text().lower()
 
-    page._on_error(2, (RuntimeError, RuntimeError("database offline"), None))
+    page.reload()
+    _complete(pool, 2)
     assert page.state_label.text() == "Could not load local transactions."
 
 
@@ -212,7 +217,6 @@ def test_feed_page_retains_worker_until_real_thread_pool_delivers_result(qtbot):
     qtbot.waitUntil(lambda: page.model.rowCount() == 1, timeout=5_000)
 
     assert page.state_label.isHidden()
-    assert page._workers == {}
     assert pool.waitForDone(5_000)
 
 
@@ -472,15 +476,10 @@ def test_restore_column_layout_with_corrupt_blob_does_not_raise(qtbot):
 
 def test_permission_error_shows_permission_state_with_retry(qtbot):
     pool = CapturingPool()
-    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    repository = FakeFeedRepository([PermissionError("denied")])
     page = FeedPageWidget(repository, thread_pool=pool)
     qtbot.addWidget(page)
     _complete(pool, 0)
-
-    page._on_error(
-        page._request_id,
-        (PermissionError, PermissionError("denied"), None),
-    )
 
     assert page.state_heading.text() == "Can't access local data"
     assert not page.state_heading.isHidden()
@@ -490,15 +489,10 @@ def test_permission_error_shows_permission_state_with_retry(qtbot):
 
 def test_transient_error_shows_message_and_retry(qtbot):
     pool = CapturingPool()
-    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")])])
+    repository = FakeFeedRepository([RuntimeError("database offline")])
     page = FeedPageWidget(repository, thread_pool=pool)
     qtbot.addWidget(page)
     _complete(pool, 0)
-
-    page._on_error(
-        page._request_id,
-        (RuntimeError, RuntimeError("database offline"), None),
-    )
 
     assert page.state_label.text() == "Could not load local transactions."
     assert not page.retry_button.isHidden()
@@ -508,7 +502,7 @@ def test_retry_button_requeries_and_recovers(qtbot):
     pool = CapturingPool()
     repository = FakeFeedRepository(
         [
-            _page([_record("us:1", "AAPL")]),
+            RuntimeError("boom"),
             _page([_record("us:2", "MSFT")]),
         ]
     )
@@ -516,10 +510,6 @@ def test_retry_button_requeries_and_recovers(qtbot):
     qtbot.addWidget(page)
     _complete(pool, 0)
 
-    page._on_error(
-        page._request_id,
-        (RuntimeError, RuntimeError("boom"), None),
-    )
     assert not page.retry_button.isHidden()
 
     qtbot.mouseClick(page.retry_button, Qt.MouseButton.LeftButton)
@@ -567,16 +557,16 @@ def test_empty_results_hide_stale_banner_even_when_stale(qtbot):
 
 def test_error_hides_stale_banner(qtbot):
     pool = CapturingPool()
-    repository = FakeFeedRepository([_page([_record("us:1", "AAPL")], stale=True)])
+    repository = FakeFeedRepository(
+        [_page([_record("us:1", "AAPL")], stale=True), RuntimeError("boom")]
+    )
     page = FeedPageWidget(repository, thread_pool=pool)
     qtbot.addWidget(page)
     _complete(pool, 0)
     assert not page.stale_banner.isHidden()
 
-    page._on_error(
-        page._request_id,
-        (RuntimeError, RuntimeError("boom"), None),
-    )
+    page.reload()
+    _complete(pool, 1)
 
     assert page.stale_banner.isHidden()
 
